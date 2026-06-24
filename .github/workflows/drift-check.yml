@@ -1,0 +1,33 @@
+name: Drift check
+
+# Reusable drift check, called from the meta-repo (umbrella). Fails when any @cosyte/* parser repo
+# diverges from the canonical baseline encoded in config/drift-manifest.json.
+# Caller (umbrella .github/workflows/drift-check.yml):
+#   on: { push: { branches: [main] }, pull_request: { branches: [main] } }
+#   jobs:
+#     drift:
+#       uses: cosyte/.github/.github/workflows/drift-check.yml@main
+# The checker is zero-dep (Node stdlib), so no install is needed — only the submodules checked out.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true # top-level only (never recursive)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Check for drift
+        run: node config/scripts/drift-check.js

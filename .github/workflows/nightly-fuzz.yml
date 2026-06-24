@@ -1,0 +1,41 @@
+name: Nightly fuzz
+
+# Reusable fuzz run for the byte-level parsers (dicom Part 10, mllp framing).
+# Caller (each byte parser's .github/workflows/nightly-fuzz.yml):
+#   on:
+#     schedule: [{ cron: "0 6 * * *" }]
+#     workflow_dispatch: {}
+#   jobs:
+#     fuzz:
+#       uses: cosyte/.github/.github/workflows/nightly-fuzz.yml@main
+# Arbitrary/malformed bytes must never crash, hang, or OOM — they degrade to a typed error or warning.
+
+on:
+  workflow_call:
+    inputs:
+      fuzz-cmd:
+        description: "The fuzz command to run."
+        type: string
+        default: "pnpm fuzz"
+      node-version:
+        type: string
+        default: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Fuzz
+        env:
+          FUZZ_CMD: ${{ inputs.fuzz-cmd }}
+        run: bash -c "$FUZZ_CMD"
