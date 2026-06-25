@@ -69,7 +69,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+          # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
+          NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
       - name: Upload docs artifacts + dispatch docs rebuild
         if: ${{ steps.changesets.outputs.published == 'true' }}
         env:
