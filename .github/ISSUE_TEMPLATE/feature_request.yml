@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a new capability, a profile, or a change to a @cosyte/* package.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us the problem first — the use case matters more than a proposed API.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - "@cosyte/hl7"
+        - "@cosyte/mllp"
+        - "@cosyte/dicom"
+        - "@cosyte/x12"
+        - "@cosyte/ccda"
+        - "@cosyte/ncpdp"
+        - "shared config / tooling"
+        - "other / not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem / use case
+      description: What are you trying to do? What integration or vendor quirk prompted this?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional. If you have an API or approach in mind, sketch it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Anything you've already tried or ruled out.
