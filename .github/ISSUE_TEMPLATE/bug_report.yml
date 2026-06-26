@@ -1,0 +1,59 @@
+name: Bug report
+description: A @cosyte/* package crashes, misparses an input, or behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Two things up front:
+        - **Use synthetic data only — never real PHI.** Swap names, MRNs, and dates for fabricated values.
+        - Reduce to the **smallest input** that reproduces the problem.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - "@cosyte/hl7"
+        - "@cosyte/mllp"
+        - "@cosyte/dicom"
+        - "@cosyte/x12"
+        - "@cosyte/ccda"
+        - "@cosyte/ncpdp"
+        - "shared config / tooling (@cosyte/tsconfig, eslint-config, …)"
+        - "other / not sure"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: "0.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest input plus the call that reproduces it. Synthetic data only.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Node version / OS
+      placeholder: "Node 22.x, Linux"
+  - type: checkboxes
+    id: phi
+    attributes:
+      label: PHI check
+      options:
+        - label: This report contains no real patient data — synthetic identifiers only.
+          required: true
