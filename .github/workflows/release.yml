@@ -40,6 +40,16 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The human gate on npm publish. Every caller repo has a PROTECTED `release` environment
+    # (required reviewer + a main-only deployment-branch policy), so both the version-PR step and
+    # the publish step wait for an explicit approval — nothing reaches npm unattended.
+    #
+    # Required reviewers are a PUBLIC-repo feature on GitHub Team (private repos need Enterprise),
+    # which is why this reference could only be added once the parsers went public. Add the
+    # protected environment to a caller BEFORE it calls this workflow: if the environment does not
+    # exist, GitHub silently auto-creates an UNPROTECTED one on the first run, and you get a gate
+    # that gates nothing while looking like it does.
+    environment: release
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
