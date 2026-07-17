@@ -113,9 +113,16 @@ jobs:
           tag="v${version}"
           bash -c "$PACK_DOCS_CMD"
           if [ -f dist-artifacts/docs-content.tar.gz ]; then
+            # `--target` is REQUIRED. `changeset publish` creates the v<version> tag only in the
+            # runner's local clone; it was changesets/action that pushed it, and it does that ONLY
+            # when createGithubReleases is true — which we turn off above to avoid a duplicate
+            # release. So the tag never reaches the remote, and `gh release create` refuses with
+            # "tag v0.0.1 exists locally but has not been pushed". Pointing --target at this commit
+            # makes gh create the tag itself, which is what we want: one tag, one release, both
+            # created here.
             gh release upload "$tag" dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz --clobber \
               || gh release create "$tag" dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz \
-                   --title "$tag" --notes "Automated release of $tag."
+                   --target "$GITHUB_SHA" --title "$tag" --notes "Automated release of $tag."
           fi
           if [ "$DISPATCH_DOCS" = "true" ] && [ -n "$DISPATCH_TOKEN" ]; then
             GH_TOKEN="$DISPATCH_TOKEN" gh api repos/cosyte/docs/dispatches \
