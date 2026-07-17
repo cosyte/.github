@@ -75,6 +75,14 @@ jobs:
           # `pnpm run version` — NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
           publish: pnpm run release
+          # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
+          # below creates — two releases for one publish (x12 shipped 0.0.1 that way). It is also
+          # the wrong release: it carries no docs artifacts, and because every caller sets
+          # `"changelog": false` and hand-maintains CHANGELOG.md, the action finds no `## <version>`
+          # heading and dumps the WHOLE file — `## [Unreleased]` and all — into the release body.
+          # `changeset publish` still creates and pushes the `v<version>` git tag; the step below
+          # attaches the artifacts to it.
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -93,7 +101,16 @@ jobs:
         shell: bash
         run: |
           version=$(node -e "const p=JSON.parse(process.env.PUBLISHED_PACKAGES); const m=p.find(x=>x.name===process.env.PACKAGE_NAME)||p[0]; process.stdout.write(m.version)")
-          tag="${PACKAGE_NAME}@${version}"
+          # MUST match the tag `changeset publish` just pushed, and MUST stay parseable by
+          # cosyte/docs. Every caller of this workflow is a single-package repo, for which
+          # Changesets tags `v<version>`; it uses `<pkg>@<version>` only in a multi-package repo.
+          # This once read "${PACKAGE_NAME}@${version}", which cut a second release at a tag that
+          # existed nowhere else — and docs' parseTag() (`/^(\d+)\.(\d+)\.(\d+)/` after stripping a
+          # leading `v`) returns null for "@cosyte/x12@0.0.1", so the version slot it derives,
+          # `versioned_docs/version-@cosyte/x12@0.0.1`, carries a `/` and is not a directory name.
+          # docs keeps only releases carrying docs-content.tar.gz, so it would have selected exactly
+          # that broken tag and skipped the good one.
+          tag="v${version}"
           bash -c "$PACK_DOCS_CMD"
           if [ -f dist-artifacts/docs-content.tar.gz ]; then
             gh release upload "$tag" dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz --clobber \
