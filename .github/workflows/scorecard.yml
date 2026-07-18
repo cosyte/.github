@@ -1,0 +1,51 @@
+name: Scorecard
+
+# Reusable OpenSSF Scorecard supply-chain analysis for @cosyte/* public repos.
+# Caller (each repo's .github/workflows/scorecard.yml):
+#   jobs:
+#     scorecard:
+#       permissions:
+#         security-events: write # upload the SARIF to the repo's Security tab
+#         id-token: write        # publish results to the OpenSSF API (for the badge)
+#       uses: cosyte/.github/.github/workflows/scorecard.yml@main
+# A called workflow can only downgrade the caller's token, so the caller MUST grant these. Runs on a
+# weekly schedule + push to main (set by the caller's `on:`); never on pull_request (publish needs the
+# default branch). Actions pinned to SHAs.
+
+on:
+  workflow_call:
+    inputs:
+      publish-results:
+        description: "Publish results to the OpenSSF REST API (required for the badge)."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: ${{ inputs.publish-results }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+      - name: Upload SARIF to code-scanning
+        uses: github/codeql-action/upload-sarif@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          sarif_file: results.sarif
