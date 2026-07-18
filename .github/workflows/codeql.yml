@@ -1,0 +1,51 @@
+name: CodeQL
+
+# Reusable CodeQL static analysis for @cosyte/* packages (JavaScript/TypeScript, zero-dep parsers).
+# Caller (each repo's .github/workflows/codeql.yml):
+#   jobs:
+#     codeql:
+#       permissions:
+#         security-events: write # upload the SARIF to the repo's Security tab
+#         contents: read
+#         actions: read
+#       uses: cosyte/.github/.github/workflows/codeql.yml@main
+# A called workflow can only downgrade the caller's token, never escalate it, so the caller MUST grant
+# security-events: write — without it GitHub rejects the workflow at startup. Actions pinned to SHAs.
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: "JSON array of CodeQL languages to analyze."
+        type: string
+        default: '["javascript-typescript"]'
+      queries:
+        description: "CodeQL query suite to run."
+        type: string
+        default: "security-and-quality"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          languages: ${{ matrix.language }}
+          queries: ${{ inputs.queries }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        with:
+          category: "/language:${{ matrix.language }}"
