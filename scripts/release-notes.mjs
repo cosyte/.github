@@ -11,10 +11,19 @@
 // WHY BOTH TRANSLATE AND REFUSE. `documentation/conventions.md` puts it as "a translation at the
 // boundary, not a deletion": phase and item identifiers belong in the changeset, CHANGELOG.md, the
 // commit, and the roadmap, and must never reach a release body. So the renderer translates, and the
-// gate then proves the translation worked and FAILS the run if anything banned survived. The gate is
-// not decorative: the translator keys on a fixed list of project prefixes, so a prefix nobody has
-// added yet gets through it, and the gate is what stops that reaching the public. Stripping is
-// never silent: every rewrite and every dropped change is printed.
+// gate then proves the translation worked and FAILS the run if anything banned survived. Stripping
+// is never silent: every rewrite and every dropped change is printed.
+//
+// WHAT THE GATE DOES AND DOES NOT COVER, stated plainly because the distinction matters. The gate
+// enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so it cannot catch
+// an identifier from a programme prefix nobody has added to that list yet, and no rule could: the
+// only way to spot one from its shape alone is a `WORD-N` pattern, which is exactly what destroys
+// `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`. What the gate DOES buy is that a rule can
+// never be quietly bypassed downstream: it re-reads the finished bytes, so a change to the renderer,
+// the workflow, or the source of the text cannot ship banned content without tripping it.
+//
+// STARTING A NEW PROGRAMME MEANS ADDING ITS PREFIX BELOW. That is the maintenance cost of keying on
+// prefixes instead of shapes, and it is the cheaper of the two mistakes.
 //
 // Two entry points, deliberately separate:
 //
@@ -37,10 +46,9 @@ const EM_DASH = '\u2014';
 
 /** GitHub rejects a release body longer than this. */
 const MAX_BODY_CHARS = 125000;
-/** A change entry shorter than this is not a description of anything. */
+// A change entry shorter than this is not a description of anything. There is deliberately NO
+// whole-body minimum on top of it: "Add `profiles.epic`." is a complete and legitimate release.
 const MIN_ENTRY_CHARS = 12;
-/** All change entries together must carry at least this much text. */
-const MIN_TOTAL_CHARS = 20;
 
 /** The body used when a version shipped nothing a consumer of the package can observe. */
 const INTERNAL_ONLY_BODY = 'Internal tooling and CI only. No change to the published package surface.';
@@ -57,6 +65,7 @@ class NotesError extends Error {}
 // material a consumer needs. A shape-based rule destroys them. Add to this list when a new
 // programme starts; the gate below is what catches the window before you do.
 const PROJECT_PREFIXES = [
+  'PARSERS-PUBLIC',
   'DOCS-CONTENT',
   'KNOWLEDGEBASE',
   'TERMINOLOGY',
@@ -92,17 +101,25 @@ const PROJECT_PREFIXES = [
   'PUB',
   'CI',
   'REAL',
+  // Measured against operations/roadmaps/*.md and BACKLOG.md, which are where these are minted.
+  // `TERM-N` is live in terminology's roadmap and terminology calls this workflow.
+  'TERM',
+  'PKG',
+  'WF',
+  'VERIFY',
 ];
 
 // CASE SENSITIVE, and the segment after the hyphen must start uppercase. That is what lets
 // `FHIR-bridge` and `docs-content/` through: they are legitimate content, and a case-insensitive
 // rule flags them as violations.
-// The second alternative is our internal priority label ("P0 safety", "P1 documentation"). It is
-// narrowed by a lookahead on purpose: ASTM `P` records and bare `P1`-style field references must
-// survive, so only the label's own trailing context counts as a match.
+// The second alternative is our internal priority label, and it MATCHES ITS OWN TRAILING WORD
+// rather than looking ahead for one. An earlier version keyed on `P\d+` followed by end-of-string
+// or a comma, which is the shape rule this file exists to avoid: it deleted the ICD-10-CM code in
+// "Map ICD-10 P07, P22 and P29 to SNOMED CT" and truncated the code range "P00-P96". Corrupting a
+// diagnosis code to remove an internal label is not a trade worth making.
 const INTERNAL_ID = new RegExp(
   String.raw`\b(?:${PROJECT_PREFIXES.join('|')})(?:-[A-Z0-9][A-Z0-9.]*)+\b` +
-    String.raw`|\bP\d+\b(?= safety| documentation|$|[,)])`,
+    String.raw`|\bP\d+ (?:safety|documentation)\b`,
 );
 
 const ORDINAL =
@@ -215,12 +232,23 @@ export function headlineOf(text) {
   if (t.length <= 200) return t.trim().replace(/\.+$/, '');
   const cut = t.slice(0, 200);
   const lastSpace = cut.lastIndexOf(' ');
-  let head = (lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim().replace(/[\s,;:.-]+$/, '');
-  // A cut that lands on a dangling function word reads as a mistake ("and `reescape` emits a."),
-  // so walk back to the last word that carries meaning.
-  const DANGLING =
-    /(^|\s)(a|an|the|and|or|of|to|in|on|for|with|that|which|into|from|as|at|by|is|are|was|were|be|been|its|it|this|these|those|but|so|then|than|per|via|no|not)$/i;
-  for (let i = 0; i < 6 && DANGLING.test(head); i += 1) {
+  return trimDangling((lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim());
+}
+
+/**
+ * Walk back off a trailing word that carries no meaning on its own.
+ *
+ * Two things produce one. A length cut can land mid-clause ("and `reescape` emits a"), and removing
+ * an identifier from the END of a sentence leaves the words that introduced it ("rewrite the
+ * capability claims as a capability doc, not a" once "phase log" is gone). Decapitation is normally
+ * discussed as a head problem, but the tail version ships just as ugly a line.
+ */
+const DANGLING_TAIL =
+  /(?:^|\s)(?:a|an|the|and|or|of|to|in|on|for|with|that|which|into|from|as|at|by|is|are|was|were|be|been|its|it|this|these|those|but|so|then|than|per|via|no|not|never|always|only|both|more|most|each)$/i;
+
+export function trimDangling(text) {
+  let head = String(text).replace(/[\s,;:.-]+$/, '');
+  for (let i = 0; i < 8 && DANGLING_TAIL.test(head) && head.includes(' '); i += 1) {
     head = head.slice(0, head.lastIndexOf(' ')).replace(/[\s,;:.-]+$/, '');
   }
   return head;
@@ -310,7 +338,7 @@ export function tidy(text) {
     }
     if (t === before) break;
   }
-  t = t.replace(/\s{2,}/g, ' ').replace(/^[\s,;:-]+|[\s,;:-]+$/g, '');
+  t = trimDangling(t.replace(/\s{2,}/g, ' ').replace(/^[\s,;:-]+|[\s,;:-]+$/g, ''));
   if (t && /[a-z]/.test(t[0]) && !t.startsWith('`')) t = t[0].toUpperCase() + t.slice(1);
   return t;
 }
@@ -579,10 +607,8 @@ export function assertPublishableNotes(body, { expectVersion, expectPackage } = 
     );
   }
 
-  let total = 0;
   entries.forEach((entry, i) => {
     const said = prose(entry);
-    total += said.length;
     if (said.length < MIN_ENTRY_CHARS) {
       problems.push(
         `change entry ${i + 1} says nothing (${said.length} characters, minimum ${MIN_ENTRY_CHARS}): ` +
@@ -592,12 +618,6 @@ export function assertPublishableNotes(body, { expectVersion, expectPackage } = 
       problems.push(`change entry ${i + 1} is a stub: ${JSON.stringify(entry.slice(0, 80))}`);
     }
   });
-
-  if (entries.length > 0 && total < MIN_TOTAL_CHARS) {
-    problems.push(
-      `the release body carries only ${total} characters describing changes (minimum ${MIN_TOTAL_CHARS})`,
-    );
-  }
 
   for (const violation of findViolations(text)) {
     problems.push(

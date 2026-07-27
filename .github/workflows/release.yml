@@ -93,17 +93,25 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: pnpm
-      # THE GATE, run before anything is published so the common failure costs nothing. On a version
-      # commit this derives the notes and fails the run if they cannot be derived: no changesets were
-      # consumed, one of them has an empty summary, or the rendered body says nothing. On any other
-      # push it is a no-op. Failing here leaves npm untouched.
+      # THE GATE. The notes are derived exactly ONCE, here, before anything is published, and the
+      # publish step below reuses this file. Two reasons, and the second one is not obvious:
+      #
+      #   1. The ordinary failure then costs nothing. If the notes cannot be derived (no changesets
+      #      were consumed, one has an empty summary, the body says nothing, or banned content
+      #      survived translation) the run fails with npm untouched.
+      #   2. Deriving again after the publish step CANNOT WORK. `changeset publish` creates the
+      #      `v<version>` tag in the runner's local clone, and "is a release pending" is answered by
+      #      "does that tag exist yet". After publish the answer is always no, so a second derivation
+      #      finds nothing and every successful release would end red with no release created.
+      #
+      # On any push that is not a pending release this is a no-op that writes no file.
       - name: Release notes must be derivable
         id: notes
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
         run: |
           node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
-            --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes-preflight.md"
+            --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
       - run: pnpm install --frozen-lockfile
       - name: Verify
         run: |
@@ -173,12 +181,13 @@ jobs:
             fi
           done
 
-          # Derive again, then prove the BYTES independently. `--expect-version`/`--expect-package`
-          # tie the body to what actually reached npm: the notes come from git, the version comes
-          # from Changesets, and a disagreement between them is a defect, not a detail.
+          # Prove the BYTES the pre-publish gate derived, immediately before they are written. This
+          # is a separate entry point that knows nothing about how the file was produced: a check
+          # that merely confirms the renderer ran passes when the renderer returns nothing.
+          # `--expect-version`/`--expect-package` tie the body to what actually reached npm: the
+          # notes come from git, the version comes from Changesets, and a disagreement between them
+          # is a defect, not a detail.
           notes="$RUNNER_TEMP/release-notes.md"
-          node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
-            --repo . --package "$PACKAGE_NAME" --out "$notes"
           node .cosyte-release-tooling/scripts/release-notes.mjs assert \
             --file "$notes" --expect-version "$version" --expect-package "$PACKAGE_NAME"
           echo "Release body for $tag:"

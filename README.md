@@ -103,9 +103,15 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 
 The renderer **translates** first (identifiers belong in the changeset, the changelog, the commit and
 the roadmap, never in a release body) and the gate then proves the translation worked. Translation is
-never silent: every rewrite and every dropped change is printed to the run log. The gate is not
-decorative, because the translator keys on a fixed list of project prefixes and a prefix nobody has
-added yet gets through it.
+never silent: every rewrite and every dropped change is printed to the run log.
+
+**What the gate does and does not cover.** It enforces the *known* banned set, and it shares the
+project-prefix list with the translator, so it cannot catch an identifier from a programme prefix
+nobody has added to that list yet. No rule could: the only way to spot one from its shape alone is a
+`WORD-N` pattern, which is exactly what destroys `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`.
+What the gate *does* buy is that a rule cannot be quietly bypassed downstream, because it re-reads
+the finished bytes. **Starting a new programme means adding its prefix to `PROJECT_PREFIXES`**; that
+is the maintenance cost of keying on prefixes instead of shapes, and it is the cheaper mistake.
 
 Three traps the implementation handles deliberately, each of which caused a real leak on 2026-07-27:
 
@@ -113,7 +119,9 @@ Three traps the implementation handles deliberately, each of which caused a real
   `NM1-03` are HL7 and X12 segment-field references and are exactly the reference material a
   consumer needs.
 - **Decapitation.** Stripping an identifier from the front leaves a fragment, and
-  `(thirteenth slice): builder emits X` is worse than the original. The head is repaired afterwards.
+  `(thirteenth slice): builder emits X` is worse than the original. The head is repaired afterwards,
+  and so is the tail: removing an identifier from the *end* strips the words that introduced it, so
+  `..., not a phase log.` would otherwise ship as `..., not a.`
 - **Case sensitivity.** `FHIR-bridge` and `docs-content/` are legitimate content that a
   case-insensitive rule would flag.
 
@@ -125,8 +133,11 @@ so only the unambiguously-internal determiner forms are rewritten.
 
 - **Every change needs a changeset with a real summary.** `pnpm changeset` with a blank description
   now stops a release rather than producing an empty bullet.
-- **The gate runs before the publish step**, so the ordinary failure costs nothing: npm is untouched
-  and the fix is to amend the changeset and re-run.
+- **The notes are derived exactly once, before the publish step**, and the publish step asserts and
+  publishes that same file. The ordinary failure therefore costs nothing: npm is untouched and the
+  fix is to amend the changeset and re-run. Deriving a second time after publishing cannot work,
+  because `changeset publish` creates the `v<version>` tag locally and that tag is how the script
+  answers "is a release pending".
 - **A failure after the publish step leaves the package on npm with no GitHub release.** That is the
   intended trade: a loud red beats a silent green carrying a meaningless release. Recovery is to
   create the release by hand, since re-running finds nothing left to publish.

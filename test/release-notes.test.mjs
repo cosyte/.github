@@ -33,6 +33,7 @@ import {
   sanitizeInternal,
   tidy,
   toHeadline,
+  trimDangling,
 } from '../scripts/release-notes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -153,12 +154,53 @@ test('ADR references are removed', () => {
   assert.ok(!sanitizeInternal('Per ADR-0021 the cap moved').includes('ADR'));
 });
 
-test('the internal priority label is removed but ASTM P records are not', () => {
+test('the internal priority label is removed but real P-codes are not', () => {
   assert.equal(sanitizeInternal('Patient-identity / merge events (P0 safety)'), 'Patient-identity / merge events');
   assert.equal(
-    sanitizeInternal('Model the full patient `P` record identity'),
-    'Model the full patient `P` record identity',
+    sanitizeInternal('Reorder the P1 documentation pass'),
+    'Reorder the pass',
   );
+  // The label rule must never key on the `P<n>` SHAPE. These are ICD-10-CM perinatal codes and an
+  // ASTM patient record, and deleting one to remove an internal label is not a trade worth making.
+  for (const text of [
+    'Map ICD-10 P07, P22 and P29 to SNOMED CT',
+    'Add crosswalk coverage for ICD-10 chapter P00-P96',
+    'Support the ASTM P1 record, P2, and P3 variants',
+    'Model the full patient `P` record identity',
+  ]) {
+    assert.equal(sanitizeInternal(text), text, `${JSON.stringify(text)} must survive untouched`);
+  }
+});
+
+test('every known project prefix is caught by the gate, including the ones minted in roadmaps', () => {
+  // TERM-N is live in operations/roadmaps/terminology.md, and terminology calls this workflow.
+  for (const id of ['TERM-6', 'TERM-N', 'PKG-5', 'WF-3', 'PARSERS-PUBLIC-2', 'VERIFY-AT']) {
+    const violations = findViolations(`### What changed\n\n- A described change carrying ${id} detail.\n`);
+    assert.ok(
+      violations.some((v) => v.rule === 'internal project identifier'),
+      `${id} must be caught, got ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+test('decapitation is repaired at the TAIL as well as the head', () => {
+  // Removing an identifier from the END leaves the words that introduced it. The real ccda case:
+  // once "phase log" is gone, "..., not a phase log." would otherwise ship as "..., not a."
+  assert.equal(
+    toHeadline('Docs: rewrite `docs-content/` capability claims as a capability doc, not a phase log.').headline,
+    'Docs: rewrite `docs-content/` capability claims as a capability doc',
+  );
+  assert.equal(trimDangling('and `reescape` emits a'), 'and `reescape` emits');
+  assert.equal(trimDangling('a repeated arm was never'), 'a repeated arm');
+  // A line that already ends in a real word is untouched.
+  assert.equal(trimDangling('Add `profiles.epic`'), 'Add `profiles.epic`');
+});
+
+test('a single short but genuine change is a publishable release', () => {
+  for (const headline of ['Add `profiles.epic`', 'Fix the CRLF split']) {
+    const body = renderNotes({ packageName: '@cosyte/hl7', version: '0.0.3', headlines: [headline], repoSlug: 'cosyte/hl7' });
+    assert.deepEqual(assertPublishableNotes(body), [], headline);
+  }
 });
 
 test('a parenthetical with no internal reference is left exactly as written', () => {
@@ -509,6 +551,37 @@ test('prepare writes publishable notes for a real release commit', () => {
   const check = runCli(['assert', '--file', out, '--expect-version', '0.0.2', '--expect-package', '@cosyte/hl7']);
   assert.equal(check.status, 0, check.stderr);
   assert.match(check.stdout, /carries 10 described change\(s\) and no banned content/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the workflow composition holds: derive BEFORE publish, assert AFTER the tag exists', () => {
+  // This is the shape release.yml runs, and testing the two halves in isolation missed it.
+  // `changeset publish` creates the v<version> tag in the runner's local clone, so anything that
+  // asks "is a release pending" after the publish step is answered no. Deriving twice therefore
+  // cannot work: the second derivation finds nothing and every successful release ends red with no
+  // GitHub release created. The notes must be derived once, before publish, and reused.
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  const notes = join(dir, 'notes.md');
+
+  // Step 1, before `changesets/action`.
+  const prepared = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', notes]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.ok(readFileSync(notes, 'utf8').includes('npm install @cosyte/hl7@0.0.2'));
+
+  // `changeset publish` runs here and tags locally.
+  run('tag', 'v0.0.2');
+
+  // Step 2, inside the publish step: assert the file that already exists, and publish it.
+  const asserted = runCli([
+    'assert', '--file', notes, '--expect-version', '0.0.2', '--expect-package', '@cosyte/hl7',
+  ]);
+  assert.equal(asserted.status, 0, `assert must still pass after the tag exists: ${asserted.stderr}`);
+
+  // And the thing that made this a blocker: re-deriving at this point yields nothing at all.
+  const reprepared = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', join(dir, 'again.md')]);
+  assert.equal(reprepared.status, 0);
+  assert.match(reprepared.stdout, /No release pending/);
+  assert.throws(() => readFileSync(join(dir, 'again.md'), 'utf8'), /ENOENT/);
   rmSync(dir, { recursive: true, force: true });
 });
 
