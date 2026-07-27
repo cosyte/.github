@@ -10,6 +10,24 @@ name: Release
 # Changesets flow: a push to main with pending changesets opens a "Version Packages" PR; merging it
 # bumps versions and publishes to npm WITH PROVENANCE, uploads the docs artifacts, and fires a
 # repository_dispatch to cosyte/docs so the site rebuilds. Actions are pinned to SHAs.
+#
+# RELEASE NOTES. The GitHub release body is DERIVED from the changesets the "Version Packages" PR
+# consumed: each is a human-written summary of one change, they are what drove the version bump, and
+# the version commit deletes them, which is why `fetch-depth: 0` matters. `scripts/release-notes.mjs`
+# in this repo does the derivation and is unit-tested (`test/release-notes.test.mjs`) against the 15
+# changesets cosyte/hl7 consumed for v0.0.2.
+#
+# This pipeline REFUSES to create a release whose body does not say what changed, or whose body
+# leaks internal project bookkeeping onto a public surface. Until 2026-07-27 every release body read
+# "Automated release of <tag>." and nothing else; a stub that looks deliberate is the defect, so
+# there is no stub fallback and no silent degradation. The refusal is asserted on the BYTES about to
+# be written, by a separate entry point that knows nothing about how they were produced, because a
+# check that merely confirms the renderer ran passes when the renderer returns nothing.
+#
+# The run FAILS, naming the offending line, on any of: an empty or stub body; a version bump that
+# consumed no changesets; a consumed changeset with an empty summary; an internal project identifier
+# (HL7-U, CCDA-P7, README-ORG-SWEEP); phase or slice language (Phase W, Phase 5b, "thirteenth
+# slice"); an ADR number; a U+2014 em dash; or a change no consumer of the package can observe.
 
 on:
   workflow_call:
@@ -42,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     # The human gate on npm publish. Every caller repo has a PROTECTED `release` environment
     # (required reviewer + a main-only deployment-branch policy), so both the version-PR step and
-    # the publish step wait for an explicit approval — nothing reaches npm unattended.
+    # the publish step wait for an explicit approval; nothing reaches npm unattended.
     #
     # Required reviewers are a PUBLIC-repo feature on GitHub Team (private repos need Enterprise),
     # which is why this reference could only be added once the parsers went public. Add the
@@ -54,12 +72,46 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+      # The shared release tooling. A reusable workflow runs against the CALLER's checkout, so this
+      # repo's scripts/ is not on disk unless we fetch it. `job_workflow_sha` is the commit of THIS
+      # workflow file, so the script can never drift from the YAML that calls it, even though every
+      # caller pins `@main`.
+      - name: Check out the shared release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: cosyte/.github
+          ref: ${{ github.job_workflow_sha }}
+          path: .cosyte-release-tooling
+          persist-credentials: false
+      # changesets/action stages the whole tree (`git add .`) when it opens the "Version Packages"
+      # PR, so the tooling checkout has to be invisible to the caller's git or it lands in that PR.
+      - name: Hide the tooling checkout from the caller's git
+        run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: pnpm
+      # THE GATE. The notes are derived exactly ONCE, here, before anything is published, and the
+      # publish step below reuses this file. Two reasons, and the second one is not obvious:
+      #
+      #   1. The ordinary failure then costs nothing. If the notes cannot be derived (no changesets
+      #      were consumed, one has an empty summary, the body says nothing, or banned content
+      #      survived translation) the run fails with npm untouched.
+      #   2. Deriving again after the publish step CANNOT WORK. `changeset publish` creates the
+      #      `v<version>` tag in the runner's local clone, and "is a release pending" is answered by
+      #      "does that tag exist yet". After publish the answer is always no, so a second derivation
+      #      finds nothing and every successful release would end red with no release created.
+      #
+      # On any push that is not a pending release this is a no-op that writes no file.
+      - name: Release notes must be derivable
+        id: notes
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+        run: |
+          node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
+            --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
       - run: pnpm install --frozen-lockfile
       - name: Verify
         run: |
@@ -72,14 +124,14 @@ jobs:
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
-          # `pnpm run version` — NOT `pnpm version`, which is pnpm's built-in and shadows the script.
+          # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
           publish: pnpm run release
           # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
-          # below creates — two releases for one publish (x12 shipped 0.0.1 that way). It is also
+          # below creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also
           # the wrong release: it carries no docs artifacts, and because every caller sets
           # `"changelog": false` and hand-maintains CHANGELOG.md, the action finds no `## <version>`
-          # heading and dumps the WHOLE file — `## [Unreleased]` and all — into the release body.
+          # heading and dumps the WHOLE file, `## [Unreleased]` and all, into the release body.
           # `changeset publish` still creates and pushes the `v<version>` git tag; the step below
           # attaches the artifacts to it.
           createGithubReleases: false
@@ -89,7 +141,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
-      - name: Upload docs artifacts + dispatch docs rebuild
+      - name: Publish the GitHub release + dispatch docs rebuild
         if: ${{ steps.changesets.outputs.published == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -98,6 +150,7 @@ jobs:
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
           PACK_DOCS_CMD: ${{ inputs.pack-docs-cmd }}
           DISPATCH_DOCS: ${{ inputs.dispatch-docs }}
+          IS_RELEASE_COMMIT: ${{ steps.notes.outputs.is-release }}
         shell: bash
         run: |
           version=$(node -e "const p=JSON.parse(process.env.PUBLISHED_PACKAGES); const m=p.find(x=>x.name===process.env.PACKAGE_NAME)||p[0]; process.stdout.write(m.version)")
@@ -105,25 +158,61 @@ jobs:
           # cosyte/docs. Every caller of this workflow is a single-package repo, for which
           # Changesets tags `v<version>`; it uses `<pkg>@<version>` only in a multi-package repo.
           # This once read "${PACKAGE_NAME}@${version}", which cut a second release at a tag that
-          # existed nowhere else — and docs' parseTag() (`/^(\d+)\.(\d+)\.(\d+)/` after stripping a
+          # existed nowhere else, and docs' parseTag() (`/^(\d+)\.(\d+)\.(\d+)/` after stripping a
           # leading `v`) returns null for "@cosyte/x12@0.0.1", so the version slot it derives,
           # `versioned_docs/version-@cosyte/x12@0.0.1`, carries a `/` and is not a directory name.
           # docs keeps only releases carrying docs-content.tar.gz, so it would have selected exactly
           # that broken tag and skipped the good one.
           tag="v${version}"
+
+          # A publish that the pre-publish gate never classified as a release commit means the two
+          # disagree about what just happened. Stop rather than guess.
+          if [ "$IS_RELEASE_COMMIT" != "true" ]; then
+            echo "::error::npm published ${PACKAGE_NAME}@${version} but the release-notes gate did not" \
+                 "recognise this commit as a release. Refusing to create a release body it never derived."
+            exit 1
+          fi
+
           bash -c "$PACK_DOCS_CMD"
-          if [ -f dist-artifacts/docs-content.tar.gz ]; then
+          assets=()
+          for asset in docs-content.tar.gz source.tar.gz; do
+            if [ -f "dist-artifacts/$asset" ]; then
+              assets+=("dist-artifacts/$asset")
+            fi
+          done
+
+          # Prove the BYTES the pre-publish gate derived, immediately before they are written. This
+          # is a separate entry point that knows nothing about how the file was produced: a check
+          # that merely confirms the renderer ran passes when the renderer returns nothing.
+          # `--expect-version`/`--expect-package` tie the body to what actually reached npm: the
+          # notes come from git, the version comes from Changesets, and a disagreement between them
+          # is a defect, not a detail.
+          notes="$RUNNER_TEMP/release-notes.md"
+          node .cosyte-release-tooling/scripts/release-notes.mjs assert \
+            --file "$notes" --expect-version "$version" --expect-package "$PACKAGE_NAME"
+          echo "Release body for $tag:"
+          cat "$notes"
+
+          # The title is the tag and nothing else. The reader is already in the repo.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes-file "$notes"
+            if [ ${#assets[@]} -gt 0 ]; then
+              gh release upload "$tag" "${assets[@]}" --clobber
+            fi
+          else
             # `--target` is REQUIRED. `changeset publish` creates the v<version> tag only in the
             # runner's local clone; it was changesets/action that pushed it, and it does that ONLY
-            # when createGithubReleases is true — which we turn off above to avoid a duplicate
+            # when createGithubReleases is true, which we turn off above to avoid a duplicate
             # release. So the tag never reaches the remote, and `gh release create` refuses with
             # "tag v0.0.1 exists locally but has not been pushed". Pointing --target at this commit
             # makes gh create the tag itself, which is what we want: one tag, one release, both
-            # created here.
-            gh release upload "$tag" dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz --clobber \
-              || gh release create "$tag" dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz \
-                   --target "$GITHUB_SHA" --title "$tag" --notes "Automated release of $tag."
+            # created here. The assets go in this same call rather than a follow-up `gh release
+            # upload`: gh creates the release as a draft, uploads, and only then publishes it, so
+            # there is no window in which a published release is visible without its artifacts.
+            gh release create "$tag" ${assets[@]+"${assets[@]}"} \
+              --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes"
           fi
+
           if [ "$DISPATCH_DOCS" = "true" ] && [ -n "$DISPATCH_TOKEN" ]; then
             GH_TOKEN="$DISPATCH_TOKEN" gh api repos/cosyte/docs/dispatches \
               -f event_type=package-released \
