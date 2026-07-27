@@ -63,7 +63,7 @@ class NotesError extends Error {}
 // SHAPE, and that distinction is the whole game: `MLLP-10` is one of ours, but `SCH-11`, `PID-3`,
 // `MSH-2`, `NM1-03`, `OBX-5` are HL7 and X12 segment-field references and are exactly the reference
 // material a consumer needs. A shape-based rule destroys them. Add to this list when a new
-// programme starts; the gate below is what catches the window before you do.
+// programme starts: nothing else will catch it, for the reason set out at the top of this file.
 const PROJECT_PREFIXES = [
   'PARSERS-PUBLIC',
   'DOCS-CONTENT',
@@ -236,15 +236,20 @@ export function headlineOf(text) {
 }
 
 /**
- * Walk back off a trailing word that carries no meaning on its own.
+ * Walk back off a trailing word that carries no meaning on its own, after a LENGTH cut.
  *
- * Two things produce one. A length cut can land mid-clause ("and `reescape` emits a"), and removing
- * an identifier from the END of a sentence leaves the words that introduced it ("rewrite the
- * capability claims as a capability doc, not a" once "phase log" is gone). Decapitation is normally
- * discussed as a head problem, but the tail version ships just as ugly a line.
+ * Every word here is a pure function word. NEGATIONS AND QUANTIFIERS ARE DELIBERATELY ABSENT:
+ * `not`, `no`, `never`, `only`, `both`, `more`, `each`. An earlier version included them and turned
+ * "The parser tolerates a truncated trailer, the emitter does not" into "...the emitter does",
+ * which tells a reader the opposite of the truth on a public page, and no gate can catch that
+ * because the result is well-formed prose. Trimming an article is cosmetic; trimming a negation is
+ * a lie. This list may only ever grow by words that cannot change a sentence's meaning.
+ *
+ * This runs ONLY on the over-length truncation path. A tail left dangling by translation is a
+ * refusal, not a repair: see collectHeadlines.
  */
 const DANGLING_TAIL =
-  /(?:^|\s)(?:a|an|the|and|or|of|to|in|on|for|with|that|which|into|from|as|at|by|is|are|was|were|be|been|its|it|this|these|those|but|so|then|than|per|via|no|not|never|always|only|both|more|most|each)$/i;
+  /(?:^|\s)(?:a|an|the|and|or|of|to|in|on|for|with|that|which|into|from|as|at|by|is|are|was|were|be|been|its|it|this|these|those|but|so|then|than|per|via)$/i;
 
 export function trimDangling(text) {
   let head = String(text).replace(/[\s,;:.-]+$/, '');
@@ -338,7 +343,7 @@ export function tidy(text) {
     }
     if (t === before) break;
   }
-  t = trimDangling(t.replace(/\s{2,}/g, ' ').replace(/^[\s,;:-]+|[\s,;:-]+$/g, ''));
+  t = t.replace(/\s{2,}/g, ' ').replace(/^[\s,;:-]+|[\s,;:-]+$/g, '');
   if (t && /[a-z]/.test(t[0]) && !t.startsWith('`')) t = t[0].toUpperCase() + t.slice(1);
   return t;
 }
@@ -412,6 +417,19 @@ export function collectHeadlines(files, packageName) {
       throw new NotesError(
         `${file.id}: nothing is left of ${JSON.stringify(raw)} after removing internal project ` +
           `bookkeeping. Rewrite the changeset so its first sentence says what changed for a reader.`,
+      );
+    }
+    // A tail left dangling by translation is a REFUSAL, not a repair. Removing "phase log" from
+    // "...as a capability doc, not a phase log" leaves "...not a", and the temptation is to walk
+    // back off the loose words. That is how a translator starts editing meaning: the same walk-back
+    // turns "the emitter does not" into "the emitter does", which is well-formed prose no gate can
+    // catch and the opposite of the truth. So the pipeline stops and asks a human to write a
+    // sentence that survives, which costs one changeset edit before anything is published.
+    if (changed && DANGLING_TAIL.test(headline)) {
+      throw new NotesError(
+        `${file.id}: removing internal project bookkeeping from ${JSON.stringify(raw)} leaves ` +
+          `${JSON.stringify(headline)}, which trails off. Rewrite the changeset's first sentence so ` +
+          `it reads correctly without the internal reference, rather than depending on it.`,
       );
     }
     if (changed) rewritten.push({ id: file.id, from: raw, to: headline });

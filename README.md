@@ -119,9 +119,12 @@ Three traps the implementation handles deliberately, each of which caused a real
   `NM1-03` are HL7 and X12 segment-field references and are exactly the reference material a
   consumer needs.
 - **Decapitation.** Stripping an identifier from the front leaves a fragment, and
-  `(thirteenth slice): builder emits X` is worse than the original. The head is repaired afterwards,
-  and so is the tail: removing an identifier from the *end* strips the words that introduced it, so
-  `..., not a phase log.` would otherwise ship as `..., not a.`
+  `(thirteenth slice): builder emits X` is worse than the original. The head is repaired afterwards.
+  A dangling **tail** (removing `phase log` leaves `..., not a`) is a **refusal**, not a repair:
+  walking back off loose words is how a translator starts editing meaning, and the same walk-back
+  turns `the emitter does not` into `the emitter does`, which is well-formed prose no gate can catch
+  and the opposite of the truth. The run stops and asks for a sentence that survives, which costs
+  one changeset edit before anything is published.
 - **Case sensitivity.** `FHIR-bridge` and `docs-content/` are legitimate content that a
   case-insensitive rule would flag.
 

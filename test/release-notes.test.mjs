@@ -183,17 +183,61 @@ test('every known project prefix is caught by the gate, including the ones minte
   }
 });
 
-test('decapitation is repaired at the TAIL as well as the head', () => {
-  // Removing an identifier from the END leaves the words that introduced it. The real ccda case:
-  // once "phase log" is gone, "..., not a phase log." would otherwise ship as "..., not a."
-  assert.equal(
-    toHeadline('Docs: rewrite `docs-content/` capability claims as a capability doc, not a phase log.').headline,
-    'Docs: rewrite `docs-content/` capability claims as a capability doc',
+test('a tail left dangling by translation is REFUSED, never repaired by rewriting', () => {
+  // The real ccda case: once "phase log" is removed, "..., not a phase log" leaves "..., not a".
+  // Walking back off those loose words is what turns "the emitter does not" into "the emitter
+  // does", so the pipeline stops and asks for a sentence that survives instead.
+  assert.throws(
+    () =>
+      collectHeadlines(
+        [
+          {
+            id: 'docs.md',
+            text: '---\n"@cosyte/ccda": patch\n---\n\nDocs: rewrite `docs-content/` capability claims as a capability doc, not a phase log.\n',
+          },
+        ],
+        '@cosyte/ccda',
+      ),
+    /trails off/,
   );
+});
+
+test('translation NEVER changes what a sentence claims', () => {
+  // Every one of these ends in a word an over-eager tail trim would eat, and every one is
+  // load-bearing. Measured across the caller repos' changesets and changelogs, 45 real sentences
+  // end this way. Inverting one on a public release page is a lie a well-formed-prose gate cannot
+  // catch, which is why the dangling list holds pure function words only.
+  for (const sentence of [
+    'The parser tolerates a truncated trailer, the emitter does not',
+    '`Dataset.get` / `has` take the 8-character `(group,element)` tag form only',
+    'R5 and DSTU2 are read-tolerance only',
+    'The certification is the qualified expert\'s, always',
+    'Both the sender and the receiver must agree, and each retries',
+  ]) {
+    assert.equal(toHeadline(`${sentence}.`).headline, sentence, `meaning changed: ${sentence}`);
+  }
+  // The truncation path may still trim, but only pure function words.
   assert.equal(trimDangling('and `reescape` emits a'), 'and `reescape` emits');
-  assert.equal(trimDangling('a repeated arm was never'), 'a repeated arm');
-  // A line that already ends in a real word is untouched.
+  assert.equal(trimDangling('the emitter does not'), 'the emitter does not');
+  assert.equal(trimDangling('take the tag form only'), 'take the tag form only');
   assert.equal(trimDangling('Add `profiles.epic`'), 'Add `profiles.epic`');
+});
+
+test('release.yml derives the notes exactly once, before the publish step', () => {
+  // The composition test below proves the CLI supports this shape. This proves the workflow
+  // actually uses it: re-introducing a second `prepare` after the publish would otherwise pass.
+  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
+  const prepares = [...workflow.matchAll(/release-notes\.mjs prepare\b/g)];
+  assert.equal(prepares.length, 1, 'the notes must be derived exactly once');
+  const asserts = [...workflow.matchAll(/release-notes\.mjs assert\b/g)];
+  assert.equal(asserts.length, 1);
+
+  const changesetsAction = workflow.indexOf('uses: changesets/action@');
+  assert.ok(changesetsAction > 0);
+  assert.ok(prepares[0].index < changesetsAction, 'prepare must run BEFORE the publish step');
+  assert.ok(asserts[0].index > changesetsAction, 'assert must run on the bytes just before publishing');
+  // Both steps must name the same file, or the assert guards nothing.
+  assert.equal([...workflow.matchAll(/\$RUNNER_TEMP\/release-notes\.md/g)].length, 2);
 });
 
 test('a single short but genuine change is a publishable release', () => {
