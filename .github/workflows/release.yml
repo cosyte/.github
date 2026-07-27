@@ -130,3 +130,59 @@ jobs:
               -F "client_payload[package]=$PACKAGE_NAME" \
               -F "client_payload[version]=$version"
           fi
+
+      # When a publish fails, npm writes the only useful diagnostic to
+      # /home/runner/.npm/_logs/<timestamp>-debug-0.log on an ephemeral runner, and nothing preserves
+      # it. Every failed publish this org has had discarded exactly the file the registry then asks
+      # for: @cosyte/fhir's E403 name-similarity ticket needed it and could not be given it. These
+      # two steps keep it.
+      #
+      # REDACTION. Measured on 2026-07-27 against npm 10.9.8 with an `_authToken` in .npmrc and
+      # `NODE_AUTH_TOKEN` set: at `--loglevel silly` the log records only config FILE PATHS, never
+      # their contents, and no Authorization header. So today's log is clean. The redaction below is
+      # defensive anyway, because the npm version moves under us, these are PUBLIC repos, and
+      # artifacts are downloadable by anyone with read access. If anything credential-shaped survives
+      # redaction the upload is skipped: a support diagnostic is not worth a leaked token.
+      - name: Collect the npm debug log
+        if: failure()
+        id: npm-log
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          logs=(~/.npm/_logs/*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "No npm debug log under ~/.npm/_logs, so this failure was not a publish. Nothing to collect."
+            exit 0
+          fi
+          dest="$RUNNER_TEMP/npm-debug-logs"
+          mkdir -p "$dest"
+          for log in "${logs[@]}"; do
+            sed -E \
+              -e 's/(_authToken|_auth|_password|authToken)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1\2REDACTED/gI' \
+              -e 's/([Aa]uthorization[^[:alnum:]]{0,4})(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+=\/-]+/\1\2REDACTED/g' \
+              -e 's/npm_[A-Za-z0-9]{36}/npm_REDACTED/g' \
+              "$log" > "$dest/$(basename "$log")"
+          done
+          # Assert on the bytes that would be uploaded, not on the fact that sed ran.
+          if grep -rqiE 'npm_[A-Za-z0-9]{36}|(_auth|_authToken|_password)[[:space:]]*[=:][[:space:]]*[^R[:space:]]|(bearer|basic)[[:space:]]+[A-Za-z0-9._~+=/-]{16,}' "$dest"; then
+            echo "::error::Credential-shaped text survived redaction in the npm debug log, so it will NOT be uploaded. Fix the redaction in cosyte/.github before relying on this artifact."
+            rm -rf "$dest"
+            exit 1
+          fi
+          version=$(node -p "require('./package.json').version" 2>/dev/null || echo unknown)
+          slug=$(printf '%s' "$PACKAGE_NAME" | tr '@/' '--' | sed 's/^-*//')
+          {
+            echo "collected=true"
+            echo "artifact-name=npm-debug-log-${slug}-${version}-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Collected ${#logs[@]} npm debug log(s) for ${PACKAGE_NAME}@${version}."
+      - name: Upload the npm debug log
+        if: ${{ failure() && steps.npm-log.outputs.collected == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.npm-log.outputs.artifact-name }}
+          path: ${{ runner.temp }}/npm-debug-logs/*.log
+          if-no-files-found: warn
+          retention-days: 30
