@@ -28,6 +28,14 @@ name: Release
 # consumed no changesets; a consumed changeset with an empty summary; an internal project identifier
 # (HL7-U, CCDA-P7, README-ORG-SWEEP); phase or slice language (Phase W, Phase 5b, "thirteenth
 # slice"); an ADR number; a U+2014 em dash; or a change no consumer of the package can observe.
+#
+# ORDERING. Every one of those refusals now sits BEFORE npm, and structurally rather than by
+# arrangement: `changesets/action` is only given a publish command when the notes gate has already
+# derived a body and proved its bytes fit, so a run that cannot say what it is shipping cannot reach
+# the registry. This used to be the other way round, with an error echo after the publish step
+# reporting that npm had the package and the gate had not run. A published version is permanent, so
+# that was a correction, not a gate. The one check that still has to follow the publish is the
+# reconciliation against the version Changesets actually reported, which does not exist until it has.
 
 on:
   workflow_call:
@@ -104,7 +112,11 @@ jobs:
       #      "does that tag exist yet". After publish the answer is always no, so a second derivation
       #      finds nothing and every successful release would end red with no release created.
       #
-      # On any push that is not a pending release this is a no-op that writes no file.
+      # On an ordinary push to main this is a no-op that writes no file and sets `is-release=false`,
+      # which withholds the publish command below. That is safe because "no release pending" means
+      # `v<version>` is already tagged, and this workflow tags only after a publish has succeeded.
+      # When the step cannot classify the commit at all it fails HERE instead, which is the case that
+      # used to publish first and complain afterwards.
       - name: Release notes must be derivable
         id: notes
         env:
@@ -120,13 +132,51 @@ jobs:
           pnpm test
           pnpm build
           pnpm attw
+      # Prove the BYTES before npm sees anything. `prepare` above validated the body it rendered in
+      # memory; this reads the finished file back through the entry point that knows nothing about
+      # how it was produced, and it runs while npm is still untouched. It used to run only after the
+      # publish step, which put an irreversible act ahead of a check.
+      - name: Release notes must be fit to publish
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          NOTES_VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          node .cosyte-release-tooling/scripts/release-notes.mjs assert \
+            --file "$RUNNER_TEMP/release-notes.md" \
+            --expect-version "$NOTES_VERSION" --expect-package "$PACKAGE_NAME"
       - name: Create release PR or publish
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
           # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
-          publish: pnpm run release
+          # THE ORDERING GATE, and the reason it is an input rather than a step condition: this is
+          # the only place the publish can be prevented, because `changesets/action` runs the publish
+          # command itself. Supplying it ONLY when the notes gate above derived a body and proved it
+          # fit means npm is unreachable until the check that guards it has passed. Before this, the
+          # workflow published first and then complained; a published version is permanent, so a
+          # complaint is not a gate.
+          #
+          # Read against the action's own source at the SHA pinned above, because the whole gate
+          # rests on how it branches. It publishes on exactly one arm, `!hasChangesets &&
+          # hasPublishScript`. With pending changesets it takes `case hasChangesets` and opens the
+          # "Version Packages" PR whether or not a publish command is set, so that path is untouched.
+          # With neither it logs and returns, having already set `published=false`, so the release
+          # step below is skipped: the same outcome as the `changeset publish` that used to run there
+          # and find nothing, since the notes gate reports no release pending precisely when
+          # `v<version>` is already tagged, and this pipeline creates that tag only after a publish
+          # has succeeded.
+          #
+          # ONE COSMETIC CONSEQUENCE, recorded rather than hidden. The action passes hasPublishScript
+          # into the "Version Packages" PR body, so on the version-PR run (where it is now false) the
+          # body offers "publish to npm yourself" instead of saying the packages publish on merge.
+          # The prose understates what merging does. It is left alone because correcting it means
+          # re-deriving "are there pending changesets" in bash against the action's own
+          # readChangesetState, and a predicate that disagrees with it by one empty changeset file
+          # hands the publish command back on the arm that actually publishes. The approval on the
+          # protected `release` environment, not this sentence, is the human gate on a publish.
+          publish: ${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}
           # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
           # below creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also
           # the wrong release: it carries no docs artifacts, and because every caller sets
@@ -165,8 +215,9 @@ jobs:
           # that broken tag and skipped the good one.
           tag="v${version}"
 
-          # A publish that the pre-publish gate never classified as a release commit means the two
-          # disagree about what just happened. Stop rather than guess.
+          # Unreachable now that the publish command is withheld unless `is-release` is true, and
+          # kept anyway: it costs one comparison, and it is the assertion that the gate above is
+          # actually load-bearing rather than merely present. If it ever fires, the wiring broke.
           if [ "$IS_RELEASE_COMMIT" != "true" ]; then
             echo "::error::npm published ${PACKAGE_NAME}@${version} but the release-notes gate did not" \
                  "recognise this commit as a release. Refusing to create a release body it never derived."
@@ -181,12 +232,12 @@ jobs:
             fi
           done
 
-          # Prove the BYTES the pre-publish gate derived, immediately before they are written. This
-          # is a separate entry point that knows nothing about how the file was produced: a check
-          # that merely confirms the renderer ran passes when the renderer returns nothing.
-          # `--expect-version`/`--expect-package` tie the body to what actually reached npm: the
-          # notes come from git, the version comes from Changesets, and a disagreement between them
-          # is a defect, not a detail.
+          # The reconciliation, and the only check that legitimately follows the publish: it compares
+          # the body against the version CHANGESETS REPORTED PUBLISHING, which does not exist until
+          # the publish has happened. The body's own fitness was already proved before npm was
+          # touched, by the identical `assert` call above; this run of it re-reads the same bytes
+          # against the one fact that was not available then. The notes come from git, the version
+          # comes from Changesets, and a disagreement between them is a defect, not a detail.
           notes="$RUNNER_TEMP/release-notes.md"
           node .cosyte-release-tooling/scripts/release-notes.mjs assert \
             --file "$notes" --expect-version "$version" --expect-package "$PACKAGE_NAME"
