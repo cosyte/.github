@@ -203,8 +203,8 @@ so only the unambiguously-internal determiner forms are rewritten.
   intended trade: a loud red beats a silent green carrying a meaningless release. Recovery is to
   create the release by hand, since re-running finds nothing left to publish.
 - **The "Version Packages" PR body tells you to publish by hand. Do not.** `changesets/action` writes
-  that sentence whenever it is opening the PR without a publish command set, which is now every time,
-  because the command is withheld until the notes gate has passed. Merging the PR is still what
+  that sentence whenever it is opening the PR without a publish command set, and the command is
+  withheld until the notes gate has passed. Merging the PR is still what
   releases; the publish then runs behind the protected `release` environment. The wording is left
   wrong on purpose: the only way to correct it is to re-derive "are there pending changesets"
   ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
