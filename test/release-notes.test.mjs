@@ -55,16 +55,40 @@ function loadFixtureFiles() {
     .map((name) => ({ id: name, text: readFileSync(join(FIXTURE_DIR, name), 'utf8') }));
 }
 
-function runCli(args) {
+function runCli(args, env = {}) {
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
     });
     return { status: 0, stdout, stderr: '' };
   } catch (error) {
     return { status: error.status ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
   }
+}
+
+/**
+ * Run `prepare` the way the workflow does, and hand back the step outputs it wrote.
+ *
+ * The outputs are not a diagnostic here: `is-release` is what release.yml passes to
+ * `changesets/action` as the publish command, so this is the value that decides whether npm is
+ * reached at all.
+ */
+function runPrepare(dir, { out = join(dir, 'notes.md'), package: pkg = '@cosyte/hl7' } = {}) {
+  const outputsFile = join(mkdtempSync(join(tmpdir(), 'release-notes-outputs-')), 'outputs.txt');
+  writeFileSync(outputsFile, '');
+  const result = runCli(['prepare', '--repo', dir, '--package', pkg, '--out', out], {
+    GITHUB_OUTPUT: outputsFile,
+  });
+  const outputs = Object.fromEntries(
+    readFileSync(outputsFile, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+  rmSync(dirname(outputsFile), { recursive: true, force: true });
+  return { ...result, outputs };
 }
 
 // ===============================================================================================
@@ -435,21 +459,29 @@ test('the gate sees the wreckage a cut leaves in the bytes', () => {
   }
 });
 
-test('release.yml derives the notes exactly once, before the publish step', () => {
+test('release.yml derives the notes once, and asserts them on both sides of the publish step', () => {
   // The composition test below proves the CLI supports this shape. This proves the workflow
   // actually uses it: re-introducing a second `prepare` after the publish would otherwise pass.
+  //
+  // TWO asserts, and which side of the publish each one sits on is the whole of the ordering fix.
+  // The first proves the finished bytes while npm is still untouched, so a body that is unfit costs
+  // a re-run and nothing else. The second reconciles those same bytes against the version Changesets
+  // reported publishing, which does not exist any earlier and is the only check that legitimately
+  // follows the publish. A single assert on the far side, which is what this workflow had, makes the
+  // check a report on an irreversible act rather than a gate in front of it.
   const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
   const prepares = [...workflow.matchAll(/release-notes\.mjs prepare\b/g)];
   assert.equal(prepares.length, 1, 'the notes must be derived exactly once');
   const asserts = [...workflow.matchAll(/release-notes\.mjs assert\b/g)];
-  assert.equal(asserts.length, 1);
+  assert.equal(asserts.length, 2, 'the bytes must be proved before the publish and reconciled after it');
 
   const changesetsAction = workflow.indexOf('uses: changesets/action@');
   assert.ok(changesetsAction > 0);
   assert.ok(prepares[0].index < changesetsAction, 'prepare must run BEFORE the publish step');
-  assert.ok(asserts[0].index > changesetsAction, 'assert must run on the bytes just before publishing');
-  // Both steps must name the same file, or the assert guards nothing.
-  assert.equal([...workflow.matchAll(/\$RUNNER_TEMP\/release-notes\.md/g)].length, 2);
+  assert.ok(asserts[0].index < changesetsAction, 'the body must be proved fit before npm is reached');
+  assert.ok(asserts[1].index > changesetsAction, 'the published version must still be reconciled after');
+  // Every one of the three steps must name the same file, or the asserts guard nothing.
+  assert.equal([...workflow.matchAll(/\$RUNNER_TEMP\/release-notes\.md/g)].length, 3);
 });
 
 test('a single short but genuine change is a publishable release', () => {
@@ -932,4 +964,90 @@ test('assert goes red on the stub body, on banned content, and on a missing file
   assert.equal(onMissing.status, 1);
   assert.match(onMissing.stderr, /Refusing to create a release without derived notes/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ===============================================================================================
+// npm is downstream of the gate, not upstream of a complaint
+//
+// The workflow used to publish and THEN check, with an error echo reporting that npm had the
+// package and the notes gate had not classified the commit. A published version is permanent, so
+// that echo was a correction. `is-release` is now the publish permission itself, which is why these
+// tests are about the OUTPUT and not about the log.
+// ===============================================================================================
+
+test('prepare grants publish permission only for a pending release', () => {
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+
+  const pending = runPrepare(dir);
+  assert.equal(pending.status, 0, pending.stderr);
+  assert.equal(pending.outputs['is-release'], 'true');
+  assert.equal(pending.outputs.version, '0.0.2', 'the publish step needs the version to assert on');
+
+  // `changeset publish` has now run and tagged, which is the state of every ordinary push to main
+  // between releases. Permission is withheld, and withholding it is what `changeset publish` would
+  // have done anyway: there is nothing left to publish.
+  run('tag', 'v0.0.2');
+  const settled = runPrepare(dir, { out: join(dir, 'again.md') });
+  assert.equal(settled.status, 0, settled.stderr);
+  assert.equal(settled.outputs['is-release'], 'false');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('inspectRelease reports WHY nothing is pending in a form the caller can act on', () => {
+  // The prose is for a human; `code` is what decides whether a run may publish, and the three cases
+  // are not interchangeable.
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  run('tag', 'v0.0.2');
+  assert.equal(inspectRelease(dir, '@cosyte/hl7').code, 'already-released');
+  rmSync(dir, { recursive: true, force: true });
+
+  const bare = makeRepo();
+  writeFile(bare.dir, 'README.md', 'no package here\n');
+  bare.run('add', '-A');
+  bare.run('commit', '-qm', 'one');
+  assert.equal(inspectRelease(bare.dir, '@cosyte/hl7').code, 'no-package-json');
+  rmSync(bare.dir, { recursive: true, force: true });
+});
+
+test('prepare goes RED, before npm, when it cannot tell what the commit would publish', () => {
+  // This exited 0 and withheld nothing before, which was survivable only because the publish ran
+  // regardless and the disagreement was reported afterwards. Now that the publish is downstream of
+  // this output, exiting 0 would mean a silent green that shipped nothing on a commit that may have
+  // been a release. So it stops here, with npm untouched.
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'README.md', 'no package here\n');
+  run('add', '-A');
+  run('commit', '-qm', 'one');
+
+  const result = runPrepare(dir);
+  assert.equal(result.status, 1, `expected a refusal, got: ${result.stdout}`);
+  assert.match(result.stderr, /::error::/);
+  assert.match(result.stderr, /Cannot establish what a publish/);
+  assert.match(result.stderr, /Nothing has been published/);
+  assert.equal(result.outputs['is-release'], 'false');
+  assert.throws(() => readFileSync(join(dir, 'notes.md'), 'utf8'), /ENOENT/, 'nothing may be written');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A gate the workflow does not consult is documentation. `is-release` only guards anything because
+// release.yml hands it to `changesets/action` as the publish command, and that wiring lives in a
+// file the script cannot see. Six gates in this org have shipped green while unable to observe their
+// subject; this assertion is one line and it is the one that would have caught a seventh.
+test('release.yml withholds the publish command unless the notes gate derived notes', () => {
+  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
+  const publishInput = /^\s*publish:\s*(.+)$/m.exec(workflow);
+  assert.ok(publishInput, 'release.yml no longer passes a publish input to changesets/action');
+  // The WHOLE expression, not a substring of it. Merely requiring the condition to appear somewhere
+  // passes on `is-release == 'true' && '' || 'pnpm run release'`, which contains exactly the same
+  // text and publishes precisely when the gate says not to. This is one line, it decides whether npm
+  // can be reached, and there is no edit to it that should be anything other than deliberate.
+  assert.equal(
+    publishInput[1].trim(),
+    "${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}",
+    'the publish command must be the notes gate and nothing else',
+  );
+  // The version-PR half must NOT be conditional. changesets/action opens the "Version Packages" PR
+  // whenever pending changesets exist, whether or not a publish command is set, so gating `version`
+  // as well would stop releases from ever starting.
+  assert.match(workflow, /^\s*version:\s*pnpm run version\s*$/m);
 });

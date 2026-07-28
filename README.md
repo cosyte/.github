@@ -103,7 +103,14 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 | An opening sentence too long for a bullet | over 200 characters, where the alternative is cutting it |
 | A bullet that was cut short | a one-letter stump, or an over-length entry, in the finished bytes |
 | Mangled prose | doubled or orphaned clause punctuation, an emptied parenthetical |
+| An unclassifiable commit | no readable `package.json` at `HEAD`, or a version that appears in no commit |
 | Wrong release | a body that disagrees with the version or package that reached npm |
+
+**Every refusal above bar the last fires before npm is reached**, and structurally rather than by
+arrangement: `changesets/action` is only handed a publish command once the body has been derived and
+its bytes proved fit, so a run that cannot say what it is shipping cannot publish. Only "wrong
+release" can fire afterwards, because the version it reconciles against is what Changesets reported
+publishing and does not exist any sooner.
 
 The renderer **translates** first (identifiers belong in the changeset, the changelog, the commit and
 the roadmap, never in a release body) and the gate then proves the translation worked. Translation is
@@ -184,9 +191,29 @@ so only the unambiguously-internal determiner forms are rewritten.
   fix is to amend the changeset and re-run. Deriving a second time after publishing cannot work,
   because `changeset publish` creates the `v<version>` tag locally and that tag is how the script
   answers "is a release pending".
-- **A failure after the publish step leaves the package on npm with no GitHub release.** That is the
+- **npm is downstream of the gate.** `prepare` is the permission to publish, not a report on it: its
+  `is-release` output is what `release.yml` passes to `changesets/action` as the publish command, so
+  a run that could not derive a fit release body never reaches the registry. The body is proved a
+  second time, from the finished bytes, in the step immediately before that one. Until 2026-07-28 the
+  order was publish first and check second, with an error afterwards saying npm had the package and
+  the gate had not run. **A published version is permanent, so that was a correction, not a gate.**
+- **The one check that still follows the publish is the reconciliation**, which compares the body
+  against the version Changesets reported publishing. That version does not exist any earlier. A
+  disagreement there still leaves the package on npm with no GitHub release, and that remains the
   intended trade: a loud red beats a silent green carrying a meaningless release. Recovery is to
   create the release by hand, since re-running finds nothing left to publish.
+- **The "Version Packages" PR body tells you to publish by hand. Do not.** `changesets/action` writes
+  that sentence whenever it is opening the PR without a publish command set, and the command is
+  withheld until the notes gate has passed. Merging the PR is still what
+  releases; the publish then runs behind the protected `release` environment. The wording is left
+  wrong on purpose: the only way to correct it is to re-derive "are there pending changesets"
+  ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
+  hand the publish command back on the arm that actually publishes.
+- **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is only
+  benign when it means `v<version>` is already tagged, which is every ordinary push to main between
+  releases. If `package.json` is unreadable at `HEAD`, or the version at `HEAD` appears in no commit
+  (a shallow checkout, so mind `fetch-depth: 0`), the run stops there rather than letting the publish
+  step decide on its own.
 
 ### CHANGELOG promotion (specified, not implemented)
 

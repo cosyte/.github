@@ -68,6 +68,12 @@
 // handed to `gh release create`. A check that confirms "we called the renderer" passes when the
 // renderer returns nothing, which is the defect this whole script exists to remove.
 //
+// `prepare` IS THE PERMISSION TO PUBLISH, not a report on it. Its `is-release` output is what
+// release.yml passes to `changesets/action` as the publish command, so a run where prepare declined
+// to derive notes never reaches npm at all. That is why an unclassifiable commit is a hard failure
+// here rather than a quiet "nothing pending": the two look identical from the workflow's side, and
+// one of them is a release about to go out with no record of what it contains.
+//
 // Exit codes: 0 ok, 1 the release notes are not fit to publish, 2 bad usage.
 
 import { execFileSync } from 'node:child_process';
@@ -990,18 +996,42 @@ export function findVersionCommit(repo, version) {
  * A release is pending when the version in package.json has no `v<version>` tag yet. That is
  * exactly when `changeset publish` will publish, so the gate and the publish agree on what is
  * happening without either guessing.
+ *
+ * `code` says WHY there is nothing pending, and the caller acts on it rather than on the prose,
+ * because only one of the three is benign:
+ *
+ *   already-released   the version is tagged, so `changeset publish` has nothing to do. This is the
+ *                      state of every ordinary push to main between releases. Quiet, exit 0.
+ *   no-package-json    there is no version to reason about at all.
+ *   no-version-commit  the version at HEAD appears in no commit, so what this push would publish
+ *                      cannot be established from git.
+ *
+ * The last two mean the pipeline cannot classify the commit. `cmdPrepare` stops the run there, while
+ * npm is still untouched, rather than letting the publish step decide on its own.
  */
 export function inspectRelease(repo, packageName) {
   const version = packageVersionAt(repo, 'HEAD');
-  if (version === null) return { isRelease: false, reason: 'no readable package.json at HEAD' };
+  if (version === null) {
+    return { isRelease: false, code: 'no-package-json', reason: 'no readable package.json at HEAD' };
+  }
 
   if (gitOrNull(repo, ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}`]) !== null) {
-    return { isRelease: false, reason: `v${version} is already tagged, so no release is pending` };
+    return {
+      isRelease: false,
+      code: 'already-released',
+      version,
+      reason: `v${version} is already tagged, so no release is pending`,
+    };
   }
 
   const commit = findVersionCommit(repo, version);
   if (commit === null) {
-    return { isRelease: false, reason: `no commit introduces version ${version}` };
+    return {
+      isRelease: false,
+      code: 'no-version-commit',
+      version,
+      reason: `no commit introduces version ${version}`,
+    };
   }
   if (!commit.hasParent) {
     throw new NotesError(
@@ -1082,8 +1112,26 @@ function cmdPrepare(options) {
 
   const release = inspectRelease(repo, packageName);
   if (!release.isRelease) {
-    process.stdout.write(`No release pending: ${release.reason}.\n`);
     setOutput('is-release', 'false');
+    // `is-release` is what release.yml hands to `changesets/action` as permission to publish, so a
+    // false here means npm is not reached at all. That is safe only when we KNOW there is nothing to
+    // publish, which is what `already-released` says: the version is tagged, and this pipeline only
+    // ever creates that tag after a successful publish.
+    //
+    // The other codes are different in kind. They mean this run could not work out what the commit
+    // is, and answering "then do not publish" would be a guess dressed as a decision: it would end
+    // green having shipped nothing, on a commit that may well have been a release. Stop instead, red
+    // and before the publish step, which is the whole point of deriving the notes first.
+    if (release.code !== 'already-released') {
+      fail(
+        `Cannot establish what a publish of ${packageName} from this commit would ship: ` +
+          `${release.reason}. Release notes are derived from git, so an unclassifiable commit has no ` +
+          `notes, and publishing to npm is permanent. Nothing has been published. Check that the ` +
+          `checkout has full history (fetch-depth: 0) and that package.json is readable at HEAD.`,
+      );
+      return;
+    }
+    process.stdout.write(`No release pending: ${release.reason}.\n`);
     return;
   }
 
