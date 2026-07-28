@@ -398,8 +398,13 @@ function separatorAfter(whole, end, edgeIsSeparator) {
   return CLAUSE_SEPARATOR.test(after[0]) && /^.(\s|$)/.test(after);
 }
 
-/** The rules the translator removes, in the order it removes them. */
-const TRANSLATION_RULES = [
+/**
+ * The rules the translator removes, in the order it removes them.
+ *
+ * Exported so that a tool asking "was this text removed on purpose?" asks the translator rather
+ * than restating its rules, which would drift the moment a new programme prefix is added above.
+ */
+export const TRANSLATION_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
   { name: 'phase or slice language', pattern: PHASE_TALK },
   { name: 'ADR reference', pattern: ADR_REFERENCE },
