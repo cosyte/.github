@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   assertPublishableNotes,
   collectHeadlines,
+  DANGLING_TAIL,
   dejargon,
   extractChangeEntries,
   findViolations,
@@ -27,13 +28,13 @@ import {
   headlineOf,
   inspectRelease,
   isConsumerFacing,
+  isSafeCut,
   parseChangeset,
   renderNotes,
   rewriteEmDashes,
   sanitizeInternal,
   tidy,
   toHeadline,
-  trimDangling,
 } from '../scripts/release-notes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -216,11 +217,222 @@ test('translation NEVER changes what a sentence claims', () => {
   ]) {
     assert.equal(toHeadline(`${sentence}.`).headline, sentence, `meaning changed: ${sentence}`);
   }
-  // The truncation path may still trim, but only pure function words.
-  assert.equal(trimDangling('and `reescape` emits a'), 'and `reescape` emits');
-  assert.equal(trimDangling('the emitter does not'), 'the emitter does not');
-  assert.equal(trimDangling('take the tag form only'), 'take the tag form only');
-  assert.equal(trimDangling('Add `profiles.epic`'), 'Add `profiles.epic`');
+  // Nothing walks back off a dangling word any more, but the word list still decides what counts as
+  // one, so the list itself is what has to stay honest. Negations and quantifiers must never join
+  // it: reading "the emitter does not" as a dangling tail is how a gate starts editing meaning.
+  assert.ok(DANGLING_TAIL.test('and `reescape` emits a'), 'a pure function word is a dangling tail');
+  assert.ok(!DANGLING_TAIL.test('the emitter does not'), '`not` must never be treated as danglable');
+  assert.ok(!DANGLING_TAIL.test('take the tag form only'), '`only` must never be treated as danglable');
+  assert.ok(!DANGLING_TAIL.test('Add `profiles.epic`'));
+  for (const word of ['not', 'no', 'never', 'only', 'both', 'more', 'each']) {
+    assert.ok(!DANGLING_TAIL.test(`the emitter is ${word}`), `${word} must not be in the list`);
+  }
+});
+
+// ===============================================================================================
+// TRAP 2 continued: the mid-sentence cut, and the length cut. Both shipped before they were caught.
+// ===============================================================================================
+
+test('a cut is taken only where the sentence survives it', () => {
+  //          0123456789...
+  const text = 'Reorder the P1 documentation pass';
+  assert.equal(isSafeCut(text, 12, 28), true, 'a modifier inside one clause can be lifted out');
+  assert.equal(isSafeCut('Ship it, Phase 5b', 9, 17), true, 'the tail of the sentence goes with it');
+  assert.equal(isSafeCut('Phase 7: builder emits X', 0, 7), true, 'the head of the sentence goes with it');
+  assert.equal(isSafeCut('Emit X, Phase 5b, and Y', 8, 16), true, 'a whole clause between separators');
+  // The measured defect: a separator on exactly one side means the rest of the clause stays behind.
+  assert.equal(isSafeCut('It no longer carries phase language, and more', 21, 35), false);
+});
+
+test('DEFECT 1: a mid-clause cut is REFUSED, and the banned text survives so the gate can see it', () => {
+  // Verbatim from hl7@1c5c0f5:.changeset/public-surface-hygiene-dist.md, which was one approval
+  // away from a real @cosyte/hl7 publish. Before this change the translator produced "...no longer
+  // carries, item identifiers or ADR numbers...", reported changed: true, and findViolations
+  // reported NOTHING, because a mangled sentence carries no banned bytes to find.
+  const summary =
+    '**The published JSDoc no longer carries phase language, item identifiers or ADR numbers, and\n' +
+    '`src/` doc comments are gated (`PUBLIC-SURFACE-HYGIENE`).** Doc comments compile into `dist`.\n';
+  const { headline, refused } = toHeadline(summary);
+
+  assert.ok(headline.includes('carries phase language,'), `sentence was mangled: ${JSON.stringify(headline)}`);
+  assert.deepEqual(
+    refused.map((r) => r.match),
+    ['phase language'],
+  );
+  // And now the gate can observe it, which is the whole point: leaving the banned span in place is
+  // what puts something in the bytes for a byte-level rule to find.
+  const violations = findViolations(`### What changed\n\n- ${headline}.\n`);
+  assert.ok(
+    violations.some((v) => v.rule === 'phase or slice language'),
+    `the gate must see it, got ${JSON.stringify(violations)}`,
+  );
+  // End to end, the release stops before anything is published.
+  assert.throws(
+    () => collectHeadlines([{ id: 'dist.md', text: `---\n"@cosyte/hl7": patch\n---\n\n${summary}` }], '@cosyte/hl7'),
+    /sits in the middle of a clause/,
+  );
+});
+
+test('DEFECT 2: an over-long opening sentence is REFUSED, never silently shortened', () => {
+  // The real ccda case, verbatim from ccda@.changeset/ccda-nullflavor-residuals.md. The published
+  // v0.0.2 body carries this cut to "...naming **two different drugs** with o." to this day.
+  const long =
+    'Close the two residuals the previous change named and argued rather than fixed: a **patient ' +
+    'identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different ' +
+    'drugs** with one silently dropped.';
+  const head = headlineOf(long);
+  assert.ok(head.endsWith('with one silently dropped'), `the sentence was cut: ${JSON.stringify(head)}`);
+  assert.ok(head.length > 200, 'this fixture must exercise the over-cap path');
+  assert.throws(
+    () => collectHeadlines([{ id: 'residuals.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${long}\n` }], '@cosyte/ccda'),
+    /opening sentence is \d+ characters/,
+  );
+});
+
+test('the gate sees a body that was cut short, whatever produced it', () => {
+  // `assert` re-reads finished bytes and knows nothing about the renderer, so these are the shapes
+  // it can actually observe: the stump a word-boundary cut leaves, a dangling function word, and an
+  // entry too long to be a bullet.
+  const stump = '### What changed\n\n- A medication naming two different drugs with o.\n';
+  assert.ok(
+    findViolations(stump).some((v) => v.rule === 'a change entry cut short mid-sentence'),
+    JSON.stringify(findViolations(stump)),
+  );
+  const dangling = '### What changed\n\n- Rewrite the capability claims as a capability doc, not a.\n';
+  assert.ok(findViolations(dangling).some((v) => v.rule === 'a change entry cut short mid-sentence'));
+  const overlong = `### What changed\n\n- ${'A described change that runs on. '.repeat(8)}\n`;
+  assert.ok(findViolations(overlong).some((v) => v.rule === 'a change entry longer than a release bullet'));
+  for (const body of [stump, dangling, overlong]) {
+    assert.ok(assertPublishableNotes(body).some((p) => p.startsWith('line 3 carries')), body);
+  }
+
+  // And a single-letter API name is not a stump: the code span sits between the letter and the end.
+  assert.deepEqual(findViolations('### What changed\n\n- Model the query record `Q`.\n'), []);
+});
+
+test('nothing tidies further than the cut it is tidying', () => {
+  // The X12 composite is verbatim from cosyte/x12's own 837P edge-case fixture. A revision of the
+  // mid-clause fix collapsed adjacent clause punctuation over the finished string, to close the
+  // "X, , and Y" a whole-clause cut leaves. It deleted three empty composite positions here and
+  // moved the amount from HI-01-05 to HI-01-03, on a sentence with no internal reference in it, and
+  // the gate scored the corrupted output clean. The collapse now happens only at the seam.
+  for (const text of [
+    'Tolerate an empty composite position in `HI*BE:01:::500:1` on parse',
+    'Expose `parse()` and `serialize()` on the reader',
+    'Read the ISA at 10:30 exactly',
+    'Emit the ratio as 1:2:1 verbatim',
+  ]) {
+    assert.equal(sanitizeInternal(text), text, `${JSON.stringify(text)} must survive untouched`);
+    assert.deepEqual(findViolations(`### What changed\n\n- ${text}.\n`), [], text);
+  }
+  // And the seam itself is still closed when a whole clause does come out.
+  assert.equal(sanitizeInternal('Emit warnings, Phase 5b, and round-trip the ISA'), 'Emit warnings, and round-trip the ISA');
+
+  // The cases above never reach the collapse, because there is nothing in them to cut. These two
+  // do. `CI-1` is a real prefix; in the first it sits between two STRUCTURAL colons binding an X12
+  // composite, so the collapse must DECLINE and leave the position empty, or `500` moves from the
+  // fifth composite position to the third. A separator only ends a clause when whitespace sits on
+  // the far side of it. In the second the same token sits between two real clause commas, so the
+  // collapse must FIRE, which is what makes the first assertion evidence rather than an accident.
+  assert.equal(
+    sanitizeInternal('Fix `HI*BE:CI-1:500:1` so the amount lands right'),
+    'Fix `HI*BE::500:1` so the amount lands right',
+  );
+  assert.equal(sanitizeInternal('Read the ISA at 10:30, CI-1, exactly'), 'Read the ISA at 10:30, exactly');
+  // A full stop joins two sentences, not two clauses, so its comma stays.
+  assert.equal(sanitizeInternal('Fix A. Phase 5b, and C'), 'Fix A., and C');
+});
+
+test('headlineOf never emits a sentence stop followed by a space, which the collapse relies on', () => {
+  // The seam collapse is safe partly because a headline cannot contain "X. Y": headlineOf ends the
+  // sentence there. That invariant is load-bearing, so it is asserted rather than assumed.
+  for (const text of [
+    'Fix A. Then fix B.',
+    'Correct the MSH-9 lookup. Also the MSH-10 echo.',
+    '**Bold lead-in.** Then detail. And more.',
+    'Ship v0.0.2 and move on.',
+  ]) {
+    assert.ok(!/[.!?]\s/.test(headlineOf(text)), `${JSON.stringify(headlineOf(text))} carries a stop and a space`);
+  }
+});
+
+test('a span glued to its neighbour is part of one word, and is refused', () => {
+  // `The MLLP-1-driven reconnect` used to translate to `The -driven reconnect`.
+  const { headline, refused } = toHeadline('The MLLP-1-driven reconnect now backs off.');
+  assert.equal(headline, 'The MLLP-1-driven reconnect now backs off');
+  assert.deepEqual(refused.map((r) => r.match), ['MLLP-1']);
+  assert.equal(isSafeCut('The MLLP-1-driven reconnect', 4, 10), false);
+});
+
+test('a parenthetical is cleaned against the whole sentence, not one segment at a time', () => {
+  // Same defect as DEFECT 1, one parenthesis away. Splitting on commas first made the segment's own
+  // end look like the end of the text, so the cut read as a safe tail cut and was taken:
+  // "(it no longer carries, item identifiers or ADR numbers)" shipped.
+  const { headline } = toHeadline(
+    'Gate the published JSDoc (it no longer carries phase language, item identifiers or ADR numbers) on every build.',
+  );
+  assert.ok(!headline.includes('carries,'), `mangled: ${JSON.stringify(headline)}`);
+  assert.equal(headline, 'Gate the published JSDoc (item identifiers or ADR numbers) on every build');
+});
+
+test('a complete sentence is never read as a cut-off one', () => {
+  // Every one of these is correct English that ends in a word a wider truncation rule eats. The
+  // second is from ccda/.changeset/ccda-silent-clinical-data.md, which a real @cosyte/ccda release
+  // consumed: refusing it would have blocked a publish on a lie.
+  for (const entry of [
+    'Read the field exactly the way the sender wrote it',
+    'Close four instances of one defect class: the parser got quieter the more broken the document was',
+    'Pass an unknown Z-segment through to the emitter as is',
+    'Convert every dose quantity the builder emits to mL',
+    'Report the potassium result in mmol per L',
+    'Accept a blood group recorded as A, B, AB, or O',
+    'Emit the acknowledgement code AA',
+    'Model the query record `Q`',
+    'R5 and DSTU2 are read-tolerance only',
+  ]) {
+    assert.deepEqual(findViolations(`### What changed\n\n- ${entry}.\n`), [], entry);
+  }
+});
+
+test('the renderer and the gate agree on what fits in a bullet, at the cap exactly', () => {
+  // renderNotes appends the full stop, so a headline of exactly the cap renders one character over
+  // it. A gate that refuses what its own renderer produces is a gate nobody can satisfy.
+  for (const length of [198, 199, 200]) {
+    const headline = `Correct the MSH-9 structure lookup ${'x'.repeat(length - 35)}`;
+    assert.equal(headline.length, length);
+    const body = renderNotes({ packageName: '@cosyte/hl7', version: '0.0.3', headlines: [headline] });
+    assert.deepEqual(assertPublishableNotes(body), [], `${length} characters must pass both halves`);
+  }
+
+  // The cap is measured on what SHIPS, so translation is accounted for in both directions.
+  const frontmatter = '---\n"@cosyte/hl7": patch\n---\n\n';
+  const grows = `Correct the MSH-9 lookup in the final slice ${'x'.repeat(156)}`;
+  assert.equal(grows.length, 200, 'the author sentence is exactly at the cap');
+  assert.equal(toHeadline(`${grows}.`).headline.length, 201, '"slice" -> "change" pushes it over');
+  assert.throws(
+    () => collectHeadlines([{ id: 'g.md', text: `${frontmatter}${grows}.\n` }], '@cosyte/hl7'),
+    /is 201 characters/,
+  );
+
+  const shrinks = `Add conformance-profile tooling (HL7-U, roadmap Phase U) ${'x'.repeat(150)}`;
+  assert.ok(shrinks.length > 200, 'the author sentence is over the cap');
+  const { kept } = collectHeadlines([{ id: 's.md', text: `${frontmatter}${shrinks}.\n` }], '@cosyte/hl7');
+  assert.equal(kept.length, 1, 'but the bullet that ships fits, so it is not refused');
+  assert.ok(kept[0].length <= 200);
+});
+
+test('the gate sees the wreckage a cut leaves in the bytes', () => {
+  for (const [label, line] of [
+    ['doubled clause punctuation', 'Emit warnings,, and round-trip the ISA byte-exact.'],
+    ['a gap before punctuation', 'Emit warnings for every segment , and round-trip the ISA.'],
+    ['an empty parenthetical', 'Emit warnings for every unknown segment ( ) on parse.'],
+  ]) {
+    const body = `### What changed\n\n- ${line}\n`;
+    assert.ok(
+      findViolations(body).some((v) => v.rule.startsWith('mangled prose')),
+      `${label} must be caught, got ${JSON.stringify(findViolations(body))}`,
+    );
+  }
 });
 
 test('release.yml derives the notes exactly once, before the publish step', () => {
@@ -273,13 +485,11 @@ test('headlineOf takes the first sentence, including one closed inside emphasis'
   );
 });
 
-test('an over-long opening sentence is cut at a word boundary, not mid-word', () => {
-  const long = `Ratify the parser choice and add ${'the first runtime dependency '.repeat(12)}chosen for safety`;
+test('headlineOf never shortens: the first sentence comes back entire, however long', () => {
+  const long = `Ratify the parser choice and add ${'the first runtime dependency '.repeat(12)}chosen for safety.`;
   const head = headlineOf(long);
-  assert.ok(head.length <= 200);
-  assert.ok(long.startsWith(head), 'the headline must be a real prefix of the source');
-  assert.ok(long[head.length] === undefined || long[head.length] === ' ', 'the cut fell mid-word');
-  assert.ok(!/\s(a|an|the|and|of|to|for|with)$/i.test(head), `dangling function word: ${JSON.stringify(head)}`);
+  assert.equal(head, long.replace(/\.$/, ''), 'the whole sentence must survive');
+  assert.ok(head.length > 200, 'and it is over the bullet cap, which collectHeadlines refuses');
 });
 
 test('changes a consumer cannot observe are recognised', () => {
@@ -665,6 +875,43 @@ test('prepare goes red when a consumed changeset says nothing', () => {
   assert.match(result.stderr, /blank\.md[\s\S]*summary is empty/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+// Seeded end to end, because a refusal that has never been watched fail is not a gate. Each shape
+// is run through the real CLI red, then the changeset is rewritten the way its author would rewrite
+// it and the same CLI is watched green.
+for (const [label, bad, good, expected] of [
+  [
+    'an identifier the sentence is built around',
+    // hl7@1c5c0f5:.changeset/public-surface-hygiene-dist.md, held one approval short of a publish.
+    'The published JSDoc no longer carries phase language, item identifiers or ADR numbers, and `src/` doc comments are gated.',
+    'The published JSDoc no longer carries internal project bookkeeping, and `src/` doc comments are gated.',
+    /sits in the middle of a clause/,
+  ],
+  [
+    'an opening sentence too long for a bullet',
+    'Close the two residuals the previous change named and argued rather than fixed: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
+    'Close two reading defects: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
+    /opening sentence is \d+ characters/,
+  ],
+]) {
+  test(`prepare goes red on ${label}, and green once it is rewritten`, () => {
+    const frontmatter = '---\n"@cosyte/hl7": patch\n---\n\n';
+    const red = makeVersionCommitRepo({ changesets: { 'a.md': `${frontmatter}${bad}\n` } });
+    const onBad = runCli(['prepare', '--repo', red.dir, '--package', '@cosyte/hl7', '--out', join(red.dir, 'n.md')]);
+    assert.equal(onBad.status, 1, `expected a refusal, got: ${onBad.stdout}`);
+    assert.match(onBad.stderr, expected);
+    assert.throws(() => readFileSync(join(red.dir, 'n.md'), 'utf8'), /ENOENT/, 'nothing may be written');
+    rmSync(red.dir, { recursive: true, force: true });
+
+    const green = makeVersionCommitRepo({ changesets: { 'a.md': `${frontmatter}${good}\n` } });
+    const out = join(green.dir, 'n.md');
+    const onGood = runCli(['prepare', '--repo', green.dir, '--package', '@cosyte/hl7', '--out', out]);
+    assert.equal(onGood.status, 0, onGood.stderr);
+    const body = readFileSync(out, 'utf8');
+    assert.deepEqual(assertPublishableNotes(body, { expectVersion: '0.0.2', expectPackage: '@cosyte/hl7' }), []);
+    rmSync(green.dir, { recursive: true, force: true });
+  });
+}
 
 test('assert goes red on the stub body, on banned content, and on a missing file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'release-notes-assert-'));

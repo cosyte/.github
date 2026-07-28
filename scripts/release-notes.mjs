@@ -14,6 +14,31 @@
 // gate then proves the translation worked and FAILS the run if anything banned survived. Stripping
 // is never silent: every rewrite and every dropped change is printed.
 //
+// THE TRANSLATOR ONLY EVER CUTS WHERE THE CUT IS SAFE, and refuses otherwise. Removing a phrase
+// from the middle of a clause leaves prose that does not parse: "no longer carries phase language,
+// item identifiers or ADR numbers" became "no longer carries, item identifiers or ADR numbers", and
+// nothing downstream could see it, because a mangled sentence carries no banned bytes to find. A
+// gate cannot observe grammar. So the fix is upstream of the gate: a cut is taken only at a
+// boundary where the sentence survives it (the head, the tail, a whole clause, or a modifier inside
+// one clause), and any other cut is REFUSED with the changeset named. Inside a parenthetical the
+// same test DROPS the segment instead, because a parenthetical is by construction removable and a
+// clause in a sentence is not. Refusing costs a re-version before anything is published; mangling
+// costs a permanent public release page. See isSafeCut.
+//
+// AND EVERY CLEANUP AFTER A CUT REACHES NO FURTHER THAN THE CUT. This was learned inside this very
+// change: a revision of it collapsed adjacent clause punctuation over the whole finished string, to
+// tidy the "X, , and Y" a whole-clause cut leaves. It rewrote `HI*BE:01:::500:1` to `HI*BE:01:500:1`
+// in a code span an author had typed correctly, moving an amount into the wrong X12 composite
+// position, on prose that had no internal reference in it at all. A tidy-up with a wider reach than
+// the cut it is tidying is the same defect wearing different clothes.
+//
+// AND THE TRANSLATOR NEVER SHORTENS A SENTENCE. An over-long opening sentence used to be cut at the
+// nearest word boundary, silently, which published "...a medication naming two different drugs with
+// o." to @cosyte/ccda v0.0.2 and dropped a whole third clause from another entry in the same body.
+// 14 entries across 7 of the 15 live releases carry that cut, re-derived from what each consumed.
+// A headline is now the author's first sentence entire, or the release stops and asks for a shorter
+// one. Same reasoning: a truncation that produces well-formed prose is invisible to any gate.
+//
 // WHAT THE GATE DOES AND DOES NOT COVER, stated plainly because the distinction matters. The gate
 // enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so it cannot catch
 // an identifier from a programme prefix nobody has added to that list yet, and no rule could: the
@@ -21,6 +46,15 @@
 // `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`. What the gate DOES buy is that a rule can
 // never be quietly bypassed downstream: it re-reads the finished bytes, so a change to the renderer,
 // the workflow, or the source of the text cannot ship banned content without tripping it.
+//
+// The gate reads the residue of a bad cut, not the grammar: doubled or orphaned clause punctuation,
+// a parenthetical emptied of its contents, a one-letter stump at the end of an entry, an entry
+// longer than a headline. Those are the shapes a cut leaves BEHIND in the bytes, and they are
+// deliberately narrow, because every wider version refuses complete sentences: "...through as is.",
+// "...the more broken the document was.", "...recorded as A, B, AB, or O." are all correct English
+// and one of them is from a changeset a real release consumed. Refusing a correct sentence blocks a
+// publish on a lie. The shapes the gate cannot see are why the translator refuses rather than
+// repairs: the guarantee is kept where it can be kept, at the cut.
 //
 // STARTING A NEW PROGRAMME MEANS ADDING ITS PREFIX BELOW. That is the maintenance cost of keying on
 // prefixes instead of shapes, and it is the cheaper of the two mistakes.
@@ -46,6 +80,9 @@ const EM_DASH = '\u2014';
 
 /** GitHub rejects a release body longer than this. */
 const MAX_BODY_CHARS = 125000;
+// The longest a single change entry may be. This is the number that was already here: what changed
+// is that exceeding it is now a refusal instead of a silent cut at the nearest word boundary.
+const MAX_HEADLINE_CHARS = 200;
 // A change entry shorter than this is not a description of anything. There is deliberately NO
 // whole-body minimum on top of it: "Add `profiles.epic`." is a complete and legitimate release.
 const MIN_ENTRY_CHARS = 12;
@@ -54,6 +91,16 @@ const MIN_ENTRY_CHARS = 12;
 const INTERNAL_ONLY_BODY = 'Internal tooling and CI only. No change to the published package surface.';
 
 class NotesError extends Error {}
+
+// What it costs to act on a refusal, said plainly because it is not free. `prepare` runs on the
+// version commit, by which point the "Version Packages" PR has merged and the changeset exists only
+// at `<version commit>^`. So the fix is: revert the version commit, edit the changeset on main, and
+// let Changesets open a fresh Version PR. Nothing has been published at this point, which is the
+// whole reason this refusal sits before the publish step rather than after it.
+const RECOVERY =
+  'Nothing has been published. The changeset was consumed by the version commit, so recover it ' +
+  'with `git show <version-commit>^:<path>`, revert the version commit, correct the changeset on ' +
+  'main, and let Changesets open a fresh Version PR.';
 
 // ---------------------------------------------------------------------------------------------
 // The banned set: internal project bookkeeping that must never reach a public release body
@@ -161,6 +208,20 @@ const OUR_JARGON = new RegExp(
   'i',
 );
 
+// What a bad cut leaves BEHIND. A gate reads bytes, not grammar, so it cannot be asked whether a
+// sentence still parses; it can only be asked whether the wreckage of a cut is visible. These are
+// the visible shapes: a clause separator with nothing left on one side of it, two separators run
+// together, and a parenthetical emptied of its contents. Everything the translator itself produces
+// is cleaned up before it reaches here, so a hit means some OTHER path wrote this body, which is
+// exactly the case `assert` exists to cover.
+// `[,;]` and not `[,;:]`, and `\(\s*\)` only when it stands alone: a colon run is real content
+// (`HI*BE:01:::500:1` is a valid X12 composite, `10:30` is a time) and `parse()` is an API name.
+const MANGLED_PROSE = [
+  { name: 'mangled prose (doubled clause punctuation)', pattern: /[,;]\s*[,;]/ },
+  { name: 'mangled prose (a gap before punctuation)', pattern: /\S\s+[,;](?:\s|$)/ },
+  { name: 'mangled prose (an empty parenthetical)', pattern: /(?:^|\s)\(\s*\)/ },
+];
+
 /** Every banned-content rule, applied to a finished body. Order is the order they are reported. */
 const CONTENT_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
@@ -168,7 +229,20 @@ const CONTENT_RULES = [
   { name: 'ADR reference', pattern: ADR_REFERENCE },
   { name: 'internal jargon ("slice")', pattern: OUR_JARGON },
   { name: 'em dash (U+2014)', pattern: new RegExp(EM_DASH) },
+  ...MANGLED_PROSE,
 ];
+
+// A single LOWERCASE letter at the end of an entry is the fingerprint of a length cut: "...with one
+// silently dropped" cut at a boundary that was not a word boundary leaves "...with o". Nothing
+// wider than that is safe on this suite, and every wider version was tried and withdrawn: two
+// letters catches `mL`, `et al.` and `is`; the pure-function-word list catches `...the way the
+// sender wrote it.` and `...the more broken the document was.`, and the second of those is a real
+// sentence from a changeset a real @cosyte/ccda release consumed. Refusing a complete sentence
+// blocks a publish on a lie, which is worse than the miss. So this catches three of the fourteen live
+// truncations and is honest about the other eleven: what actually guarantees no cut sentence is
+// that the renderer no longer cuts one. Tested with code spans intact, so `Model the \`Q\`` is not
+// a stump, the backtick sits between the letter and the end.
+const ORPHAN_STUMP = /(?:^|\s)[a-z][.!?]?$/;
 
 // Changes a consumer of the published package cannot observe. A release note lists what changed FOR
 // THE READER, so these are dropped from the note entirely rather than reworded. Founder, on seeing
@@ -215,55 +289,191 @@ export function isConsumerFacing(headline) {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * First sentence of a changeset, flattened to one line.
+ * First sentence of a changeset, flattened to one line. NEVER shortened.
  *
- * When a changeset opens with a sentence longer than the cap, the headline is cut at the last word
- * boundary rather than mid-word: "Allergy-Intolera" on a public release page is exactly the kind of
- * unprofessional detail this whole change exists to remove.
+ * This used to cut an over-long opening sentence at the nearest word boundary and say nothing. It
+ * published "...a medication naming two different drugs with o." to @cosyte/ccda v0.0.2, and in the
+ * same body it cut a three-part finding down to two parts and appended a full stop, so the note
+ * read as a complete claim the author never made. Both survive every gate, because a cut sentence
+ * carries no banned bytes: shortening prose is not something a rule over bytes can observe.
+ *
+ * So there is no cut. The headline is the author's first sentence entire, however long, and
+ * collectHeadlines refuses one that will not fit a release bullet rather than trimming it to size.
  */
 export function headlineOf(text) {
   let t = String(text).trim().split(/\s+/).join(' ');
   t = t.replace(/^\*\*(.+?)\*\*[.:]?\s*/, '$1. '); // a leading bold lead-in is the headline
   // The `\*{0,2}` matters: changesets here routinely end a sentence inside emphasis, as in
   // "**the record-content layer is now feature-complete.**". Requiring whitespace straight after the
-  // full stop misses that, runs past a perfectly good sentence, and truncates at the character cap.
-  const sentence = /^(.{0,200}?[.!?]\*{0,2})(\s|$)/.exec(t);
-  if (sentence) return sentence[1].trim().replace(/\.+$/, '');
-  if (t.length <= 200) return t.trim().replace(/\.+$/, '');
-  const cut = t.slice(0, 200);
-  const lastSpace = cut.lastIndexOf(' ');
-  return trimDangling((lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim());
+  // full stop misses that and runs past a perfectly good sentence.
+  const sentence = /^(.+?[.!?]\*{0,2})(\s|$)/.exec(t);
+  return (sentence ? sentence[1] : t).trim().replace(/\.+$/, '');
 }
 
 /**
- * Walk back off a trailing word that carries no meaning on its own, after a LENGTH cut.
+ * A trailing word that carries no meaning on its own: the fingerprint of a cut that ate the rest of
+ * the clause.
  *
  * Every word here is a pure function word. NEGATIONS AND QUANTIFIERS ARE DELIBERATELY ABSENT:
- * `not`, `no`, `never`, `only`, `both`, `more`, `each`. An earlier version included them and turned
- * "The parser tolerates a truncated trailer, the emitter does not" into "...the emitter does",
- * which tells a reader the opposite of the truth on a public page, and no gate can catch that
- * because the result is well-formed prose. Trimming an article is cosmetic; trimming a negation is
- * a lie. This list may only ever grow by words that cannot change a sentence's meaning.
+ * `not`, `no`, `never`, `only`, `both`, `more`, `each`. An earlier version of this file walked back
+ * off these words to tidy a truncation, and with negations in the list that turned "The parser
+ * tolerates a truncated trailer, the emitter does not" into "...the emitter does", which tells a
+ * reader the opposite of the truth on a public page, and no gate can catch it because the result is
+ * well-formed prose. This list may only ever grow by words that cannot change a sentence's meaning.
  *
- * This runs ONLY on the over-length truncation path. A tail left dangling by translation is a
- * refusal, not a repair: see collectHeadlines.
+ * Nothing walks back off them any more: a tail left dangling is a REFUSAL, never a repair. The list
+ * is now purely a detector, used by collectHeadlines on a translated headline and by findViolations
+ * on a finished body.
  */
-const DANGLING_TAIL =
+export const DANGLING_TAIL =
   /(?:^|\s)(?:a|an|the|and|or|of|to|in|on|for|with|that|which|into|from|as|at|by|is|are|was|were|be|been|its|it|this|these|those|but|so|then|than|per|via)$/i;
 
-export function trimDangling(text) {
-  let head = String(text).replace(/[\s,;:.-]+$/, '');
-  for (let i = 0; i < 8 && DANGLING_TAIL.test(head) && head.includes(' '); i += 1) {
-    head = head.slice(0, head.lastIndexOf(' ')).replace(/[\s,;:.-]+$/, '');
-  }
-  return head;
+// What ends a clause. The em dash is NOT in this list, and that is measured rather than assumed: it
+// is a clause separator in English, but including it refuses three real changesets of the form
+// "Conformance Phase A <em dash> stop rejecting spec-clean messages", where cutting the tail off
+// "Conformance Phase A" leaves "Conformance", a complete noun phrase, and the note reads correctly.
+// Across the 242 changesets in the eight publishing repos' history it refused three correct
+// sentences and prevented no mangle, so it is out.
+const CLAUSE_SEPARATOR = /[,;:.!?]/;
+// Characters that JOIN a span to its neighbour, so the span is part of one token rather than a
+// phrase between two. `The MLLP-1-driven reconnect` is a single compound word and cutting the
+// identifier out of it leaves `The -driven reconnect`.
+const TOKEN_JOINER = /[-/\\`]/;
+
+/**
+ * Whether the span [start, end) can be lifted out of `text` without breaking the sentence.
+ *
+ * This is the whole of the mid-sentence-mangling fix, and it is a boundary rule, not a grammar
+ * check. A phrase may be removed when the text on BOTH sides of it is the same kind of thing:
+ *
+ *   - nothing on one side              the head or the tail of the sentence goes with it
+ *   - a clause separator on both sides a whole clause goes, and the remaining clauses still join
+ *   - a plain word on both sides       a modifier inside one clause goes, and the clause survives
+ *     ("Reorder the P1 documentation pass" gives "Reorder the pass")
+ *
+ * A separator on exactly one side means the span was PART of a clause and the rest of that clause
+ * stays behind: "...no longer carries [phase language], item identifiers..." leaves "...no longer
+ * carries, item identifiers...". That is the measured defect, and it is refused rather than cut.
+ *
+ * WHAT IT STILL CANNOT TELL, said plainly: a boundary rule cannot distinguish a modifier from a
+ * grammatical argument, and both have plain words on either side. "Accept an NCPDP-SCRIPT NewRx
+ * transaction" cuts to "Accept an NewRx transaction", which is not what the author wrote. That is
+ * unchanged from before this rule existed, and it is the residue a shape rule leaves: only 4
+ * word-to-word cuts are taken across the whole corpus and all 4 read correctly, so this is a stated
+ * limit rather than a fixed one. The rule buys the separator cases, which are the ones that mangle.
+ *
+ * `edgeIsSeparator` is for a comma-delimited segment of a parenthetical, which is handed over
+ * without the commas that bound it. Its edges ARE separators, and saying so is what stops the
+ * segment view from calling a cut safe that the whole string would call unsafe.
+ */
+export function isSafeCut(text, start, end, edgeIsSeparator = false) {
+  const whole = String(text);
+  if (TOKEN_JOINER.test(whole[start - 1] ?? '') || TOKEN_JOINER.test(whole[end] ?? '')) return false;
+  const left = whole.slice(0, start).replace(/\s+$/, '');
+  const right = whole.slice(end).replace(/^\s+/, '');
+  if (!edgeIsSeparator && (left === '' || right === '')) return true;
+  return separatorBefore(whole, start, edgeIsSeparator) === separatorAfter(whole, end, edgeIsSeparator);
 }
 
+// A separator only ends a CLAUSE when whitespace sits on the far side of it. `HI*BE:CI-1:500:1` is
+// an X12 composite: the colons bind their elements together and are structural, not punctuation, so
+// they must not read as clause boundaries and must never be collapsed away. Same for `10:30`.
+function separatorBefore(whole, start, edgeIsSeparator) {
+  const before = whole.slice(0, start);
+  const trimmed = before.replace(/\s+$/, '');
+  if (trimmed === '') return edgeIsSeparator;
+  if (!/\s$/.test(before)) return false;
+  return CLAUSE_SEPARATOR.test(trimmed[trimmed.length - 1]);
+}
+
+function separatorAfter(whole, end, edgeIsSeparator) {
+  const after = whole.slice(end).replace(/^\s+/, '');
+  if (after === '') return edgeIsSeparator;
+  return CLAUSE_SEPARATOR.test(after[0]) && /^.(\s|$)/.test(after);
+}
+
+/** The rules the translator removes, in the order it removes them. */
+const TRANSLATION_RULES = [
+  { name: 'internal project identifier', pattern: INTERNAL_ID },
+  { name: 'phase or slice language', pattern: PHASE_TALK },
+  { name: 'ADR reference', pattern: ADR_REFERENCE },
+];
+
+/**
+ * Remove every span the translation rules match that can be removed safely, and report the rest.
+ *
+ * A span that cannot be cut safely is LEFT WHERE IT IS. That is deliberate: leaving it means the
+ * banned text survives into the finished bytes, where findViolations sees it and the run goes red
+ * with the offending line named. Cutting it means well-formed-looking wreckage that nothing
+ * downstream can detect. Of the two failure modes, only one is recoverable.
+ *
+ * @returns {{ text: string, refused: Array<{ rule: string, match: string }> }}
+ */
+function stripSpans(text, rules, edgeIsSeparator = false) {
+  let out = String(text);
+  const refused = [];
+  for (const rule of rules) {
+    const flags = rule.pattern.flags.includes('i') ? 'gi' : 'g';
+    const re = new RegExp(rule.pattern.source, flags);
+    let from = 0;
+    for (let guard = 0; guard < 100; guard += 1) {
+      re.lastIndex = from;
+      const found = re.exec(out);
+      if (!found) break;
+      const start = found.index;
+      let end = start + found[0].length;
+      if (!isSafeCut(out, start, end, edgeIsSeparator)) {
+        refused.push({ rule: rule.name, match: found[0] });
+        from = end;
+        continue;
+      }
+      // A whole clause lifted from between two separators leaves them adjacent: "Emit X, , and Y".
+      // Close that AT THE SEAM. An earlier revision of this fix collapsed adjacent separators over
+      // the finished string instead, which silently rewrote `HI*BE:01:::500:1` to `HI*BE:01:500:1`
+      // in a code span an author had typed correctly, moving an amount into the wrong composite
+      // position on a public page. A cleanup with a wider reach than the cut it is cleaning up
+      // after is the same defect this file exists to remove.
+      const after = out.slice(end);
+      const trimmed = after.replace(/^\s+/, '');
+      // `[,;]` on BOTH sides, narrower than what isSafeCut accepts: a full stop joins two sentences
+      // rather than two clauses, so "Fix A. [span], and C" must keep its comma. `headlineOf` cannot
+      // hand a stop-plus-space to this code, but sanitizeInternal is exported and callable, and a
+      // cleanup that reaches further than the cut it is cleaning up after is this file's own defect.
+      const beforeText = out.slice(0, start).replace(/\s+$/, '');
+      if (
+        separatorBefore(out, start, false) &&
+        separatorAfter(out, end, false) &&
+        /[,;]/.test(beforeText[beforeText.length - 1] ?? '') &&
+        /[,;]/.test(trimmed[0] ?? '')
+      ) {
+        end += after.length - trimmed.length + 1;
+      }
+      out = out.slice(0, start) + out.slice(end);
+      from = start;
+    }
+  }
+  return { text: out, refused };
+}
+
+/**
+ * Clean one comma-delimited segment of a parenthetical, or null when it cannot be cleaned safely.
+ *
+ * Null drops the segment. Inside a parenthetical that is always the right answer, and it is the
+ * behaviour this file already had for a segment that cleaned down to nothing: the segments are
+ * comma-delimited, so losing one whole leaves the others reading correctly, while a fragment cut
+ * out of the middle of one reads worse than not having the segment at all. So a parenthetical
+ * DROPS where running prose REFUSES, and the difference is that a parenthetical is by construction
+ * removable and a clause in a sentence is not.
+ *
+ * The segment arrives without the commas that bounded it, so its edges are told to read as the
+ * separators they are: otherwise a cut at the segment's end looks like a tail cut and is taken,
+ * which is how "(it no longer carries phase language, item identifiers)" became "(it no longer
+ * carries, item identifiers)" while the whole-string rule would have caught it.
+ */
 function stripInternal(segment) {
-  return segment
-    .replace(new RegExp(INTERNAL_ID.source, 'g'), '')
-    .replace(new RegExp(PHASE_TALK.source, 'gi'), '')
-    .replace(new RegExp(ADR_REFERENCE.source, 'gi'), '')
+  const { text, refused } = stripSpans(segment, TRANSLATION_RULES, true);
+  if (refused.length > 0) return null;
+  return text
     .replace(/\s{2,}/g, ' ')
     .replace(new RegExp(`^[\\s,;:.\\-${EM_DASH}]+|[\\s,;:.\\-${EM_DASH}]+$`, 'g'), '');
 }
@@ -275,7 +485,7 @@ function stripInternal(segment) {
  * nothing else of value, and a cleaned fragment that lost its head reads worse than no parenthetical
  * at all: "(of the v2.4 capability arc)" is worse than nothing.
  */
-export function sanitizeInternal(text) {
+export function sanitizeInternalDetailed(text) {
   let t = String(text).replace(/\s*\(([^()]*)\)/g, (whole, inner) => {
     if (!INTERNAL_ID.test(inner) && !PHASE_TALK.test(inner) && !ADR_REFERENCE.test(inner)) {
       return whole; // no internal reference: leave it exactly as the author wrote it
@@ -283,15 +493,30 @@ export function sanitizeInternal(text) {
     const kept = inner
       .split(',')
       .map(stripInternal)
-      .filter((c) => c.length >= 8 && !/^(?:of|the|and|a|an|in|on|for|to|with|its|which|that)\b/i.test(c));
+      .filter(
+        (c) => c !== null && c.length >= 8 && !/^(?:of|the|and|a|an|in|on|for|to|with|its|which|that)\b/i.test(c),
+      );
     return kept.length > 0 ? ` (${kept.join(', ')})` : '';
   });
 
-  t = t.replace(new RegExp(INTERNAL_ID.source, 'g'), ''); // bare inline references
-  t = t.replace(new RegExp(PHASE_TALK.source, 'gi'), '');
-  t = t.replace(new RegExp(ADR_REFERENCE.source, 'gi'), '');
-  t = t.replace(/\s+([,.;:])/g, '$1').replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
-  return t.replace(new RegExp(`^[\\s,;:.\\-${EM_DASH}]+|[\\s,;:.\\-${EM_DASH}]+$`, 'g'), '');
+  // Bare inline references. Only the cuts that leave a readable sentence are taken; the rest stay
+  // put and are reported, so the caller can stop instead of publishing wreckage.
+  const stripped = stripSpans(t, TRANSLATION_RULES);
+  t = stripped.text
+    .replace(/\s+([,.;:])/g, '$1')
+    // Only a parenthetical standing on its own: `parse()` and `String()` are API names, and this
+    // used to eat their argument list.
+    .replace(/(^|\s)\(\s*\)/g, '$1')
+    .replace(/\s{2,}/g, ' ');
+  return {
+    text: t.replace(new RegExp(`^[\\s,;:.\\-${EM_DASH}]+|[\\s,;:.\\-${EM_DASH}]+$`, 'g'), ''),
+    refused: stripped.refused,
+  };
+}
+
+/** The translated text alone. See sanitizeInternalDetailed for what it refused to touch. */
+export function sanitizeInternal(text) {
+  return sanitizeInternalDetailed(text).text;
 }
 
 /**
@@ -351,13 +576,16 @@ export function tidy(text) {
 /**
  * Changeset text to a publishable one-line headline.
  *
- * @returns {{ headline: string, changed: boolean }} `changed` is true when translation altered it,
- *   which the caller prints so that stripping is never silent.
+ * @returns {{ headline: string, raw: string, changed: boolean, refused: Array<{rule, match}> }}
+ *   `changed` is true when translation altered it, which the caller prints so that stripping is
+ *   never silent. `refused` lists the banned spans that could not be cut without breaking the
+ *   sentence; they are still present in `headline`, and collectHeadlines stops on them.
  */
 export function toHeadline(text) {
   const raw = headlineOf(text);
-  const headline = tidy(dejargon(rewriteEmDashes(sanitizeInternal(raw))));
-  return { headline, raw, changed: headline !== raw };
+  const { text: sanitized, refused } = sanitizeInternalDetailed(raw);
+  const headline = tidy(dejargon(rewriteEmDashes(sanitized)));
+  return { headline, raw, changed: headline !== raw, refused };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -412,7 +640,34 @@ export function collectHeadlines(files, packageName) {
       );
     }
 
-    const { headline, raw, changed } = toHeadline(changeset.summary);
+    const { headline, raw, changed, refused } = toHeadline(changeset.summary);
+    // A sentence too long for a release bullet is REFUSED, never shortened. Cutting it at a word
+    // boundary is what put "...two different drugs with o." on a public page, and what silently
+    // dropped a whole clause from the entry above it in the same body.
+    // Measured on the TRANSLATED headline, because that is the text that gets published. Measuring
+    // the author's raw sentence instead refuses two real changesets whose bullet, once the internal
+    // references come out, fits comfortably; and it misses the other direction, since `dejargon`
+    // ("slice" -> "change") and `rewriteEmDashes` can each add a character to a sentence that was
+    // exactly at the cap. A gate that refuses what its own renderer produces is one nobody can
+    // satisfy, and a gate that measures something other than what ships is measuring the wrong thing.
+    if (headline.length > MAX_HEADLINE_CHARS) {
+      throw new NotesError(
+        `${file.id}: its opening sentence is ${headline.length} characters, and a release bullet is ` +
+          `capped at ${MAX_HEADLINE_CHARS}. Shortening it here would publish a cut-off sentence that ` +
+          `reads as a complete one, so open the changeset with a sentence that fits and put the ` +
+          `detail in the paragraphs after it: ${JSON.stringify(raw)}\n${RECOVERY}`,
+      );
+    }
+    // A cut that would break the sentence is REFUSED, never taken. This is the mid-sentence half of
+    // the same rule: see isSafeCut for which cuts are safe and why the rest cannot be repaired.
+    if (refused.length > 0) {
+      const named = refused.map((r) => `${r.rule} ${JSON.stringify(r.match)}`).join(', ');
+      throw new NotesError(
+        `${file.id}: ${named} sits in the middle of a clause in ${JSON.stringify(raw)}, and removing ` +
+          `it would leave a sentence that does not parse. Rewrite the changeset's first sentence so ` +
+          `it says what changed for a reader without depending on the internal reference.\n${RECOVERY}`,
+      );
+    }
     if (headline === '') {
       throw new NotesError(
         `${file.id}: nothing is left of ${JSON.stringify(raw)} after removing internal project ` +
@@ -576,13 +831,36 @@ export function findViolations(body) {
     }
     // A change a consumer cannot observe should have been dropped, not reworded.
     const item = /^-\s+(.*)$/.exec(line);
-    if (item && entries.has(item[1].trim()) && !isConsumerFacing(item[1])) {
-      const found = INTERNAL_ONLY_CHANGE.exec(item[1]);
+    if (!item || !entries.has(item[1].trim())) return;
+    const entry = item[1].trim();
+    if (!isConsumerFacing(entry)) {
+      const found = INTERNAL_ONLY_CHANGE.exec(entry);
       violations.push({
         rule: 'change a consumer of the package cannot observe',
         line: i + 1,
         text: line.trim(),
-        match: found ? found[0] : item[1],
+        match: found ? found[0] : entry,
+      });
+    }
+    // An entry that was cut short. Both shapes are the residue of a LENGTH cut, which the renderer
+    // no longer performs; a hit means some other path produced this body, and `assert` runs on
+    // exactly that case. The cap is measured with the sentence-ending stop removed, because the
+    // renderer appends one to a headline that was already exactly at the cap, and a gate that
+    // refuses what its own renderer produces is a gate nobody can satisfy.
+    const withoutStop = entry.replace(/[.!?]+\**$/, '');
+    if (prose(withoutStop).length > MAX_HEADLINE_CHARS) {
+      violations.push({
+        rule: 'a change entry longer than a release bullet',
+        line: i + 1,
+        text: line.trim(),
+        match: `${prose(withoutStop).length} characters`,
+      });
+    } else if (ORPHAN_STUMP.test(withoutStop)) {
+      violations.push({
+        rule: 'a change entry cut short mid-sentence',
+        line: i + 1,
+        text: line.trim(),
+        match: withoutStop.slice(-24),
       });
     }
   });
