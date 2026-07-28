@@ -168,14 +168,17 @@ jobs:
           # `v<version>` is already tagged, and this pipeline creates that tag only after a publish
           # has succeeded.
           #
-          # ONE COSMETIC CONSEQUENCE, recorded rather than hidden. The action passes hasPublishScript
-          # into the "Version Packages" PR body, so on the version-PR run (where it is now false) the
-          # body offers "publish to npm yourself" instead of saying the packages publish on merge.
-          # The prose understates what merging does. It is left alone because correcting it means
-          # re-deriving "are there pending changesets" in bash against the action's own
-          # readChangesetState, and a predicate that disagrees with it by one empty changeset file
-          # hands the publish command back on the arm that actually publishes. The approval on the
-          # protected `release` environment, not this sentence, is the human gate on a publish.
+          # ONE KNOWN CONSEQUENCE, recorded rather than hidden, and it is not cosmetic. The action
+          # passes hasPublishScript into the "Version Packages" PR body, so on the version-PR run,
+          # where it is now false, the body reads "publish to npm yourself or setup this action to
+          # publish automatically". That does not merely understate what merging does: it invites a
+          # reader to publish by hand, which is the one route around everything above. It is left
+          # alone because the alternative is worse. Keeping the prose means re-deriving "are there
+          # pending changesets" in bash against the action's own readChangesetState, and a predicate
+          # that disagrees with it by a single empty changeset file hands the publish command back on
+          # the arm that actually publishes. A misleading sentence is recoverable; that is not. What
+          # stops the hand-publish is the npm token and the approval on the protected `release`
+          # environment, neither of which this sentence can grant.
           publish: ${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}
           # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
           # below creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also

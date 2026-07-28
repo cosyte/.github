@@ -1037,10 +1037,14 @@ test('release.yml withholds the publish command unless the notes gate derived no
   const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
   const publishInput = /^\s*publish:\s*(.+)$/m.exec(workflow);
   assert.ok(publishInput, 'release.yml no longer passes a publish input to changesets/action');
-  assert.match(
-    publishInput[1],
-    /steps\.notes\.outputs\.is-release\s*==\s*'true'/,
-    `the publish command must be conditional on the notes gate, got ${JSON.stringify(publishInput[1])}`,
+  // The WHOLE expression, not a substring of it. Merely requiring the condition to appear somewhere
+  // passes on `is-release == 'true' && '' || 'pnpm run release'`, which contains exactly the same
+  // text and publishes precisely when the gate says not to. This is one line, it decides whether npm
+  // can be reached, and there is no edit to it that should be anything other than deliberate.
+  assert.equal(
+    publishInput[1].trim(),
+    "${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}",
+    'the publish command must be the notes gate and nothing else',
   );
   // The version-PR half must NOT be conditional. changesets/action opens the "Version Packages" PR
   // whenever pending changesets exist, whether or not a publish command is set, so gating `version`

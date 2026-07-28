@@ -202,6 +202,13 @@ so only the unambiguously-internal determiner forms are rewritten.
   disagreement there still leaves the package on npm with no GitHub release, and that remains the
   intended trade: a loud red beats a silent green carrying a meaningless release. Recovery is to
   create the release by hand, since re-running finds nothing left to publish.
+- **The "Version Packages" PR body tells you to publish by hand. Do not.** `changesets/action` writes
+  that sentence whenever it is opening the PR without a publish command set, which is now every time,
+  because the command is withheld until the notes gate has passed. Merging the PR is still what
+  releases; the publish then runs behind the protected `release` environment. The wording is left
+  wrong on purpose: the only way to correct it is to re-derive "are there pending changesets"
+  ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
+  hand the publish command back on the arm that actually publishes.
 - **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is only
   benign when it means `v<version>` is already tagged, which is every ordinary push to main between
   releases. If `package.json` is unreadable at `HEAD`, or the version at `HEAD` appears in no commit
