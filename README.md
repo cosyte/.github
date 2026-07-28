@@ -262,9 +262,8 @@ useful check on the method: it recovers a known set it was not told about.
 **What it can still miss**, stated because a count is only worth what its limits are. A `rewritten`
 bullet is not graded for truncation: once a person has edited the page there is no derivation left
 to compare against, and guessing would be worse than declining. A bullet that ends on a sentence end
-is read as complete even when the changeset carries on, because a bullet is one sentence and what
-follows was never destined for it; a cut that landed exactly on a full stop is therefore invisible,
-and no rule can separate it from an author who stopped there. Words missing from the **middle** of a
+is read as complete even when the changeset carries on: a cut that landed exactly on a full stop is
+invisible, and no rule can separate it from an author who stopped there. Words missing from the **middle** of a
 bullet are checked the same way as the tail but never make it a truncation, since nothing came off
 the end; unaccounted interior spans are printed under their own heading (there are none across the
 149). And the pairing is by content, so a body whose bullets share most of their wording could in

@@ -213,7 +213,24 @@ test('an interior span nothing accounts for is named, not folded into the verdic
 test('a bullet whose only interior difference is deliberate claims exactly that', () => {
   const result = classifyEntry('Builder emits a Family History section.', FAMILY_HISTORY);
   assert.deepEqual(result.unexplainedRemoved, []);
-  assert.match(result.why, /every difference/);
+  assert.match(result.why, /every other difference/);
+});
+
+test('a parenthetical stranded at the head is the repair the renderer really makes', () => {
+  // hl7 v0.0.1: the rules account for "Phase F", and `tidy` drops the "(P1)" left behind it.
+  assert.equal(isExplainedRemoval('Phase F (P1) ' + EM, true), true);
+  // At the head only. The same span mid-sentence is prose the reader lost.
+  assert.equal(isExplainedRemoval('Phase F (P1) ' + EM, false), false);
+});
+
+test('the head allowance is not offered where the renderer would not have taken it', () => {
+  // `tidy` keeps a leading parenthetical when too little sentence is left without it, so a bullet
+  // that short cannot have come from it, and calling the drop deliberate would be a guess.
+  const result = classifyEntry('Short one.', '(A caveat) Short one. And a second sentence.');
+  assert.deepEqual(result.unexplainedRemoved, ['(A caveat)']);
+
+  const longEnough = 'Coding-system provenance is surfaced read-only.';
+  assert.deepEqual(classifyEntry(longEnough, `(A caveat) ${longEnough} And more.`).unexplainedRemoved, []);
 });
 
 test('a short bullet that is the whole of a short sentence is complete, not cut', () => {

@@ -151,12 +151,12 @@ export function tokenize(text) {
 export function endsSentence(token) {
   const bare = String(token.raw).replace(DECORATION, '').replace(/[)\]}>]+$/, '');
   if (!/[.!?]$/.test(bare)) return false;
-  // A single letter and a full stop is NOT excluded as an initial, and that is measured rather than
-  // assumed. On this suite a sentence ends on one all the time: `...recorded as A, B, AB, or O.` is
-  // a blood type and `...the `H`/`P`/`O`/`R`/`Q` records.` is the ASTM record grammar, both of them
-  // sentences the item names as landmines. Excluding them reported a correct sentence as cut, which
-  // is the mistake the prefix method already made 25 times, and the initial it would buy back
-  // (`J. Smith`) does not end a release bullet.
+  // A single letter and a full stop reads as a sentence end, not as an initial. This suite writes
+  // sentences that end on one: a blood type recorded as A, B, AB, or O, and the ASTM record letters
+  // `H`/`P`/`O`/`R`/`Q`. Excluding them would report such a sentence as cut, and inventing a
+  // truncation is the mistake being counted. The initial it gives up (`J. Smith`) does not end a
+  // release bullet. Measured on the 149 live bullets: neither reading changes a single verdict, so
+  // this is a choice about which way to be wrong on input that has not arrived yet.
   return !ABBREVIATIONS.has(bare.toLowerCase());
 }
 
@@ -244,7 +244,10 @@ export function isExplainedRemoval(text, atHead = false) {
   // above: `tidy` drops a parenthetical left stranded at the front, because
   // `(P1) coding-system provenance` reads worse than the sentence without it. Measured on
   // `Phase F (P1)`, where the rules account for the phase language and the `(P1)` behind it is the
-  // decapitation repair, not prose the reader lost.
+  // decapitation repair, not prose the reader lost. `tidy` only takes that repair when enough
+  // sentence would be left without the parenthetical, and THAT condition is about the bullet rather
+  // than about this span, so the caller applies it: see `headRepairApplies`. Passing `atHead` when
+  // it does not hold would make this function more permissive than the rule it models.
   if (atHead) t = t.replace(/^[\s,;:.-]*\([^()]*\)/, ' ');
   // What may remain is punctuation and the seams a removal leaves. Anything with a letter or a
   // digit in it is prose the reader lost.
@@ -280,7 +283,7 @@ function leadIn(summary) {
  * @returns {{ verdict: string, why: string, missingTail: string, removed: string[], added: string[] }}
  *
  * verdict is one of:
- *   untouched           the bullet is the author's sentence, word for word
+ *   untouched           the bullet is the changeset's own words, unchanged
  *   deliberately-short  the same, but short enough that a length scan would suspect it
  *   identifier-removed  it differs only by spans the translator removes on purpose. NOT a truncation
  *   truncated           the author's sentence carries on past the bullet, in prose no rule explains
@@ -392,15 +395,24 @@ export function classifyEntry(bullet, summary) {
   // verdict that says "every difference is a deliberate removal" while only ever having checked the
   // tail is claiming more than it looked at, and this file's whole argument is that the claim and
   // the check have to be the same thing.
+  // `tidy` drops a stranded leading parenthetical only when more than 12 characters of sentence are
+  // left without it, so the head allowance is offered only where that repair could actually have
+  // run. Without the floor, `(A caveat) Short one.` published as `Short one.` would be called a
+  // deliberate removal, and `tidy` leaves that string exactly as it found it.
+  const headRepairApplies = bulletProse.trim().length > 12;
   result.unexplainedRemoved = runs
-    .filter((r) => !isExplainedRemoval(r.words.join(' '), r.start === 0))
+    .filter((r) => !isExplainedRemoval(r.words.join(' '), r.start === 0 && headRepairApplies))
     .map((r) => r.words.join(' '));
   if (removed.length > 0 || result.explainedTail !== '') {
     result.verdict = 'identifier-removed';
+    const ending =
+      result.explainedTail === ''
+        ? 'the bullet ends where a sentence ends'
+        : 'what is missing from the end of the bullet is a span the translator removes on purpose';
     result.why =
       result.unexplainedRemoved.length > 0
-        ? `what is missing from the END of the bullet is a span the translator removes on purpose, but ${result.unexplainedRemoved.length} span(s) inside it are not accounted for`
-        : 'every difference from the changeset is a span the translator removes on purpose';
+        ? `${ending}, but ${result.unexplainedRemoved.length} span(s) inside it are not accounted for`
+        : `${ending}, and every other difference from the changeset is a span the translator removes on purpose`;
     return result;
   }
   if (isLeadIn && !coveredWholeWindow) {
@@ -413,7 +425,7 @@ export function classifyEntry(bullet, summary) {
     result.why = 'the author wrote a short sentence, and the bullet is all of it';
     return result;
   }
-  result.why = 'the bullet is the author sentence, word for word';
+  result.why = "the bullet is the changeset's own words, unchanged";
   return result;
 }
 
