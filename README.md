@@ -159,24 +159,24 @@ separators they are, or the segment view calls a cut safe that the whole sentenc
 **And a sentence is never shortened.** An over-long opening sentence used to be cut at the nearest
 word boundary and nothing was said, which published `...a medication naming two different drugs with
 o.` to one release and, in the same body, cut a three-part finding down to two and appended a full
-stop so it read as a complete claim the author never made. **14 entries across 7 of the 15 live
-releases carry that cut** (`hl7`, `mllp`, `x12`, `ccda`, `ncpdp` and `astm` at `v0.0.1`, plus `ccda`
-at `v0.0.2`), recovered by re-deriving each release from the changesets it consumed. A headline is
-now the author's first sentence entire, or the run refuses and asks for a shorter one. Correcting
-those 14 live bodies is separate work and is not done here.
+stop so it read as a complete claim the author never made. A headline is now the author's first
+sentence entire, or the run refuses and asks for a shorter one. **How many live bodies still carry
+that cut is measured by [`scripts/release-diff.mjs`](scripts/release-diff.mjs)**, below; correcting
+them is separate work and is not done here.
 
 **What this costs, measured 2026-07-28** on the 242 changeset files, deduplicated by name, recovered
-from every commit touching `.changeset/*.md` in the 13 repos that carry them, and on the 15 release
-bodies read from the GitHub API. **214 changesets pass untouched, 24 are asked to shorten a first
-sentence, 3 to rewrite one, 1 was already refused.** `assert` re-reads finished bytes for the shapes
-a cut leaves behind, and finds **3 of the 14** live truncations with no false positive anywhere.
-**It misses the other 11 on purpose.** Every rule wide enough to catch `...reads MSA-2 whole to
-match, and \`reescape\` emits a li.` also refuses `Pass an unknown Z-segment through as is.`,
-`...the more broken the document was.`, `...recorded as A, B, AB, or O.` and `...quantity the
-builder emits to mL.`, all of which are complete sentences and one of which a real release consumed.
-**Refusing a correct sentence blocks a publish on a lie, so the byte rules stay narrow and the
-guarantee lives where it can be kept: the renderer no longer cuts a sentence at all.** A body this
-pipeline produces cannot be truncated; a body it merely inspects can be, and only partly caught.
+from every commit touching `.changeset/*.md` in the 13 repos that carry them. **214 changesets pass
+untouched, 24 are asked to shorten a first sentence, 3 to rewrite one, 1 was already refused.**
+
+`assert` re-reads finished bytes for the shapes a cut leaves behind, and **on the 17 live release
+bodies it now finds none, while the differ finds 9 cut bullets.** That gap is deliberate and is the
+honest limit of a byte rule. Every rule wide enough to catch `...reads MSA-2 whole to match, and
+\`reescape\` emits a li.` also refuses `Pass an unknown Z-segment through as is.`, `...the more broken
+the document was.`, `...recorded as A, B, AB, or O.` and `...quantity the builder emits to mL.`, all
+of which are complete sentences and one of which a real release consumed. **Refusing a correct
+sentence blocks a publish on a lie, so the byte rules stay narrow and the guarantee lives where it
+can be kept: the renderer no longer cuts a sentence at all.** A body this pipeline produces cannot be
+truncated; a body it merely inspects can be, and a byte rule will not tell you which.
 
 A fourth, specific to this suite: `slice` is our word for a unit of work, but it is **also** real
 clinical vocabulary. A DICOM study has a slice thickness, a slice location, and a Number of Slices,
@@ -214,6 +214,69 @@ so only the unambiguously-internal determiner forms are rewritten.
   releases. If `package.json` is unreadable at `HEAD`, or the version at `HEAD` appears in no commit
   (a shallow checkout, so mind `fetch-depth: 0`), the run stops there rather than letting the publish
   step decide on its own.
+
+### Auditing the releases that predate the gate
+
+The gate above stops a new truncation. It does nothing about the ones already published, and those
+bodies are permanent. [`scripts/release-diff.mjs`](scripts/release-diff.mjs) is what says how many
+there are: for one published release it diffs **the body live on the release page** against **the
+changesets the tagged version commit consumed**, and classifies every bullet.
+
+```bash
+node scripts/release-diff.mjs sweep --repo ../hl7 --package @cosyte/hl7
+node scripts/release-diff.mjs classify --repo ../ccda --package @cosyte/ccda --tag v0.0.2 --json
+```
+
+| Verdict | Means |
+|---|---|
+| `untouched` | the bullet is the changeset's own words, unchanged |
+| `deliberately-short` | the same, and short because the author wrote it short |
+| `identifier-removed` | it differs only by spans the translator removes on purpose. **Not a truncation** |
+| `truncated` | the author's sentence carries on past the bullet, in prose no rule explains |
+| `rewritten` | the bullet says something the changeset does not, so it was edited by hand |
+| `unmatched` | no consumed changeset aligns with the bullet |
+
+**Telling `identifier-removed` from `truncated` is the entire job.** A bullet with its trailing
+`(CCDA-P7)` removed *is* a proper prefix of its changeset sentence while being a complete sentence,
+so a prefix comparison calls it cut; that is why one earlier count read 25. A cut that landed on a
+clean word boundary is well-formed prose, so a scan over the bytes alone cannot see it at all; that
+is why another read 6. The differ asks what the missing text *is*, using
+`release-notes.mjs`'s own `TRANSLATION_RULES`, rather than how much of it there is.
+
+**Measured 2026-07-28, across all 17 published releases of the 8 published packages, 149 bullets:
+9 are genuinely truncated, in 6 releases across 5 packages.**
+
+| Package | Release | Cut bullets |
+|---|---|---|
+| `@cosyte/hl7` | `v0.0.1` | 1 |
+| `@cosyte/mllp` | `v0.0.1` | 3 |
+| `@cosyte/x12` | `v0.0.1` | 1 |
+| `@cosyte/ccda` | `v0.0.1` | 1 |
+| `@cosyte/ccda` | `v0.0.2` | 2 |
+| `@cosyte/astm` | `v0.0.1` | 1 |
+
+The other 140: 117 `identifier-removed`, 15 `untouched`, 6 `rewritten`, 2 `deliberately-short`, none
+unmatched. The 6 `rewritten` are exactly the 6 bodies corrected by hand on 2026-07-28, which is a
+useful check on the method: it recovers a known set it was not told about.
+
+**What it can still miss**, stated because a count is only worth what its limits are. A `rewritten`
+bullet is not graded for truncation: once a person has edited the page there is no derivation left
+to compare against, and guessing would be worse than declining. A bullet that ends on a sentence end
+is read as complete even when the changeset carries on: a cut that landed exactly on a full stop is
+invisible, and no rule can separate it from an author who stopped there. Words missing from the **middle** of a
+bullet are checked the same way as the tail but never make it a truncation, since nothing came off
+the end; unaccounted interior spans are printed under their own heading (there are none across the
+149). And the pairing is by content, so a body whose bullets share most of their wording could in
+principle pair one against the wrong changeset; none did here, and `--json` prints the pairing.
+
+**It is a classifier, not a regenerator, and that limit is the finding underneath it.** Running
+`release-notes.mjs prepare` against the historical version commits **refuses on six of them**, because
+their source changesets' opening sentences are themselves over the 200-character cap, which is
+exactly why they were cut. These bodies cannot be regenerated mechanically: each needs a person to
+write a shorter sentence that keeps the meaning. So the tool quotes the missing tail and stops, and
+there is no command that emits a replacement body. `sweep` exits 1 when anything is cut, which makes
+it a check you can run; **nothing in this repo's workflows runs it**, on purpose, because a red build
+over a permanent published page is a nag, not a gate.
 
 ### CHANGELOG promotion (specified, not implemented)
 
