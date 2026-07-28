@@ -99,6 +99,10 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 | ADR reference | `ADR 0018` |
 | Em dash | `U+2014`, inherited from changesets written before that ban |
 | Unobservable change | a bullet describing something no consumer can see |
+| A sentence built around the identifier | removing it would leave prose that does not parse |
+| An opening sentence too long for a bullet | over 200 characters, where the alternative is cutting it |
+| A bullet that was cut short | a one-letter stump, or an over-length entry, in the finished bytes |
+| Mangled prose | doubled or orphaned clause punctuation, an emptied parenthetical |
 | Wrong release | a body that disagrees with the version or package that reached npm |
 
 The renderer **translates** first (identifiers belong in the changeset, the changelog, the commit and
@@ -127,6 +131,45 @@ Three traps the implementation handles deliberately, each of which caused a real
   one changeset edit before anything is published.
 - **Case sensitivity.** `FHIR-bridge` and `docs-content/` are legitimate content that a
   case-insensitive rule would flag.
+
+**In running prose the cut is only ever taken where the sentence survives it, and this is the
+load-bearing rule.** Removing a phrase from the middle of a clause leaves prose that does not parse:
+`no longer carries phase language, item identifiers or ADR numbers` became
+`no longer carries, item identifiers or ADR numbers`, and **nothing downstream could see it**,
+because a mangled sentence carries no banned bytes for a byte-level rule to find. A gate reads
+bytes, not grammar. So a span is removed only when the text on both sides of it is the same kind of
+thing (nothing, a clause separator, or a plain word), and never when it is glued to its neighbour by
+a hyphen or a slash (`The MLLP-1-driven reconnect` is one word). A separator on exactly one side
+means the rest of that clause stays behind, and the run **refuses**, naming the changeset. Leaving
+the identifier in place is deliberate: it keeps something in the bytes for the gate to catch.
+
+**Inside a parenthetical the same test drops rather than refuses.** Parentheticals are split on
+commas and cleaned segment by segment, so a segment that cannot be cleaned safely is dropped whole,
+which is what this file already did with a segment that cleaned down to nothing. A parenthetical is
+by construction removable; a clause in a sentence is not. Segment edges are told to read as the
+separators they are, or the segment view calls a cut safe that the whole sentence would not.
+
+**And a sentence is never shortened.** An over-long opening sentence used to be cut at the nearest
+word boundary and nothing was said, which published `...a medication naming two different drugs with
+o.` to one release and, in the same body, cut a three-part finding down to two and appended a full
+stop so it read as a complete claim the author never made. **14 entries across 7 of the 15 live
+releases carry that cut** (`hl7`, `mllp`, `x12`, `ccda`, `ncpdp` and `astm` at `v0.0.1`, plus `ccda`
+at `v0.0.2`), recovered by re-deriving each release from the changesets it consumed. A headline is
+now the author's first sentence entire, or the run refuses and asks for a shorter one. Correcting
+those 14 live bodies is separate work and is not done here.
+
+**What this costs, measured 2026-07-28** on the 242 changeset files, deduplicated by name, recovered
+from every commit touching `.changeset/*.md` in the 13 repos that carry them, and on the 15 release
+bodies read from the GitHub API. **214 changesets pass untouched, 24 are asked to shorten a first
+sentence, 3 to rewrite one, 1 was already refused.** `assert` re-reads finished bytes for the shapes
+a cut leaves behind, and finds **3 of the 14** live truncations with no false positive anywhere.
+**It misses the other 11 on purpose.** Every rule wide enough to catch `...reads MSA-2 whole to
+match, and \`reescape\` emits a li.` also refuses `Pass an unknown Z-segment through as is.`,
+`...the more broken the document was.`, `...recorded as A, B, AB, or O.` and `...quantity the
+builder emits to mL.`, all of which are complete sentences and one of which a real release consumed.
+**Refusing a correct sentence blocks a publish on a lie, so the byte rules stay narrow and the
+guarantee lives where it can be kept: the renderer no longer cuts a sentence at all.** A body this
+pipeline produces cannot be truncated; a body it merely inspects can be, and only partly caught.
 
 A fourth, specific to this suite: `slice` is our word for a unit of work, but it is **also** real
 clinical vocabulary. A DICOM study has a slice thickness, a slice location, and a Number of Slices,
