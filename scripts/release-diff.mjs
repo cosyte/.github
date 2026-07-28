@@ -151,9 +151,13 @@ export function tokenize(text) {
 export function endsSentence(token) {
   const bare = String(token.raw).replace(DECORATION, '').replace(/[)\]}>]+$/, '');
   if (!/[.!?]$/.test(bare)) return false;
-  if (ABBREVIATIONS.has(bare.toLowerCase())) return false;
-  // A lone initial (`J. Smith`) is not a sentence end.
-  return !/^[A-Za-z]\.$/.test(bare);
+  // A single letter and a full stop is NOT excluded as an initial, and that is measured rather than
+  // assumed. On this suite a sentence ends on one all the time: `...recorded as A, B, AB, or O.` is
+  // a blood type and `...the `H`/`P`/`O`/`R`/`Q` records.` is the ASTM record grammar, both of them
+  // sentences the item names as landmines. Excluding them reported a correct sentence as cut, which
+  // is the mistake the prefix method already made 25 times, and the initial it would buy back
+  // (`J. Smith`) does not end a release bullet.
+  return !ABBREVIATIONS.has(bare.toLowerCase());
 }
 
 /**
@@ -227,7 +231,7 @@ export function alignTokens(a, b) {
  * translator's list is understood by this file on the same commit. A parenthetical is treated as
  * removed whole when it carries a banned span, which is what `sanitizeInternalDetailed` does.
  */
-export function isExplainedRemoval(text) {
+export function isExplainedRemoval(text, atHead = false) {
   let t = String(text);
   t = t.replace(/\(([^()]*)\)/g, (whole, inner) =>
     TRANSLATION_RULES.some((rule) => new RegExp(rule.pattern.source, rule.pattern.flags).test(inner)) ? ' ' : whole,
@@ -236,6 +240,12 @@ export function isExplainedRemoval(text) {
     const flags = rule.pattern.flags.includes('i') ? 'gi' : 'g';
     t = t.replace(new RegExp(rule.pattern.source, flags), ' ');
   }
+  // At the head of a sentence the translator does one more thing, and it is not one of the rules
+  // above: `tidy` drops a parenthetical left stranded at the front, because
+  // `(P1) coding-system provenance` reads worse than the sentence without it. Measured on
+  // `Phase F (P1)`, where the rules account for the phase language and the `(P1)` behind it is the
+  // decapitation repair, not prose the reader lost.
+  if (atHead) t = t.replace(/^[\s,;:.-]*\([^()]*\)/, ' ');
   // What may remain is punctuation and the seams a removal leaves. Anything with a letter or a
   // digit in it is prose the reader lost.
   return !/[A-Za-z0-9]/.test(t.replace(DECORATION, ''));
@@ -317,20 +327,33 @@ export function classifyEntry(bullet, summary) {
   const tailTokens = sourceTokens.slice(lastSource + 1, Math.min(sentenceEnd + 2, sourceTokens.length));
   const missingTail = tailTokens.map((t) => t.raw).join(' ');
 
-  const removed = [];
-  let run = [];
+  // Runs of source words the bullet does not carry, each remembering whether it sat at the head of
+  // the sentence: the translator repairs the head differently from the middle, so the two cannot be
+  // judged by the same rule.
+  const runs = [];
+  let run = null;
   for (let j = 0; j <= lastSource; j += 1) {
     if (matchedSource.has(j)) {
-      if (run.length > 0) removed.push(run.join(' '));
-      run = [];
-    } else run.push(sourceTokens[j].raw);
+      if (run !== null) runs.push(run);
+      run = null;
+    } else if (run === null) run = { start: j, words: [sourceTokens[j].raw] };
+    else run.words.push(sourceTokens[j].raw);
   }
-  if (run.length > 0) removed.push(run.join(' '));
+  if (run !== null) runs.push(run);
+  const removed = runs.map((r) => r.words.join(' '));
 
   // `explainedTail` is the other half of the evidence, and it is recorded rather than discarded
   // because "this was removed on purpose" is the claim a reader is most entitled to check: it is
   // the exact judgement the prefix method got wrong 25 times.
-  const result = { verdict: 'untouched', why: '', missingTail: '', explainedTail: '', removed, added };
+  const result = {
+    verdict: 'untouched',
+    why: '',
+    missingTail: '',
+    explainedTail: '',
+    removed,
+    unexplainedRemoved: [],
+    added,
+  };
 
   // Hand-edited text first: there is no derivation left to grade, and calling it truncated would
   // report a body somebody already fixed as still broken.
@@ -364,9 +387,20 @@ export function classifyEntry(bullet, summary) {
   // "missing" is how a reader is talked into believing a correct bullet was cut.
   result.missingTail = '';
   result.explainedTail = !coveredWholeWindow && !stoppedAtSentenceEnd ? missingTail : '';
+  // Interior spans are tested the same way the tail is, and reported when they are NOT accounted
+  // for. They cannot make the bullet a truncation (nothing was cut off the END of it), but a
+  // verdict that says "every difference is a deliberate removal" while only ever having checked the
+  // tail is claiming more than it looked at, and this file's whole argument is that the claim and
+  // the check have to be the same thing.
+  result.unexplainedRemoved = runs
+    .filter((r) => !isExplainedRemoval(r.words.join(' '), r.start === 0))
+    .map((r) => r.words.join(' '));
   if (removed.length > 0 || result.explainedTail !== '') {
     result.verdict = 'identifier-removed';
-    result.why = 'every difference from the changeset is a span the translator removes on purpose';
+    result.why =
+      result.unexplainedRemoved.length > 0
+        ? `what is missing from the END of the bullet is a span the translator removes on purpose, but ${result.unexplainedRemoved.length} span(s) inside it are not accounted for`
+        : 'every difference from the changeset is a span the translator removes on purpose';
     return result;
   }
   if (isLeadIn && !coveredWholeWindow) {
@@ -432,7 +466,9 @@ export function classifyRelease({ body, changesets, packageName }) {
         verdict: 'unmatched',
         why: 'no consumed changeset aligns with this bullet, so it cannot be diffed against a source',
         missingTail: '',
+        explainedTail: '',
         removed: [],
+        unexplainedRemoved: [],
         added: [],
       };
     }
@@ -543,6 +579,19 @@ function report(releases, asJson) {
         `\n${release.tag}  ${release.sha.slice(0, 7)}  ${release.consumed} changeset(s) consumed, ` +
           `${release.results.length} bullet(s): ${summary || 'no bullets'}\n`,
       );
+      // An `identifier-removed` bullet with an interior span nothing accounts for is printed even
+      // though the verdict is not a truncation: the evidence for "this was removed on purpose" is
+      // the part a reader is entitled to check, and burying it behind `--json` is how a summary line
+      // starts being trusted instead of read.
+      const unaccounted = release.results.filter(
+        (r) => r.verdict === 'identifier-removed' && r.unexplainedRemoved.length > 0,
+      );
+      for (const hit of unaccounted) {
+        process.stdout.write(`  interior spans not accounted for (still not a truncation)\n`);
+        process.stdout.write(`    bullet:  ${hit.entry}\n`);
+        process.stdout.write(`    source:  ${hit.changeset}\n`);
+        process.stdout.write(`    spans:   ${JSON.stringify(hit.unexplainedRemoved.join(' | '))}\n\n`);
+      }
       for (const verdict of ORDER) {
         const hits = release.results.filter((r) => r.verdict === verdict);
         if (hits.length === 0 || verdict === 'untouched' || verdict === 'identifier-removed') continue;

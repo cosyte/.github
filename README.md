@@ -229,7 +229,7 @@ node scripts/release-diff.mjs classify --repo ../ccda --package @cosyte/ccda --t
 
 | Verdict | Means |
 |---|---|
-| `untouched` | the bullet is the author's first sentence, word for word |
+| `untouched` | the bullet is the changeset's own words, unchanged |
 | `deliberately-short` | the same, and short because the author wrote it short |
 | `identifier-removed` | it differs only by spans the translator removes on purpose. **Not a truncation** |
 | `truncated` | the author's sentence carries on past the bullet, in prose no rule explains |
@@ -261,11 +261,14 @@ useful check on the method: it recovers a known set it was not told about.
 
 **What it can still miss**, stated because a count is only worth what its limits are. A `rewritten`
 bullet is not graded for truncation: once a person has edited the page there is no derivation left
-to compare against, and guessing would be worse than declining. A bullet whose cut happened to land
-on a sentence-ending full stop reads as complete, and is: the renderer only ever published the first
-sentence, so losing what came after it is not a cut. And the pairing is by content, so a body whose
-bullets share most of their wording with each other could in principle pair one against the wrong
-changeset; none did here, and `--json` prints the pairing so it can be checked.
+to compare against, and guessing would be worse than declining. A bullet that ends on a sentence end
+is read as complete even when the changeset carries on, because a bullet is one sentence and what
+follows was never destined for it; a cut that landed exactly on a full stop is therefore invisible,
+and no rule can separate it from an author who stopped there. Words missing from the **middle** of a
+bullet are checked the same way as the tail but never make it a truncation, since nothing came off
+the end; unaccounted interior spans are printed under their own heading (there are none across the
+149). And the pairing is by content, so a body whose bullets share most of their wording could in
+principle pair one against the wrong changeset; none did here, and `--json` prints the pairing.
 
 **It is a classifier, not a regenerator, and that limit is the finding underneath it.** Running
 `release-notes.mjs prepare` against the historical version commits **refuses on six of them**, because

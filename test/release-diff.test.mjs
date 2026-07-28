@@ -31,7 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, '../scripts/release-diff.mjs');
 
 /** U+2014 as an escape: these files must not contain the character under test. */
-const EM = '—';
+const EM = '\u2014';
 
 // ---------------------------------------------------------------------------------------------
 // Real captured input
@@ -102,8 +102,18 @@ test('endsSentence separates a sentence end from an abbreviation', () => {
   assert.equal(endsSentence(tokenize('complete.**').at(0)), true);
   assert.equal(endsSentence(tokenize('e.g.').at(0)), false);
   assert.equal(endsSentence(tokenize('al.').at(0)), false);
-  assert.equal(endsSentence(tokenize('J.').at(0)), false);
   assert.equal(endsSentence(tokenize('section').at(0)), false);
+});
+
+test('a sentence ending on a single letter is a sentence end, not an initial', () => {
+  // Both are sentences this suite really writes, and both are named in the item as the shape a
+  // too-clever rule refuses. Reading the letter as an initial reported them as cut short.
+  const bloodType = 'Blood type recorded as A, B, AB, or O.';
+  assert.equal(endsSentence(tokenize(bloodType).at(-1)), true);
+  assert.equal(
+    classifyEntry(bloodType, `${bloodType} The value is surfaced verbatim.`).verdict,
+    'deliberately-short',
+  );
 });
 
 test('alignTokens matches a subsequence, not a prefix', () => {
@@ -186,6 +196,24 @@ test('the one word the renderer rewrites does not read as a lost word', () => {
   );
   assert.equal(result.verdict, 'identifier-removed');
   assert.equal(result.missingTail, '');
+});
+
+test('an interior span nothing accounts for is named, not folded into the verdict', () => {
+  // Content lost from the MIDDLE cannot make a bullet truncated, since nothing was cut off its end.
+  // But the verdict must not claim every difference is deliberate when only the tail was checked.
+  const result = classifyEntry(
+    'The parser tolerates a truncated trailer, and the round-trip stays byte-exact.',
+    'The parser tolerates a truncated trailer, the emitter never does, and the round-trip stays byte-exact.',
+  );
+  assert.equal(result.verdict, 'identifier-removed');
+  assert.deepEqual(result.unexplainedRemoved, ['the emitter never does,']);
+  assert.match(result.why, /not accounted for/);
+});
+
+test('a bullet whose only interior difference is deliberate claims exactly that', () => {
+  const result = classifyEntry('Builder emits a Family History section.', FAMILY_HISTORY);
+  assert.deepEqual(result.unexplainedRemoved, []);
+  assert.match(result.why, /every difference/);
 });
 
 test('a short bullet that is the whole of a short sentence is complete, not cut', () => {
