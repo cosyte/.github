@@ -1005,11 +1005,17 @@ function isShallowClone(repo) {
  *
  * WHAT THIS IS FOR. A repo that has never released has nothing for this gate to derive from: there
  * is no previous version it moved away from, and no changeset was consumed to move it. Four repos
- * (`transform`, `cli`, `deid`, `synth`) sat DEADLOCKED on exactly that, and the deadlock was closed:
- * the gate refused in `prepare`, so `changesets/action` never ran, so no "Version Packages" PR was
- * opened, so the version stayed at its scaffold value, so the gate refused again. `transform`'s
- * oldest waiting run dates to 2026-07-21. The version cannot advance past the check that is waiting
- * for it to advance.
+ * sat DEADLOCKED on exactly that, and the deadlock closed on itself: the gate refused in `prepare`,
+ * so `changesets/action` never ran, so no "Version Packages" PR was opened, so the version stayed at
+ * its scaffold value, so the gate refused again. The version cannot advance past the check that is
+ * waiting for it to advance.
+ *
+ * MEASURED AGAINST `origin/main`, 2026-07-29, and note the date on it: `cli`, `deid` and `synth` are
+ * at `0.0.0` with no tags, and they are what this unblocks. `transform` was the fourth and is now at
+ * `0.0.1`: it escaped a few hours before this was written, by merging a "Version Packages" PR that
+ * had been opened on 2026-07-22, BEFORE the notes gate was made fail-closed. That escape was only
+ * ever available to a repo that already had such a PR, which is why it is not a fix: `cli` and
+ * `synth` have no Version PR at all, and no run of theirs could open one.
  *
  * WHY THIS TEST AND NOT ONE OF THE OTHER THREE. Each alternative can be wrong, and each is wrong in
  * a way this one is not:

@@ -306,12 +306,18 @@ the gate to derive from.** That is not a release whose notes are missing; it is 
 release in it yet, and `prepare` now classifies it as `never-versioned` and exits 0 having derived
 nothing and set `is-release=false`.
 
-**Why it had to change.** Measured 2026-07-29: `transform`, `cli`, `deid` and `synth` are all at
-`0.0.0` and have never published, and every one of their release runs failed here. The refusal
-closed the loop on itself. The gate refused in `prepare`, so `changesets/action` never ran, so no
-"Version Packages" PR was ever opened, so the version never left `0.0.0`, so the next run refused
-for the same reason. `transform`'s oldest waiting run dates to 2026-07-21. The version could not
-advance past the check that was waiting for it to advance.
+**Why it had to change.** Measured against `origin/main` on 2026-07-29: `cli`, `deid` and `synth`
+are at `0.0.0` with no tags and have never published, and every one of their release runs failed
+here. The refusal closed the loop on itself. The gate refused in `prepare`, so `changesets/action`
+never ran, so no "Version Packages" PR was ever opened, so the version never left `0.0.0`, so the
+next run refused for the same reason. The version could not advance past the check that was waiting
+for it to advance.
+
+`transform` was a fourth and is now at `0.0.1`, which is worth stating precisely rather than
+quietly dropping. It escaped hours before this landed, by merging a "Version Packages" PR opened on
+2026-07-22, *before* the notes gate was made fail-closed. That route requires a PR that already
+exists, so it is not a fix and it did not generalise: `cli` and `synth` have no Version PR at all,
+and no run of theirs could open one.
 
 **The test is a property of the history and of nothing else:** no commit reachable from `HEAD` has
 ever carried a `package.json` version other than the one at `HEAD`. The three alternatives were each

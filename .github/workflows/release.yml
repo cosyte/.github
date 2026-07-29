@@ -236,10 +236,12 @@ jobs:
       #                     Packages" PR below is about to propose. This run's job is to open it.
       #
       # THE SECOND ONE IS A FIX, LANDED 2026-07-29, AND IT CLOSES A DEADLOCK RATHER THAN RELAXING A
-      # CHECK. `transform`, `cli`, `deid` and `synth` are all at 0.0.0 and have never published,
-      # because this step refused every one of their runs: refusing here means `changesets/action`
-      # never runs, so no Version PR is opened, so the version never moves off 0.0.0, so the next run
-      # refuses for the same reason. `transform`'s oldest waiting run dates to 2026-07-21. A repo
+      # CHECK. `cli`, `deid` and `synth` are at 0.0.0 and have never published, because this step
+      # refused every one of their runs: refusing here means `changesets/action` never runs, so no
+      # Version PR is opened, so the version never moves off 0.0.0, so the next run refuses for the
+      # same reason. (`transform` was a fourth, and reached 0.0.1 hours before this landed by merging
+      # a Version PR opened on 2026-07-22, before this gate was made fail-closed. That route needs a
+      # PR that already exists; `cli` and `synth` have none, and could not open one.) A repo
       # with no previous version and no consumed changeset has nothing for this gate to assert about,
       # and the first release still goes through the gate WHOLE: by then the version commit exists,
       # with a real previous version and real consumed changesets. Nothing is skipped; it is deferred

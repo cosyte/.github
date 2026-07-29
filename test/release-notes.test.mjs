@@ -1033,11 +1033,13 @@ test('prepare goes RED, before npm, when it cannot tell what the commit would pu
 // ===============================================================================================
 // The first-release deadlock, and the proof that closing it relaxes nothing
 //
-// Measured 2026-07-29: `transform`, `cli`, `deid` and `synth` are all at 0.0.0, have never
-// published, and every one of their release runs failed at this gate. The refusal is what closed
-// the loop: no derivation means no `changesets/action`, which means no "Version Packages" PR, which
-// means the version never leaves 0.0.0, which means the next run refuses for the same reason.
-// `transform`'s oldest waiting run dates to 2026-07-21.
+// Measured against `origin/main` on 2026-07-29: `cli`, `deid` and `synth` are at 0.0.0 with no
+// tags, have never published, and every one of their release runs failed at this gate. The refusal
+// is what closed the loop: no derivation means no `changesets/action`, which means no "Version
+// Packages" PR, which means the version never leaves 0.0.0, which means the next run refuses for the
+// same reason. (`transform` was a fourth and reached 0.0.1 hours before this landed, by merging a
+// Version PR opened before the gate was made fail-closed. That needs a PR to already exist, so it is
+// not a fix; `cli` and `synth` have none and could not open one.)
 //
 // These tests are written in pairs on purpose. A gate change with only a passing test is not
 // evidence, so every "it no longer refuses" below has a partner proving the SAME code path still
@@ -1213,8 +1215,11 @@ test('hasPriorVersion answers a question about history alone', () => {
 
   const bumped = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
   assert.equal(hasPriorVersion(bumped.dir, '0.0.2'), true);
-  // And it stays true for every version this repo will ever be at: history only grows, so a package
-  // that has been versioned can never re-enter the never-versioned branch.
+  // And it stays true for every version this repo will ever be at, because the answer is about the
+  // history rather than about the version asked for. NOT "a versioned package can never re-enter
+  // the never-versioned branch": that sentence is false, and the counter-examples are named in
+  // `hasPriorVersion`'s docblock. What holds is the weaker and sufficient thing, that re-entering it
+  // still lands on `is-release=false` and so cannot publish.
   assert.equal(hasPriorVersion(bumped.dir, '0.0.3'), true);
   rmSync(bumped.dir, { recursive: true, force: true });
 });
@@ -1248,11 +1253,19 @@ test('release.yml withholds the publish command unless the notes gate derived no
   // pass every other test in this file, and would silently restore the deadlock: a green run that
   // opens no PR, forever. Verified against the action's source at the sha pinned above, where
   // `case hasChangesets:` calls runVersion regardless of whether a publish command was supplied.
-  const step = /^\s*- name: Create release PR or publish\n([\s\S]*?)(?=^\s{6}- name: )/m.exec(workflow);
-  assert.ok(step, 'release.yml no longer has the "Create release PR or publish" step');
+  //
+  // Split on the step boundary rather than matching up to the NEXT `- name:`, so the assertion still
+  // holds if this is ever the last step in the job, and so a step introduced without a `name:` does
+  // not read as part of this one. A refuter got two forms past an earlier version of this: `if :`
+  // with a space before the colon, and a quoted `"if":`. Both are valid YAML, actionlint typechecks
+  // the expression inside each of them, so both are real conditions rather than noise. The key
+  // pattern below sees all three spellings.
+  const steps = workflow.split(/^ {6}- (?=name:|uses:|run:|if:)/m);
+  const step = steps.find((s) => s.startsWith('name: Create release PR or publish'));
+  assert.ok(step, 'release.yml no longer has the "Create release PR or publish" step, or it is now conditional');
   assert.doesNotMatch(
-    step[1],
-    /^\s*if:/m,
+    step,
+    /^\s*["']?if["']?\s*:/m,
     'the version-PR step must run unconditionally, or a repo that has never released can never start',
   );
 });
