@@ -225,8 +225,28 @@ jobs:
       #      finds nothing and every successful release would end red with no release created.
       #
       # On an ordinary push to main this is a no-op that writes no file and sets `is-release=false`,
-      # which withholds the publish command below. That is safe because "no release pending" means
-      # `v<version>` is already tagged, and this workflow tags only after a publish has succeeded.
+      # which withholds the publish command below. That is safe on exactly two readings of "no
+      # release pending", and the script distinguishes them by a `code` rather than by prose:
+      #
+      #   already-released  `v<version>` is already tagged, and this workflow tags only after a
+      #                     publish has succeeded, so there is nothing left to publish.
+      #   never-versioned   package.json's version has never changed in this repo's history, so no
+      #                     changeset has ever been consumed and nothing has ever been published. The
+      #                     release is not this commit, it is the version commit that the "Version
+      #                     Packages" PR below is about to propose. This run's job is to open it.
+      #
+      # THE SECOND ONE IS A FIX, LANDED 2026-07-29, AND IT CLOSES A DEADLOCK RATHER THAN RELAXING A
+      # CHECK. `cli`, `deid` and `synth` are at 0.0.0 and have never published, because this step
+      # refused every one of their runs: refusing here means `changesets/action` never runs, so no
+      # Version PR is opened, so the version never moves off 0.0.0, so the next run refuses for the
+      # same reason. (`transform` was a fourth, and reached 0.0.1 hours before this landed by merging
+      # a Version PR opened on 2026-07-22, before this gate was made fail-closed. That route needs a
+      # PR that already exists; `cli` and `synth` have none, and could not open one.) A repo
+      # with no previous version and no consumed changeset has nothing for this gate to assert about,
+      # and the first release still goes through the gate WHOLE: by then the version commit exists,
+      # with a real previous version and real consumed changesets. Nothing is skipped; it is deferred
+      # by one commit, to the commit that has something to say.
+      #
       # When the step cannot classify the commit at all it fails HERE instead, which is the case that
       # used to publish first and complain afterwards.
       - name: Release notes must be derivable

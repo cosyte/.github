@@ -25,6 +25,7 @@ import {
   extractChangeEntries,
   findViolations,
   findVersionCommit,
+  hasPriorVersion,
   headlineOf,
   inspectRelease,
   isConsumerFacing,
@@ -994,7 +995,7 @@ test('prepare grants publish permission only for a pending release', () => {
 });
 
 test('inspectRelease reports WHY nothing is pending in a form the caller can act on', () => {
-  // The prose is for a human; `code` is what decides whether a run may publish, and the three cases
+  // The prose is for a human; `code` is what decides whether a run may publish, and the four cases
   // are not interchangeable.
   const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
   run('tag', 'v0.0.2');
@@ -1029,6 +1030,200 @@ test('prepare goes RED, before npm, when it cannot tell what the commit would pu
   rmSync(dir, { recursive: true, force: true });
 });
 
+// ===============================================================================================
+// The first-release deadlock, and the proof that closing it relaxes nothing
+//
+// Measured against `origin/main` on 2026-07-29: `cli`, `deid` and `synth` are at 0.0.0 with no
+// tags, have never published, and every one of their release runs failed at this gate. The refusal
+// is what closed the loop: no derivation means no `changesets/action`, which means no "Version
+// Packages" PR, which means the version never leaves 0.0.0, which means the next run refuses for the
+// same reason. (`transform` was a fourth and reached 0.0.1 hours before this landed, by merging a
+// Version PR opened before the gate was made fail-closed. That needs a PR to already exist, so it is
+// not a fix; `cli` and `synth` have none and could not open one.)
+//
+// These tests are written in pairs on purpose. A gate change with only a passing test is not
+// evidence, so every "it no longer refuses" below has a partner proving the SAME code path still
+// refuses the moment a previous version exists.
+// ===============================================================================================
+
+const FIRST_RELEASE_CHANGESETS = {
+  'a.md': '---\n"@cosyte/hl7": patch\n---\n\nAdd the first transform pipeline for HL7 v2 messages.\n',
+  'b.md': '---\n"@cosyte/hl7": minor\n---\n\nAdd `mapCodes`, which resolves a ConceptMap translation.\n',
+};
+
+/** A repo in the state all four deadlocked repos are in: scaffolded, changesets pending, never bumped. */
+function makeNeverVersionedRepo({ version = '0.0.0', changesets = FIRST_RELEASE_CHANGESETS } = {}) {
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/hl7', version }, null, 2)}\n`);
+  writeFile(dir, '.changeset/README.md', 'changesets live here\n');
+  for (const [name, text] of Object.entries(changesets)) writeFile(dir, `.changeset/${name}`, text);
+  run('add', '-A');
+  run('commit', '-qm', 'chore: scaffold @cosyte/hl7 from the standard template');
+  return { dir, run };
+}
+
+test('DEADLOCK: a repo that has never been versioned is not a pending release, and does not refuse', () => {
+  const { dir } = makeNeverVersionedRepo();
+
+  const release = inspectRelease(dir, '@cosyte/hl7');
+  assert.equal(release.isRelease, false);
+  assert.equal(release.code, 'never-versioned');
+  assert.match(release.reason, /has never been versioned/);
+
+  // The whole point: exit 0, so `changesets/action` runs and opens the Version PR that moves the
+  // version off its scaffold value. Refusing here is what made that PR impossible to create.
+  const result = runPrepare(dir);
+  assert.equal(result.status, 0, `expected no refusal, got: ${result.stderr}`);
+  assert.equal(result.outputs['is-release'], 'false', 'nothing is published from a scaffold commit');
+  assert.doesNotMatch(result.stderr, /::error::/);
+  assert.match(result.stdout, /Version Packages/, 'a human reading this run needs the next step');
+  assert.throws(() => readFileSync(join(dir, 'notes.md'), 'utf8'), /ENOENT/, 'no notes are derived');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the deadlock has two shapes and both close: package.json arriving after the root commit', () => {
+  // `hasParent` is false only when package.json is in the ROOT commit, which is where all four
+  // repos happen to have it. Put it in the second commit instead and the identical never-released
+  // repo refused with "consumed no changesets" rather than "the repository's first commit". One
+  // deadlock, two error messages, and a detector that keys on either message closes only half of it.
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'README.md', '# @cosyte/hl7\n');
+  run('add', '-A');
+  run('commit', '-qm', 'chore: repository skeleton');
+  writeFile(dir, 'package.json', '{"name":"@cosyte/hl7","version":"0.0.0"}\n');
+  writeFile(dir, '.changeset/a.md', FIRST_RELEASE_CHANGESETS['a.md']);
+  run('add', '-A');
+  run('commit', '-qm', 'chore: scaffold the package');
+
+  const release = inspectRelease(dir, '@cosyte/hl7');
+  assert.equal(release.isRelease, false);
+  assert.equal(release.code, 'never-versioned');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the FIRST release still goes through the gate whole: deferred by one commit, not skipped', () => {
+  // This is what the deadlock was denying. Merging the Version PR produces a version commit with a
+  // real previous version and real consumed changesets, and that commit derives real notes and is
+  // checked in full. Nothing about the first release is exempt; it just is not the scaffold commit.
+  const { dir, run } = makeNeverVersionedRepo();
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/hl7', version: '0.0.1' }, null, 2)}\n`);
+  for (const name of Object.keys(FIRST_RELEASE_CHANGESETS)) rmSync(join(dir, '.changeset', name));
+  run('add', '-A');
+  run('commit', '-qm', 'Version Packages');
+
+  const release = inspectRelease(dir, '@cosyte/hl7');
+  assert.equal(release.isRelease, true, 'the first release IS a release');
+  assert.equal(release.version, '0.0.1');
+  assert.equal(release.kept.length, 2);
+
+  const result = runPrepare(dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.outputs['is-release'], 'true');
+  const body = readFileSync(join(dir, 'notes.md'), 'utf8');
+  assert.match(body, /Add the first transform pipeline for HL7 v2 messages\./);
+  assert.match(body, /npm install @cosyte\/hl7@0\.0\.1/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('FAIL CLOSED: a repo that HAS been versioned still refuses when its notes are underivable', () => {
+  // The partner test, and the one that matters most. Same code path, one fact changed: a previous
+  // version exists in the history. Everything the gate did before, it still does.
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', '{"name":"@cosyte/hl7","version":"0.0.1"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'the released state');
+  run('tag', 'v0.0.1');
+  writeFile(dir, 'package.json', '{"name":"@cosyte/hl7","version":"0.0.2"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'Version Packages');
+
+  assert.throws(() => inspectRelease(dir, '@cosyte/hl7'), /consumed no changesets/);
+  const result = runPrepare(dir);
+  assert.equal(result.status, 1, `a published package must still fail closed: ${result.stdout}`);
+  assert.notEqual(result.outputs['is-release'], 'true', 'npm must stay unreachable');
+  assert.throws(() => readFileSync(join(dir, 'notes.md'), 'utf8'), /ENOENT/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('FAIL CLOSED: a released repo whose consumed changeset says nothing still refuses', () => {
+  // The other way a released repo can be unable to say what shipped. Also unaffected.
+  const { dir } = makeVersionCommitRepo({
+    changesets: { 'a.md': '---\n"@cosyte/hl7": patch\n---\n\n   \n' },
+  });
+  assert.throws(() => inspectRelease(dir, '@cosyte/hl7'), /summary is empty/);
+  const result = runPrepare(dir);
+  assert.equal(result.status, 1, result.stdout);
+  assert.notEqual(result.outputs['is-release'], 'true');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the detector does not key on tags, so deleting one cannot buy an exemption', () => {
+  // Why "no `v*` tag exists" was rejected as the detector. A tag is one `git push --delete` away,
+  // and a deleted tag would make a repo that HAS released look like one that never has, which is
+  // the dangerous direction. History is not deletable from outside the repo, so this keys on that.
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', '{"name":"@cosyte/hl7","version":"0.0.1"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'the released state');
+  writeFile(dir, 'package.json', '{"name":"@cosyte/hl7","version":"0.0.2"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'Version Packages');
+  assert.equal(run('tag', '-l').toString().trim(), '', 'no tag exists anywhere in this repo');
+
+  assert.equal(hasPriorVersion(dir, '0.0.2'), true, '0.0.1 is in the history whatever the tags say');
+  assert.throws(() => inspectRelease(dir, '@cosyte/hl7'), /consumed no changesets/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the detector does not key on the version being 0.0.0', () => {
+  // Why "the version is 0.0.0" was rejected. It is a magic value that is neither necessary nor
+  // sufficient: a scaffold may start anywhere, and 0.0.0 is a publishable version.
+  const { dir } = makeNeverVersionedRepo({ version: '0.1.0' });
+  assert.equal(inspectRelease(dir, '@cosyte/hl7').code, 'never-versioned', 'not about the number');
+  assert.equal(hasPriorVersion(dir, '0.1.0'), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a SHALLOW checkout is never read as never-versioned, and still goes red', () => {
+  // The one way this detector could have turned a loud failure into a silent green. A shallow
+  // clone's oldest commit has no parent and reads as a root commit, so "no other version anywhere in
+  // the history" is unknowable rather than false. Answering `false` there would withhold the publish
+  // command on a real release and end the run green having shipped nothing.
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  run('tag', '-d', 'v0.0.1');
+  const clonedInto = mkdtempSync(join(tmpdir(), 'release-notes-shallow-'));
+  const shallow = join(clonedInto, 'clone');
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dir}`, shallow], { stdio: 'pipe' });
+  assert.equal(
+    execFileSync('git', ['rev-parse', '--is-shallow-repository'], { cwd: shallow, encoding: 'utf8' }).trim(),
+    'true',
+  );
+
+  assert.equal(hasPriorVersion(shallow, '0.0.2'), null, 'unknowable, not false');
+  assert.throws(() => inspectRelease(shallow, '@cosyte/hl7'), /shallow checkout/);
+  const result = runPrepare(shallow);
+  assert.equal(result.status, 1, `a shallow checkout must not pass quietly: ${result.stdout}`);
+  assert.notEqual(result.outputs['is-release'], 'true');
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(clonedInto, { recursive: true, force: true });
+});
+
+test('hasPriorVersion answers a question about history alone', () => {
+  const never = makeNeverVersionedRepo();
+  assert.equal(hasPriorVersion(never.dir, '0.0.0'), false);
+  rmSync(never.dir, { recursive: true, force: true });
+
+  const bumped = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  assert.equal(hasPriorVersion(bumped.dir, '0.0.2'), true);
+  // And it stays true for every version this repo will ever be at, because the answer is about the
+  // history rather than about the version asked for. NOT "a versioned package can never re-enter
+  // the never-versioned branch": that sentence is false, and the counter-examples are named in
+  // `hasPriorVersion`'s docblock. What holds is the weaker and sufficient thing, that re-entering it
+  // still lands on `is-release=false` and so cannot publish.
+  assert.equal(hasPriorVersion(bumped.dir, '0.0.3'), true);
+  rmSync(bumped.dir, { recursive: true, force: true });
+});
+
 // A gate the workflow does not consult is documentation. `is-release` only guards anything because
 // release.yml hands it to `changesets/action` as the publish command, and that wiring lives in a
 // file the script cannot see. Six gates in this org have shipped green while unable to observe their
@@ -1050,6 +1245,29 @@ test('release.yml withholds the publish command unless the notes gate derived no
   // whenever pending changesets exist, whether or not a publish command is set, so gating `version`
   // as well would stop releases from ever starting.
   assert.match(workflow, /^\s*version:\s*pnpm run version\s*$/m);
+
+  // AND NEITHER MAY THE STEP ITSELF BE. This is the precondition the first-release fix rests on:
+  // a `never-versioned` run sets `is-release=false` and is USEFUL anyway, because the step still
+  // runs and opens the Version PR that moves the version off its scaffold value. Adding
+  // `if: steps.notes.outputs.is-release == 'true'` here would look like tightening the gate, would
+  // pass every other test in this file, and would silently restore the deadlock: a green run that
+  // opens no PR, forever. Verified against the action's source at the sha pinned above, where
+  // `case hasChangesets:` calls runVersion regardless of whether a publish command was supplied.
+  //
+  // Split on the step boundary rather than matching up to the NEXT `- name:`, so the assertion still
+  // holds if this is ever the last step in the job, and so a step introduced without a `name:` does
+  // not read as part of this one. A refuter got two forms past an earlier version of this: `if :`
+  // with a space before the colon, and a quoted `"if":`. Both are valid YAML, actionlint typechecks
+  // the expression inside each of them, so both are real conditions rather than noise. The key
+  // pattern below sees all three spellings.
+  const steps = workflow.split(/^ {6}- (?=name:|uses:|run:|if:)/m);
+  const step = steps.find((s) => s.startsWith('name: Create release PR or publish'));
+  assert.ok(step, 'release.yml no longer has the "Create release PR or publish" step, or it is now conditional');
+  assert.doesNotMatch(
+    step,
+    /^\s*["']?if["']?\s*:/m,
+    'the version-PR step must run unconditionally, or a repo that has never released can never start',
+  );
 });
 
 // The version-PR CI trap, asserted on the YAML because it cannot be asserted anywhere else.
