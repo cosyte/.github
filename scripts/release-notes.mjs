@@ -995,6 +995,76 @@ export function findVersionCommit(repo, version) {
   return null;
 }
 
+/** True when the checkout is shallow, so its history cannot be reasoned about to its beginning. */
+function isShallowClone(repo) {
+  return (gitOrNull(repo, ['rev-parse', '--is-shallow-repository']) ?? '').trim() === 'true';
+}
+
+/**
+ * Has this repository's package.json ever carried a version other than `version`?
+ *
+ * WHAT THIS IS FOR. A repo that has never released has nothing for this gate to derive from: there
+ * is no previous version it moved away from, and no changeset was consumed to move it. Four repos
+ * (`transform`, `cli`, `deid`, `synth`) sat DEADLOCKED on exactly that, and the deadlock was closed:
+ * the gate refused in `prepare`, so `changesets/action` never ran, so no "Version Packages" PR was
+ * opened, so the version stayed at its scaffold value, so the gate refused again. `transform`'s
+ * oldest waiting run dates to 2026-07-21. The version cannot advance past the check that is waiting
+ * for it to advance.
+ *
+ * WHY THIS TEST AND NOT ONE OF THE OTHER THREE. Each alternative can be wrong, and each is wrong in
+ * a way this one is not:
+ *
+ *   the version is `0.0.0`         a magic value, and neither necessary nor sufficient. A scaffold
+ *                                  may start at `0.0.1`, and `0.0.0` is a publishable version, so
+ *                                  reading it as "never released" is an assumption about a number.
+ *   no `v*` tag exists             a tag is deletable, and a deleted tag would make a repo that HAS
+ *                                  released look like one that has not. This is the dangerous
+ *                                  direction, and it is one `git push --delete` away.
+ *   the registry 404s              needs a network call this gate does not otherwise make, so an npm
+ *                                  outage, a rate limit, or a rename would report a published
+ *                                  package as unpublished. Same dangerous direction, reached by
+ *                                  something outside the repo entirely.
+ *   findVersionCommit hit the      what the current error already reports, and too narrow: it is
+ *   first commit                   false whenever package.json arrived in the SECOND commit rather
+ *                                  than the root, where the same repo instead refuses with "consumed
+ *                                  no changesets". One deadlock wearing two error messages.
+ *
+ * This test is a property of the whole history and of nothing else: no tag, no network, no magic
+ * number. A version bump is a commit that changes package.json's version, it is what consumes
+ * changesets, and it is the only thing this pipeline ever publishes. So "no commit reachable from
+ * HEAD has ever carried a different version" IS "this package has never been versioned", read from
+ * the one record that cannot be edited from outside the repo.
+ *
+ * AND IT CANNOT BE WRONG IN THE DANGEROUS DIRECTION, which is the part that does not rest on the
+ * detector being accurate at all. A `true` here does not grant anything: `inspectRelease` reports
+ * NOTHING PENDING, `prepare` writes no notes and sets `is-release=false`, and `is-release=false` is
+ * what WITHHOLDS the publish command from `changesets/action`. So the worst a false "never
+ * versioned" can do is decline to publish. There is no path from this answer to npm, and the gate is
+ * never skipped in the sense of being passed; it stops asking a question that has no answer yet.
+ *
+ * `--full-history` on purpose: it sees strictly more commits than the default simplification, so it
+ * can only ever turn a `false` into a `true`, which is the conservative direction. HEAD's history
+ * and NOT `--all`: the `changeset-release/main` branch carries the bumped version, and counting it
+ * would report every deadlocked repo as already versioned and keep the deadlock exactly as it is.
+ *
+ * @returns {boolean|null} null when the checkout is shallow, i.e. the question cannot be answered.
+ */
+export function hasPriorVersion(repo, version) {
+  // A shallow checkout's oldest commit LOOKS like a root commit and its history simply stops, so
+  // "no other version anywhere" is unknowable rather than false. Answering `false` here would turn a
+  // misconfigured `fetch-depth` into a green run that publishes nothing, which is the silent-skip
+  // failure this whole script exists to remove. Say "cannot tell" and let the caller fail loudly.
+  if (isShallowClone(repo)) return null;
+  const shas = git(repo, ['log', '--full-history', '--format=%H', '--', 'package.json'])
+    .split('\n')
+    .filter(Boolean);
+  for (const sha of shas) {
+    const at = packageVersionAt(repo, sha);
+    if (at !== null && at !== version) return true;
+  }
+  return false;
+}
+
 /**
  * Work out whether there is a pending release and, if so, what it consumed.
  *
@@ -1003,10 +1073,14 @@ export function findVersionCommit(repo, version) {
  * happening without either guessing.
  *
  * `code` says WHY there is nothing pending, and the caller acts on it rather than on the prose,
- * because only one of the three is benign:
+ * because only two of the four are benign:
  *
  *   already-released   the version is tagged, so `changeset publish` has nothing to do. This is the
  *                      state of every ordinary push to main between releases. Quiet, exit 0.
+ *   never-versioned    package.json's version has never changed in this repo's history, so nothing
+ *                      has been released and no changeset has been consumed. There is no release
+ *                      here to describe, and the next thing that should happen is the "Version
+ *                      Packages" PR. Quiet, exit 0. See hasPriorVersion.
  *   no-package-json    there is no version to reason about at all.
  *   no-version-commit  the version at HEAD appears in no commit, so what this push would publish
  *                      cannot be established from git.
@@ -1029,6 +1103,31 @@ export function inspectRelease(repo, packageName) {
     };
   }
 
+  // A repo that has never been versioned is not a release that cannot describe itself; it is a repo
+  // with no release in it yet. Classifying it as a pending release and then refusing is what
+  // deadlocked four repos, and the refusal was correct about the facts and wrong about the question.
+  //
+  // NOTE WHERE THIS SITS. After the tag check, so a released repo is still short-circuited by its
+  // tag, and BEFORE `findVersionCommit`, so it covers both shapes the deadlock takes: package.json
+  // in the root commit (the first-commit refusal below) and package.json in a later commit with no
+  // changesets deleted alongside it (the "consumed no changesets" refusal further down).
+  //
+  // AND NOTHING IS RELAXED FOR A REPO THAT HAS RELEASED. Once any other version exists in the
+  // history this branch is unreachable, forever, for that repo: a bump that consumed no changesets,
+  // a consumed changeset with an empty summary, a body carrying internal bookkeeping all still stop
+  // the run exactly as before. A published package cannot re-enter this state, because history only
+  // grows.
+  if (hasPriorVersion(repo, version) === false) {
+    return {
+      isRelease: false,
+      code: 'never-versioned',
+      version,
+      reason:
+        `${packageName} has never been versioned: ${version} is the only version this repository's ` +
+        `history has ever carried, so nothing has been released and no changeset has been consumed`,
+    };
+  }
+
   const commit = findVersionCommit(repo, version);
   if (commit === null) {
     return {
@@ -1038,10 +1137,18 @@ export function inspectRelease(repo, packageName) {
       reason: `no commit introduces version ${version}`,
     };
   }
+  // Reached only when the history says a DIFFERENT version has existed and yet the current one
+  // traces back to a commit with no parent. A never-versioned repo no longer arrives here at all;
+  // it is classified above. What is left is a checkout whose history has been cut off, which is
+  // what a shallow clone looks like from here: its oldest commit has no parent and reads as a root.
+  // That is not a release with no record, it is a record that was not fetched, so the message says
+  // so rather than repeating the deadlock's wording.
   if (!commit.hasParent) {
     throw new NotesError(
-      `version ${version} was introduced by the repository's first commit, so no changesets were ` +
-        `consumed and there is no record of what shipped.`,
+      `version ${version} traces back to a commit with no parent, yet this repository's history ` +
+        `also carries a different version, so that commit cannot be where ${version} began. The ` +
+        `usual cause is a shallow checkout, whose oldest commit reads as a root commit and hides ` +
+        `the version bump. Check that the release job checks out with fetch-depth: 0.`,
     );
   }
 
@@ -1123,11 +1230,20 @@ function cmdPrepare(options) {
     // publish, which is what `already-released` says: the version is tagged, and this pipeline only
     // ever creates that tag after a successful publish.
     //
+    // `never-versioned` is benign for the same reason and by a different route: package.json's
+    // version has never changed, so no changeset has ever been consumed and nothing has ever been
+    // published from this repo. There is no release on this commit to describe. What this run SHOULD
+    // do is let `changesets/action` open the "Version Packages" PR, which is precisely what
+    // `is-release=false` allows: the action opens that PR whether or not a publish command is set.
+    // Merging it produces a version commit with a real previous version and real consumed
+    // changesets, and THAT run goes through this gate whole. Nothing is skipped, it is deferred by
+    // one commit to the commit that actually has something to say.
+    //
     // The other codes are different in kind. They mean this run could not work out what the commit
     // is, and answering "then do not publish" would be a guess dressed as a decision: it would end
     // green having shipped nothing, on a commit that may well have been a release. Stop instead, red
     // and before the publish step, which is the whole point of deriving the notes first.
-    if (release.code !== 'already-released') {
+    if (release.code !== 'already-released' && release.code !== 'never-versioned') {
       fail(
         `Cannot establish what a publish of ${packageName} from this commit would ship: ` +
           `${release.reason}. Release notes are derived from git, so an unclassifiable commit has no ` +
@@ -1137,6 +1253,13 @@ function cmdPrepare(options) {
       return;
     }
     process.stdout.write(`No release pending: ${release.reason}.\n`);
+    if (release.code === 'never-versioned') {
+      process.stdout.write(
+        `This is the state before a first release, not a failure. Merge the "Version Packages" ` +
+          `pull request this run opens: that commit bumps the version and consumes the pending ` +
+          `changesets, and the release it cuts is derived from them and checked in full.\n`,
+      );
+    }
     return;
   }
 

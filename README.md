@@ -292,11 +292,55 @@ so only the unambiguously-internal determiner forms are rewritten.
   wrong on purpose: the only way to correct it is to re-derive "are there pending changesets"
   ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
   hand the publish command back on the arm that actually publishes.
-- **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is only
-  benign when it means `v<version>` is already tagged, which is every ordinary push to main between
-  releases. If `package.json` is unreadable at `HEAD`, or the version at `HEAD` appears in no commit
-  (a shallow checkout, so mind `fetch-depth: 0`), the run stops there rather than letting the publish
-  step decide on its own.
+- **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is
+  benign on exactly two readings, and the script distinguishes them by a `code` rather than by prose:
+  `already-released` (`v<version>` is tagged, which is every ordinary push to main between releases)
+  and `never-versioned` (see below). If `package.json` is unreadable at `HEAD`, or the version at
+  `HEAD` appears in no commit (a shallow checkout, so mind `fetch-depth: 0`), the run stops there
+  rather than letting the publish step decide on its own.
+
+### A repo that has never released
+
+**A first release has no previous version and no consumed changeset, so there is nothing here for
+the gate to derive from.** That is not a release whose notes are missing; it is a repo with no
+release in it yet, and `prepare` now classifies it as `never-versioned` and exits 0 having derived
+nothing and set `is-release=false`.
+
+**Why it had to change.** Measured 2026-07-29: `transform`, `cli`, `deid` and `synth` are all at
+`0.0.0` and have never published, and every one of their release runs failed here. The refusal
+closed the loop on itself. The gate refused in `prepare`, so `changesets/action` never ran, so no
+"Version Packages" PR was ever opened, so the version never left `0.0.0`, so the next run refused
+for the same reason. `transform`'s oldest waiting run dates to 2026-07-21. The version could not
+advance past the check that was waiting for it to advance.
+
+**The test is a property of the history and of nothing else:** no commit reachable from `HEAD` has
+ever carried a `package.json` version other than the one at `HEAD`. The three alternatives were each
+rejected for being wrong in the dangerous direction, which is letting a package that HAS released
+skip the gate:
+
+| Rejected test | How it goes wrong |
+|---|---|
+| the version is `0.0.0` | a magic value, neither necessary nor sufficient. A scaffold may start anywhere, and `0.0.0` is publishable. |
+| no `v*` tag exists | a tag is one `git push --delete` from gone, and a deleted tag makes a released repo look unreleased. |
+| the registry 404s | needs a network call this gate does not otherwise make. **Measured refutation: `@cosyte/fhir` is 404 on npm and has real version bumps with derivable notes**, so this test would have exempted it. |
+| `findVersionCommit` hit the first commit | what the old error already reported, and too narrow: false whenever `package.json` arrived in the second commit, where the same repo instead refused with "consumed no changesets". One deadlock, two error messages. |
+
+**It cannot be wrong in the dangerous direction, and that does not rest on the test being accurate.**
+A `never-versioned` verdict grants nothing: it sets `is-release=false`, which is precisely what
+*withholds* the publish command from `changesets/action`. The worst a false positive can do is
+decline to publish. There is no path from this verdict to npm, and the gate is never *passed* here,
+only deferred.
+
+**The first release still goes through the gate whole.** The run that classifies `never-versioned`
+is the run that opens the Version PR; merging it produces a version commit with a real previous
+version and real consumed changesets, and *that* run derives notes and is checked in full. Nothing
+is skipped, it is deferred by one commit, to the commit that has something to say. A package that
+has been versioned can never re-enter this state, because history only grows.
+
+**A shallow checkout is not read as never-versioned.** Its oldest commit has no parent and reads as
+a root commit, so the question is unanswerable rather than answered `false`; `hasPriorVersion`
+returns `null` and the run goes red pointing at `fetch-depth: 0`. Answering `false` there would turn
+a misconfigured checkout into a green run that published nothing.
 
 ### Auditing the releases that predate the gate
 
