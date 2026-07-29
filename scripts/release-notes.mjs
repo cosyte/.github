@@ -1113,10 +1113,19 @@ export function inspectRelease(repo, packageName) {
   // changesets deleted alongside it (the "consumed no changesets" refusal further down).
   //
   // AND NOTHING IS RELAXED FOR A REPO THAT HAS RELEASED. Once any other version exists in the
-  // history this branch is unreachable, forever, for that repo: a bump that consumed no changesets,
-  // a consumed changeset with an empty summary, a body carrying internal bookkeeping all still stop
-  // the run exactly as before. A published package cannot re-enter this state, because history only
-  // grows.
+  // history this branch is unreachable for that repo: a bump that consumed no changesets, a
+  // consumed changeset with an empty summary, a body carrying internal bookkeeping all still stop
+  // the run exactly as before.
+  //
+  // Said exactly, because the obvious stronger sentence ("a published package can never re-enter
+  // this state, history only grows") is FALSE and was written here before a refuter built the
+  // counter-example: orphan-rewriting main and deleting the tag reproduces `never-versioned` on a
+  // published package, and so do a workspace layout whose root package.json is not the published one
+  // and a detached HEAD before the version commit. None is reachable from this org's callers today
+  // (13 single-package repos, `push: [main]` only, no `workflow_dispatch`), and none of them matters
+  // even if it were, for the reason above: every one of those states lands on `is-release=false`,
+  // which withholds the publish command. The failure mode of being wrong here is declining to
+  // publish, and there is no version of being wrong here that publishes.
   if (hasPriorVersion(repo, version) === false) {
     return {
       isRelease: false,
@@ -1254,10 +1263,15 @@ function cmdPrepare(options) {
     }
     process.stdout.write(`No release pending: ${release.reason}.\n`);
     if (release.code === 'never-versioned') {
+      // Deliberately conditional about the PR. With pending changesets this run opens one; with
+      // none it opens nothing, and there is no signal here that tells the two apart. Re-deriving
+      // "are there pending changesets" to firm up a log line is the same predicate this workflow
+      // refuses to re-derive anywhere it matters, so the sentence hedges instead.
       process.stdout.write(
-        `This is the state before a first release, not a failure. Merge the "Version Packages" ` +
-          `pull request this run opens: that commit bumps the version and consumes the pending ` +
-          `changesets, and the release it cuts is derived from them and checked in full.\n`,
+        `This is the state before a first release, not a failure. The release is the "Version ` +
+          `Packages" pull request, which this run opens if any changesets are pending: merging it ` +
+          `bumps the version and consumes them, and the release it cuts is derived from those ` +
+          `changesets and checked in full.\n`,
       );
     }
     return;

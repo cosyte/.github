@@ -335,7 +335,8 @@ only deferred.
 is the run that opens the Version PR; merging it produces a version commit with a real previous
 version and real consumed changesets, and *that* run derives notes and is checked in full. Nothing
 is skipped, it is deferred by one commit, to the commit that has something to say. A package that
-has been versioned can never re-enter this state, because history only grows.
+has been versioned does not re-enter this state without a history rewrite, and if it ever did the
+verdict would still withhold the publish command rather than hand it over.
 
 **A shallow checkout is not read as never-versioned.** Its oldest commit has no parent and reads as
 a root commit, so the question is unanswerable rather than answered `false`; `hasPriorVersion`

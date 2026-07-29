@@ -1240,6 +1240,21 @@ test('release.yml withholds the publish command unless the notes gate derived no
   // whenever pending changesets exist, whether or not a publish command is set, so gating `version`
   // as well would stop releases from ever starting.
   assert.match(workflow, /^\s*version:\s*pnpm run version\s*$/m);
+
+  // AND NEITHER MAY THE STEP ITSELF BE. This is the precondition the first-release fix rests on:
+  // a `never-versioned` run sets `is-release=false` and is USEFUL anyway, because the step still
+  // runs and opens the Version PR that moves the version off its scaffold value. Adding
+  // `if: steps.notes.outputs.is-release == 'true'` here would look like tightening the gate, would
+  // pass every other test in this file, and would silently restore the deadlock: a green run that
+  // opens no PR, forever. Verified against the action's source at the sha pinned above, where
+  // `case hasChangesets:` calls runVersion regardless of whether a publish command was supplied.
+  const step = /^\s*- name: Create release PR or publish\n([\s\S]*?)(?=^\s{6}- name: )/m.exec(workflow);
+  assert.ok(step, 'release.yml no longer has the "Create release PR or publish" step');
+  assert.doesNotMatch(
+    step[1],
+    /^\s*if:/m,
+    'the version-PR step must run unconditionally, or a repo that has never released can never start',
+  );
 });
 
 // The version-PR CI trap, asserted on the YAML because it cannot be asserted anywhere else.
