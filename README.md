@@ -167,6 +167,39 @@ README and docs status-line corrections. When *every* change in a version is int
 exactly that rather than padding: `Internal tooling and CI only. No change to the published package
 surface.`
 
+**The drop is decided on the bullet's LEADING CLAUSE, not on the whole sentence.** It used to read the
+whole sentence, so one internal clause condemned the entry it sat in however consumer-facing the rest
+of it was. Measured on `@cosyte/dicom` on 2026-07-29: `Correct 174 SOP Class UID names and close two
+holes in the dictionary regen gate` was dropped *whole*, so a version that genuinely corrected 174 SOP
+Class UID names would have published three bullets for five changesets and never mentioned the
+correction. A consumer-visible correction vanishing from a release body is the same class of harm as a
+mangled sentence: the page is well-formed and wrong.
+
+The principle, so this is not curve-fitting: **a release bullet is about its leading clause.** The
+subject of a sentence sits in its head and later clauses coordinate with or elaborate on it, so
+internal-tooling language in the *head* means the change is internal tooling and the bullet goes,
+while the same language in a later clause means a consumer-observable change carrying internal
+detail. All six live drops in the org separate on that reading, in both directions.
+
+- **The boundary set is narrow and measured**: `;` and `:` when whitespace follows, plus the
+  coordinating `and`. **A bare comma is deliberately not a boundary**: three live `@cosyte/deid`
+  changesets open `Repository CI configuration only, with no runtime impact: …`, where that comma
+  introduces a prepositional phrase and not a clause, and reading it as a boundary republishes three
+  entries that say of themselves that nothing changed for a reader.
+- **A code span and a parenthetical are masked when *locating* the boundary, never when reading it.**
+  The clause is sliced out of the original text, or `` `scripts/sync-version.mjs` `` would be hidden
+  inside its own backticks and an internal-only entry would be kept.
+- **The direction of error, stated because it is the unfavourable one.** The leading clause is always
+  a *prefix*, and a pattern that does not match a string cannot match a prefix of it, so this can only
+  ever turn a drop into a keep. The cost of being wrong is an internal-only bullet on a public page,
+  never a lost consumer-facing one. That is why it shipped on a before/after count over every pending
+  changeset in the org rather than on the argument: **exactly two bullets flip, org-wide** (`dicom`
+  3 → 4 kept, `cli` 9 → 10), and both are the defect above. Nothing that publishes today stops.
+- **It does not cut the internal clause out and publish the rest.** That is the mid-sentence cut this
+  pipeline exists to refuse, and the measured headline joins its clauses with a bare `and`, which
+  `isSafeCut` correctly declines. The remedy for a mixed changeset remains: **reword the changeset, do
+  not grow the gate.**
+
 ### The gate
 
 **The pipeline refuses to publish a release whose body is not fit for a public surface.** Documentation
@@ -183,7 +216,7 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 | Em dash | `U+2014`, inherited from changesets written before that ban |
 | Unobservable change | a bullet describing something no consumer can see |
 | A sentence built around the identifier | removing it would leave prose that does not parse |
-| An opening sentence too long for a bullet | over 200 characters, where the alternative is cutting it |
+| An opening sentence too long for a bullet | over 200 characters, where the alternative is cutting it. **No replacement sentence is offered**, see below |
 | A bullet that was cut short | a one-letter stump, or an over-length entry, in the finished bytes |
 | Mangled prose | doubled or orphaned clause punctuation, an emptied parenthetical |
 | An unclassifiable commit | no readable `package.json` at `HEAD`, or a version that appears in no commit |
@@ -293,11 +326,68 @@ so only the unambiguously-internal determiner forms are rewritten.
   ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
   hand the publish command back on the arm that actually publishes.
 - **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is
-  benign on exactly two readings, and the script distinguishes them by a `code` rather than by prose:
-  `already-released` (`v<version>` is tagged, which is every ordinary push to main between releases)
-  and `never-versioned` (see below). If `package.json` is unreadable at `HEAD`, or the version at
-  `HEAD` appears in no commit (a shallow checkout, so mind `fetch-depth: 0`), the run stops there
-  rather than letting the publish step decide on its own.
+  benign on exactly three readings, and the script distinguishes them by a `code` rather than by
+  prose: `already-released` (`v<version>` is tagged, which is every ordinary push to main between
+  releases), `never-versioned` (see below), and `version-reverted` (see below). If `package.json` is
+  unreadable at `HEAD`, or the version at `HEAD` appears in no commit (a shallow checkout, so mind
+  `fetch-depth: 0`), the run stops there rather than letting the publish step decide on its own.
+
+### The over-cap refusal offers no replacement sentence, on purpose
+
+**It used to offer one, and the one it offered was the sentence it had just refused.** Measured on
+`dicom` (253 characters), `ccda` (213) and `fhir` (241) on 2026-07-29: the refusal ended *"open the
+changeset with a sentence that fits … : `<sentence>`"*, and `<sentence>` was character for character
+the over-cap sentence being rejected. A reader who adopted it verbatim failed the next attempt
+identically. **A wrong suggestion in an error message is worse than no suggestion**, because it is
+confidently misleading at exactly the moment someone is trusting the tool.
+
+**And a correct one cannot be derived here.** Choosing what to leave out of a sentence is a judgement
+about which facts matter, which is precisely the judgement this gate refuses to make on an author's
+behalf, and a mechanical cut is what published `…two different drugs with o.` to a real release. So the
+message now states the constraint (the measured length, the cap, the overage), quotes the sentence
+**labelled as refused**, reports the translated form when translation changed it because that is the
+form measured, and says plainly that no shortened version is offered and why. The refusal itself is
+unchanged: still red, still before npm.
+
+### A version that moved backwards is a recovery, not a release
+
+**Recovering a stranded version commit means reverting it, and a revert moves the version DOWN and
+consumes no changesets**: it *restores* them, by construction, since the commit it undoes is the one
+that deleted them. The gate read that as a pending lower-version release with nothing to derive from
+and refused in `prepare`, which runs *before* `changesets/action` with no `continue-on-error`. So no
+Version PR ever opened and **every later push to `main` failed identically**.
+
+`@cosyte/fhir` was held there on 2026-07-29, and there was **no fix available inside `fhir`**: any
+commit that lowers a version consumes no changesets. `ccda` and `dicom` survived a byte-identical
+recovery only because they carry tags from real publishes and hit the `already-released`
+short-circuit; `fhir` has **zero tags, local and remote**, because an npm name-similarity rejection
+has kept it unpublished. `never-versioned` does not cover it either, because `0.0.4` **is** a real
+prior version.
+
+**The signal is the direction of the move, read at the commit that introduced `HEAD`'s version and
+nowhere else.** Under ADR 0001 a version never moves backwards and a published version is
+permanent, so a version this repository's own history has already moved *past* is not one it is
+releasing; it is one it has returned to. The release that follows a recovery is the **fresh Version
+PR**, which bumps back up, consumes the reworded changesets, and goes through this gate whole.
+
+**It cannot be wrong in the dangerous direction, and that does not rest on the detector being
+accurate.** A `version-reverted` verdict **grants nothing**: it sets `is-release=false`, which is
+precisely what *withholds* the publish command from `changesets/action`. There is no path from this
+verdict to npm, so the worst a false positive can do is decline to publish, which a fresh Version PR
+then undoes.
+
+**And it does not weaken the fail-closed property next to it.** A **forward** bump that consumed no
+changesets still fails, loudly, exactly as before: that refusal is what catches a version commit whose
+changesets went missing, and a forward move is not a downward one. The test is strictly "lower", and
+the comparison answers *"cannot order"*, which is not "lower", for anything that is not a plain
+dotted numeric version, so an unorderable pair falls through to that same hard failure.
+
+| Rejected alternative | Why |
+|---|---|
+| tag `v0.0.3` on the unpublished version, to force `already-released` | **rejected by the founder, and not implemented.** The tag is this pipeline's proxy for "npm has this version". Creating one for a version npm does not have makes the proxy assert a falsehood, and trades away a deliberately fail-closed ADR 0001 property to route around a bug in the classifier. |
+| require that the commit **restored** changesets | rejected as a *precondition*, kept as reported **evidence**. Real evidence, but depending on that file shape makes the unblocking fragile (reword in the same commit, or drop one, and `fhir` stays blocked), and it buys no safety: every extra conjunct only narrows a verdict that already grants nothing. |
+| compare against the **highest** version anywhere in history | refuted by counter-example. One botched bump to `1.0.0`, reverted, would classify every subsequent genuine `0.0.x` release as superseded, forever and silently: the permanent deadlock this change removes, rebuilt. The comparison is **local** to the version commit for that reason. |
+| also require `consumed.length === 0` | considered and deliberately **widened**. A downward move that *did* consume changesets is not a release either, and today it derives notes and publishes a version lower than one the repository has already carried, which ADR 0001 forbids outright. Declining is strictly safer. The two shapes are told apart in the logged `reason` rather than one being hidden. |
 
 ### A repo that has never released
 

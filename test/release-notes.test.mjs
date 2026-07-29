@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   assertPublishableNotes,
   collectHeadlines,
+  compareNumericVersions,
   DANGLING_TAIL,
   dejargon,
   extractChangeEntries,
@@ -30,6 +31,7 @@ import {
   inspectRelease,
   isConsumerFacing,
   isSafeCut,
+  leadingClause,
   parseChangeset,
   renderNotes,
   rewriteEmDashes,
@@ -310,7 +312,7 @@ test('DEFECT 2: an over-long opening sentence is REFUSED, never silently shorten
   assert.ok(head.length > 200, 'this fixture must exercise the over-cap path');
   assert.throws(
     () => collectHeadlines([{ id: 'residuals.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${long}\n` }], '@cosyte/ccda'),
-    /opening sentence is \d+ characters/,
+    /becomes a release bullet of \d+ characters/,
   );
 });
 
@@ -436,7 +438,7 @@ test('the renderer and the gate agree on what fits in a bullet, at the cap exact
   assert.equal(toHeadline(`${grows}.`).headline.length, 201, '"slice" -> "change" pushes it over');
   assert.throws(
     () => collectHeadlines([{ id: 'g.md', text: `${frontmatter}${grows}.\n` }], '@cosyte/hl7'),
-    /is 201 characters/,
+    /becomes a release bullet of 201 characters/,
   );
 
   const shrinks = `Add conformance-profile tooling (HL7-U, roadmap Phase U) ${'x'.repeat(150)}`;
@@ -924,7 +926,7 @@ for (const [label, bad, good, expected] of [
     'an opening sentence too long for a bullet',
     'Close the two residuals the previous change named and argued rather than fixed: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
     'Close two reading defects: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
-    /opening sentence is \d+ characters/,
+    /becomes a release bullet of \d+ characters/,
   ],
 ]) {
   test(`prepare goes red on ${label}, and green once it is rewritten`, () => {
@@ -1360,5 +1362,332 @@ test('release.yml authors the version PR with a credential that is not GITHUB_TO
     workflow,
     /uses: changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/,
     'the version-PR reasoning was read against this sha; re-read the source before repinning',
+  );
+});
+
+// ===============================================================================================
+// The three defects found by measurement on 2026-07-29, each proved BOTH WAYS.
+//
+// Both ways matters more than either way. Every one of these fixes relaxes something, and a relaxed
+// gate is only worth having if the thing it used to catch is still caught. So each block has a pair:
+// the case that must now pass, and the neighbouring case that must still be refused.
+// ===============================================================================================
+
+/**
+ * A repo recovering from a stranded version commit, exactly as `cosyte/fhir` did.
+ *
+ * The version commit bumped `from` -> `to` and consumed the changesets; the revert puts the version
+ * back to `from` and RESTORES them. `tagged` is false on purpose: fhir has zero tags, local and
+ * remote, because an npm name-similarity rejection kept it unpublished, and that is why it did not
+ * hit the `already-released` short-circuit that carried `ccda` and `dicom` through the same recovery.
+ */
+function makeRevertedVersionCommitRepo({ from = '0.0.3', to = '0.0.4', restore = true } = {}) {
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/fhir', version: '0.0.1' }, null, 2)}\n`);
+  writeFile(dir, '.changeset/README.md', 'changesets live here\n');
+  run('add', '-A');
+  run('commit', '-qm', 'feat: the first work');
+
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/fhir', version: from }, null, 2)}\n`);
+  for (const [name, text] of Object.entries(GOOD_FHIR_CHANGESETS)) writeFile(dir, `.changeset/${name}`, text);
+  run('add', '-A');
+  run('commit', '-qm', `Version Packages: ${from}`);
+
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/fhir', version: to }, null, 2)}\n`);
+  for (const name of Object.keys(GOOD_FHIR_CHANGESETS)) rmSync(join(dir, '.changeset', name));
+  run('add', '-A');
+  run('commit', '-qm', 'Version Packages');
+
+  // The revert. `git revert` would do the same thing; the tree is written out directly so the test
+  // does not depend on revert's conflict behaviour.
+  writeFile(dir, 'package.json', `${JSON.stringify({ name: '@cosyte/fhir', version: from }, null, 2)}\n`);
+  if (restore) {
+    for (const [name, text] of Object.entries(GOOD_FHIR_CHANGESETS)) writeFile(dir, `.changeset/${name}`, text);
+  }
+  run('add', '-A');
+  run('commit', '-qm', 'Revert "Version Packages"');
+  return { dir, run };
+}
+
+const GOOD_FHIR_CHANGESETS = {
+  'coding-scalar-wrapper.md': '---\n"@cosyte/fhir": patch\n---\n\nRead a scalar wrapped in an array.\n',
+  'nested-array-preservation.md': '---\n"@cosyte/fhir": patch\n---\n\nPreserve a nested array on round-trip.\n',
+};
+
+test('DEFECT 1: a recovery revert is NOT a pending release, so a Version PR can open again', () => {
+  // The measured block: reverting a stranded version commit lowers the version and consumes no
+  // changesets by construction, which read as "a pending 0.0.3 release with nothing to derive from"
+  // and refused in `prepare`. `prepare` runs before `changesets/action` with no continue-on-error, so
+  // no Version PR ever opened and every later push to main failed identically. There is no fix
+  // available inside the calling repo: any commit that lowers a version consumes no changesets.
+  const { dir } = makeRevertedVersionCommitRepo();
+  const release = inspectRelease(dir, '@cosyte/fhir');
+  assert.equal(release.isRelease, false, 'a version that moved DOWN is a recovery, not a release');
+  assert.equal(release.code, 'version-reverted');
+  assert.equal(release.version, '0.0.3');
+  assert.equal(release.previousVersion, '0.0.4');
+  assert.match(release.reason, /moved DOWN from 0\.0\.4 to 0\.0\.3/);
+  // Evidence, reported and not relied on: the restored changesets are what makes this revert-shaped.
+  assert.equal(release.restored.length, 2, 'a reverted version commit restores what it deleted');
+  assert.match(release.reason, /restored 2 changeset\(s\)/);
+
+  // AND THE VERDICT GRANTS NOTHING. This is the property that makes being wrong here safe: the run
+  // goes green, and `is-release=false` is what WITHHOLDS the publish command from changesets/action,
+  // so npm is not reached. There is no path from this classification to a publish.
+  const prepared = runPrepare(dir, { package: '@cosyte/fhir' });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.equal(prepared.outputs['is-release'], 'false', 'green must not mean permission to publish');
+  assert.equal(prepared.outputs.version, undefined, 'no version is offered to the publish step');
+  assert.match(prepared.stdout, /This is a recovery, not a failure, and nothing has been published/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 1, THE OTHER WAY: a FORWARD release that consumed no changesets still refuses', () => {
+  // The fail-closed property the fix must not buy its way out of. This refusal is what catches a
+  // version commit whose changesets went missing, and it has caught real defects. A forward move is
+  // not a downward one, so it does not reach the new branch at all.
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', '{"name":"@cosyte/fhir","version":"0.0.3"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'one');
+  writeFile(dir, 'package.json', '{"name":"@cosyte/fhir","version":"0.0.4"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'Version Packages');
+  assert.throws(() => inspectRelease(dir, '@cosyte/fhir'), /consumed no changesets/);
+  const prepared = runPrepare(dir, { package: '@cosyte/fhir' });
+  assert.equal(prepared.status, 1, 'a forward bump with no record of what shipped must stay red');
+  assert.equal(prepared.outputs['is-release'], undefined);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 1: the downward test is strict, so an unorderable pair falls through to the refusal', () => {
+  // `compareNumericVersions` answers `null`, not a guess, for anything it cannot order. `null` is not
+  // `-1`, so the commit lands on the existing hard failure rather than being quietly reclassified.
+  assert.equal(compareNumericVersions('0.0.3', '0.0.4'), -1);
+  assert.equal(compareNumericVersions('0.0.4', '0.0.3'), 1);
+  assert.equal(compareNumericVersions('0.0.4', '0.0.4'), 0);
+  assert.equal(compareNumericVersions('0.1.0', '0.0.9'), 1, 'component-wise, not lexicographic');
+  assert.equal(compareNumericVersions('0.0.10', '0.0.9'), 1);
+  assert.equal(compareNumericVersions('1.0', '1.0.0'), 0, 'a missing component reads as zero');
+  for (const [a, b] of [
+    ['0.0.4-rc.1', '0.0.4'],
+    ['0.0.4', '0.0.4+build.5'],
+    ['v0.0.3', '0.0.4'],
+    ['', '0.0.4'],
+    ['0.0.3', null],
+  ]) {
+    assert.equal(compareNumericVersions(a, b), null, `${JSON.stringify([a, b])} is not orderable here`);
+  }
+
+  const { dir, run } = makeRepo();
+  writeFile(dir, 'package.json', '{"name":"@cosyte/fhir","version":"0.0.4-rc.1"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'one');
+  writeFile(dir, 'package.json', '{"name":"@cosyte/fhir","version":"0.0.3"}\n');
+  run('add', '-A');
+  run('commit', '-qm', 'a downgrade nobody can order');
+  assert.throws(
+    () => inspectRelease(dir, '@cosyte/fhir'),
+    /consumed no changesets/,
+    'unorderable must stay red, not become quietly benign',
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 1: a downgrade that restored nothing is still declined, and SAYS it is odd', () => {
+  // Restored changesets are evidence, deliberately NOT a precondition: making the unblocking depend
+  // on that file shape would leave fhir blocked the moment a recovery reworded in the same commit.
+  // The log still tells the two apart rather than hiding one of them.
+  const { dir } = makeRevertedVersionCommitRepo({ restore: false });
+  const release = inspectRelease(dir, '@cosyte/fhir');
+  assert.equal(release.code, 'version-reverted');
+  assert.deepEqual(release.restored, []);
+  assert.match(release.reason, /restored no changesets/);
+  assert.match(release.reason, /check that lowering the version was intended/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 1: a tagged version still short-circuits before any of this', () => {
+  // Ordering check. `already-released` is what carried ccda and dicom through the same recovery, and
+  // the new branch must not get in front of it.
+  const { dir, run } = makeRevertedVersionCommitRepo();
+  run('tag', 'v0.0.3');
+  assert.equal(inspectRelease(dir, '@cosyte/fhir').code, 'already-released');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 2: the over-cap refusal does not hand back the sentence it just refused', () => {
+  // Measured on dicom (253 chars), ccda (213) and fhir (241) on 2026-07-29: the refusal offered
+  // "open the changeset with a sentence that fits ...: <sentence>", and <sentence> was character for
+  // character the one it had just rejected. A worker adopting it verbatim failed identically.
+  const long = `Correct the SOP Class UID names ${'x'.repeat(220)}`;
+  const text = `---\n"@cosyte/dicom": patch\n---\n\n${long}.\n`;
+  let message = '';
+  assert.throws(
+    () => collectHeadlines([{ id: 'd.md', text }], '@cosyte/dicom'),
+    (error) => {
+      message = error.message;
+      return true;
+    },
+  );
+
+  // The constraint is stated in numbers a reader can act on.
+  assert.match(message, /becomes a release bullet of \d+ characters/);
+  assert.match(message, /capped at 200, so it is \d+ over/);
+  // The over-cap sentence appears ONLY labelled as the thing being refused.
+  assert.match(message, /The refused sentence is: /);
+  assert.ok(message.includes(JSON.stringify(long)), 'the refused text is still quoted, so it is findable');
+  // And no replacement is offered, in the shape that used to offer one.
+  assert.doesNotMatch(message, /sentence that fits/, 'the old misleading phrasing must be gone');
+  assert.match(message, /No shortened version of it is suggested here, on purpose/);
+  // The load-bearing property, mechanically: nothing this message quotes is offered as text to adopt.
+  // Every quoted span is either at or under the cap, or introduced as refused.
+  for (const quoted of message.match(/"(?:[^"\\]|\\.)*"/g) ?? []) {
+    const span = JSON.parse(quoted);
+    const index = message.indexOf(quoted);
+    const introduced = message.slice(Math.max(0, index - 60), index);
+    assert.ok(
+      span.length <= 200 || /refused|would publish/.test(introduced),
+      `an over-cap sentence is quoted without being introduced as refused: ${introduced}`,
+    );
+  }
+});
+
+test('DEFECT 2, THE OTHER WAY: the refusal itself still happens, and still stops the run', () => {
+  // Rewording an error message must not soften what it is an error about. The over-cap sentence is
+  // still refused rather than trimmed, which is what keeps a cut fragment off a permanent page.
+  const long = `Correct the SOP Class UID names ${'x'.repeat(220)}`;
+  const { dir } = makeVersionCommitRepo({
+    changesets: { 'a.md': `---\n"@cosyte/hl7": patch\n---\n\n${long}.\n` },
+  });
+  const prepared = runPrepare(dir);
+  assert.equal(prepared.status, 1, 'an over-cap bullet must still stop the run');
+  assert.equal(prepared.outputs['is-release'], undefined, 'and must not reach npm');
+  assert.match(prepared.stderr, /No shortened version of it is suggested here/);
+  assert.match(prepared.stderr, /Nothing has been published/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The six live drops in the org on 2026-07-29, verbatim from the pending changesets, plus the two
+// mixed headlines the whole-headline test was throwing away. This is the before/after measurement
+// pinned as a test, because the argument for the leading-clause rule is the measurement and not the
+// principle: EVERY genuinely internal entry must still go, and only the mixed ones may come back.
+const LIVE_INTERNAL_ONLY_HEADLINES = [
+  // dicom
+  'Build-provenance change with no runtime impact',
+  // ccda: the internal gate LEADS, and the second clause is anaphoric on it ("it found")
+  'Wire the em-dash gate into CI, and remove the one live character it found',
+  // transform
+  "CodeQL, actionlint and the rest of this repository's pull-request checks now block the merge, and Dependabot watches its dependencies weekly",
+  // deid, three of them, each declaring of itself that nothing changed for a reader
+  'Repository CI configuration only, with no runtime impact: the pull-request checks (including CodeQL and actionlint) are now required to merge, and Dependabot watches dependency updates weekly',
+  'Repository CI configuration only, with no runtime impact: the release smoke loading every published subpath in ESM and CJS is now a required check, alongside `ci / actionlint` and CodeQL',
+  'Repository CI configuration only, with no runtime impact: what the required test job selects is now checked, the leak corpus and `phi-scan` suite included',
+];
+
+const LIVE_MIXED_HEADLINES = [
+  // dicom: the measured defect. `UIDS["1.2.840.10008.5.1.4.1.1.2"].name` really did read
+  // "CT Image Storage Storage" at 0.0.3, and this bullet was being dropped whole on `dictionary
+  // regen` matching its SECOND clause, so the correction would never have been mentioned.
+  'Correct 174 SOP Class UID names and close two holes in the dictionary regen gate',
+  // cli: the same defect, found by the same sweep. A corrected support matrix where three cells said
+  // nothing is consumer-observable documentation, and it was going the same way.
+  'Correct the documented support matrix, where three cells said nothing instead of saying "not supported", and rewrite every user-visible text surface so none of them uses an em dash',
+];
+
+test('DEFECT 3: a headline whose LEADING clause is consumer-facing is kept', () => {
+  for (const headline of LIVE_MIXED_HEADLINES) {
+    assert.equal(isConsumerFacing(headline), true, `must be reported: ${JSON.stringify(headline)}`);
+  }
+  // End to end, and this is the part that matters: `findViolations` reads the FINISHED bytes with the
+  // same rule, so a bullet the renderer keeps must not then be refused by `assert` as a change a
+  // consumer cannot observe. Disagreement between the two halves is a release nobody can cut.
+  const body = renderNotes({
+    packageName: '@cosyte/dicom',
+    version: '0.0.4',
+    headlines: LIVE_MIXED_HEADLINES,
+  });
+  assert.ok(body.includes('Correct 174 SOP Class UID names'), 'the correction must reach the body');
+  assert.deepEqual(assertPublishableNotes(body), [], 'and the gate must agree it is publishable');
+});
+
+test('DEFECT 3, THE OTHER WAY: a wholly internal headline is still dropped', () => {
+  for (const headline of LIVE_INTERNAL_ONLY_HEADLINES) {
+    assert.equal(isConsumerFacing(headline), false, `must be dropped: ${JSON.stringify(headline)}`);
+    // And the gate still refuses it if some other path puts it in a body.
+    const body = `### What changed\n\n- A genuine described change with detail.\n- ${headline}.\n`;
+    assert.ok(
+      findViolations(body).some((v) => v.rule === 'change a consumer of the package cannot observe'),
+      `the gate must still catch it in finished bytes: ${JSON.stringify(headline)}`,
+    );
+  }
+});
+
+test('DEFECT 3: the rule can only turn a DROP into a KEEP, never the reverse', () => {
+  // The direction of error, pinned at its cause rather than sampled. The classifier now reads
+  // `leadingClause(h)`, and that is always a PREFIX of `h`. A pattern that does not match a string
+  // cannot match a prefix of it, so any headline kept before is still kept, and the only movement
+  // this change can produce is DROP -> KEEP. That is why the risk here is an internal-only bullet
+  // slipping onto a page -- which the two measurements above bound to exactly two org-wide flips,
+  // both of them the defect being fixed -- and never a consumer-facing bullet being lost.
+  for (const headline of [
+    ...LIVE_MIXED_HEADLINES,
+    ...LIVE_INTERNAL_ONLY_HEADLINES,
+    'Add `profiles.epic`, the sixth built-in vendor profile',
+    'Correct the MSH-9 structure lookup so ORU^R01 resolves ORU_R01',
+    'Read the delimiters from every header, not just the first, and keep the fields',
+    'Place the amount at `HI*BE:01:::500:1` where the loop expects it',
+  ]) {
+    const leading = leadingClause(headline);
+    assert.ok(
+      headline.startsWith(leading),
+      `the leading clause must be a prefix, or monotonicity does not hold: ${JSON.stringify(leading)}`,
+    );
+  }
+  // And the consequence, on the entries that are kept today: they stay kept.
+  for (const kept of [
+    'Add streaming / incremental parse: `parseStream`',
+    'Correct the MSH-9 structure lookup so ORU^R01 resolves ORU_R01',
+    'Add `profiles.visage`, the sixth built-in vendor profile',
+    '835 remittance advice decoding',
+  ]) {
+    assert.equal(isConsumerFacing(kept), true, `${JSON.stringify(kept)} must still be reported`);
+  }
+});
+
+test('DEFECT 3: the clause boundary set is narrow, and a bare comma is NOT one', () => {
+  // Measured, not assumed. Three live deid changesets open "Repository CI configuration only, with no
+  // runtime impact: ..." -- that comma introduces a prepositional phrase, not a clause. Reading it as
+  // a boundary makes the leading clause "Repository CI configuration only", which no rule matches,
+  // and republishes three entries that say of themselves that nothing changed for a reader.
+  assert.equal(
+    leadingClause('Repository CI configuration only, with no runtime impact: the checks are required'),
+    'Repository CI configuration only, with no runtime impact',
+  );
+  assert.equal(
+    leadingClause('Correct 174 SOP Class UID names and close two holes in the dictionary regen gate'),
+    'Correct 174 SOP Class UID names',
+  );
+  assert.equal(leadingClause('Wire the em-dash gate into CI, and remove the one live character'), 'Wire the em-dash gate into CI,');
+  assert.equal(leadingClause('Add `profiles.epic`, the sixth built-in vendor profile'), 'Add `profiles.epic`, the sixth built-in vendor profile');
+
+  // A structural colon is not a boundary: `HI*BE:01:::500:1` is a valid X12 composite and `10:30` is
+  // a time. Both must be left inside the leading clause, or the clause stops mid-token.
+  const composite = 'Place the amount at `HI*BE:01:::500:1` where the loop expects it';
+  assert.equal(leadingClause(composite), composite);
+  assert.equal(leadingClause('Retry at 10:30 rather than dropping the message'), 'Retry at 10:30 rather than dropping the message');
+
+  // A code span and a parenthetical are masked when LOCATING the boundary, so their insides cannot
+  // look like one -- but the clause is sliced out of the ORIGINAL, so the classifier still reads what
+  // the author wrote. Masking the text the classifier reads would hide `sync-version.mjs` inside its
+  // own backticks and keep an internal-only entry.
+  assert.equal(
+    leadingClause('Harden `scripts/sync-version.mjs` and gate it in CI'),
+    'Harden `scripts/sync-version.mjs`',
+  );
+  assert.equal(isConsumerFacing('Harden `scripts/sync-version.mjs` and gate it in CI'), false);
+  assert.equal(
+    leadingClause('Add a repo-side PHI commit-scanner (`scripts/phi-scan.ts`) to every surface'),
+    'Add a repo-side PHI commit-scanner (`scripts/phi-scan.ts`) to every surface',
   );
 });
