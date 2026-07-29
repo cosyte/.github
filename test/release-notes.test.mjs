@@ -1649,6 +1649,14 @@ test('DEFECT 3, THE OTHER WAY: a wholly internal headline is still dropped', () 
   }
 });
 
+// The two rules whose match SPANS a conjunction. Reading the leading clause as a standalone string
+// defeats them systematically: neither half matches alone, so a wholly internal entry publishes. No
+// pending changeset in the org hits this, which is why it is a test rather than a measured flip.
+const SPANNING_INTERNAL_HEADLINES = [
+  'Relocate the fixtures and the tests into one place', // \brelocat(?:e|ed|ing) .*tests?\b
+  'Fix the workflow and the job red since Tuesday', // \bworkflow\b.*\bred since\b
+];
+
 test('DEFECT 3: the rule can only turn a DROP into a KEEP, never the reverse', () => {
   // The direction of error, pinned against THE RULE THIS REPLACED rather than restated as a property
   // of the implementation. The old rule dropped on any match anywhere in the headline; the new one
@@ -1702,13 +1710,6 @@ test('DEFECT 3: the rule can only turn a DROP into a KEEP, never the reverse', (
   }
 });
 
-// The two rules whose match SPANS a conjunction. Reading the leading clause as a standalone string
-// defeats them systematically: neither half matches alone, so a wholly internal entry publishes. No
-// pending changeset in the org hits this, which is why it is a test rather than a measured flip.
-const SPANNING_INTERNAL_HEADLINES = [
-  'Relocate the fixtures and the tests into one place', // \brelocat(?:e|ed|ing) .*tests?\b
-  'Fix the workflow and the job red since Tuesday', // \bworkflow\b.*\bred since\b
-];
 
 test('DEFECT 3: a match that STARTS in the leading clause condemns the entry, however far it runs', () => {
   for (const headline of SPANNING_INTERNAL_HEADLINES) {

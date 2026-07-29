@@ -349,6 +349,13 @@ export function leadingClause(text) {
  * and dropping THAT bullet loses the observable fact. Every one of the six live drops in the org
  * separates on exactly that reading, in both directions.
  *
+ * WITH ONE STATED EXCEPTION: the two rules that span a gap, `\brelocat(?:e|ed|ing) .*tests?\b` and
+ * `\bworkflow\b.*\bred since\b`, are in effect read as WHOLE-HEADLINE rules, because a match starting
+ * in the head can end anywhere. So "Add a `workflow` option to the runner and fix the suite red since
+ * Tuesday" is dropped even though the phrase that condemns it straddles the boundary. That is the
+ * conservative direction (it drops), it is what closes the hole those two rules would otherwise have,
+ * and no pending changeset in the org sits in it.
+ *
  * THE DIRECTION OF ERROR, stated because it is the unfavourable one. This can only ever turn a DROP
  * into a KEEP, and that is a SUBSET argument rather than a claim about regexes: the old rule dropped
  * on any match anywhere, this one drops on any match STARTING before the boundary, and the second set
@@ -371,7 +378,6 @@ export function leadingClause(text) {
  */
 export function isConsumerFacing(headline) {
   const whole = String(headline);
-  const cut = leadingClause(whole).length;
   // A match that STARTS in the leading clause condemns the entry even when it runs past the boundary.
   // Testing the leading clause as a standalone string instead would systematically defeat the two
   // rules whose match SPANS a conjunction, `\brelocat(?:e|ed|ing) .*tests?\b` and
@@ -379,12 +385,13 @@ export function isConsumerFacing(headline) {
   // head half, so neither half matches alone and a wholly internal entry would be published. No
   // pending changeset in the org hits that today, which is exactly why it is closed here rather than
   // left to be discovered by the release that publishes it.
-  const re = new RegExp(INTERNAL_ONLY_CHANGE.source, `${INTERNAL_ONLY_CHANGE.flags.replace('g', '')}g`);
-  for (let found = re.exec(whole); found !== null; found = re.exec(whole)) {
-    if (found.index < cut) return false;
-    if (re.lastIndex === found.index) re.lastIndex += 1; // a zero-width match cannot spin the loop
-  }
-  return true;
+  //
+  // ONE `exec` IS ENOUGH, and a loop over further matches would be dead code: the regex is not global,
+  // so `exec` returns the LEFTMOST match, whose index is minimal. If that one does not start before
+  // the boundary then none does. Not global also means `lastIndex` is neither read nor written, so
+  // exporting this regex cannot leak state into a classification.
+  const found = INTERNAL_ONLY_CHANGE.exec(whole);
+  return !(found !== null && found.index < leadingClause(whole).length);
 }
 
 // ---------------------------------------------------------------------------------------------

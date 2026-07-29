@@ -404,12 +404,15 @@ dotted numeric version, so an unorderable pair falls through to that same hard f
 | compare against the **highest** version anywhere in history | refuted by counter-example. One botched bump to `1.0.0`, reverted, would classify every subsequent genuine `0.0.x` release as superseded, forever and silently: the permanent deadlock this change removes, rebuilt. The comparison is **local** to the version commit for that reason. |
 | also require `consumed.length === 0` | considered and deliberately **widened**. A downward move that *did* consume changesets is not a release either, and today it derives notes and publishes a version lower than one the repository has already carried, which ADR 0001 forbids outright. Declining is strictly safer. The two shapes are told apart in the logged `reason` rather than one being hidden. |
 
-**The log does not claim "recovery" on the widened shape.** The reported evidence is whether the commit
-*restored* changesets, and the paragraph that says "this is a recovery, and a reverted version commit
-consumes no changesets by construction" is printed only when it did. On a downward move that *consumed*
-changesets, all three of those clauses would be false, and printing them anyway would override the line
-that had just correctly said the commit is not revert-shaped. That is the same defect as offering back
-a refused sentence: confidently misleading at the moment someone is trusting the tool.
+**The log does not claim "recovery" on a commit that restored nothing.** The reported evidence is
+whether the commit *restored* changesets, and the paragraph that says "this is a recovery, and a
+reverted version commit consumes no changesets by construction" is printed only when it did. Printing
+it anyway would override the line that had just correctly said the commit is not revert-shaped, which
+is the same defect as offering back a refused sentence: confidently misleading at the moment someone is
+trusting the tool. It is keyed on what was **restored** and not on what was consumed, so a downward
+commit that both restores and consumes changesets still reads as a recovery. Computing `consumed` here
+to sharpen a log line would grow the branch for prose, and every one of these paths is
+`is-release=false` regardless.
 
 ### A repo that has never released
 
