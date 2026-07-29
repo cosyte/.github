@@ -254,7 +254,11 @@ const ORPHAN_STUMP = /(?:^|\s)[a-z][.!?]?$/;
 // THE READER, so these are dropped from the note entirely rather than reworded. Founder, on seeing
 // the em-dash gate in hl7's notes: "The em dash gate does not need to be shown to the consumers
 // either. That should be internal and not something brought to the users attention."
-const INTERNAL_ONLY_CHANGE = new RegExp(
+/**
+ * Exported so the monotonicity guarantee in isConsumerFacing can be tested as the SUBSET argument it
+ * is, against the rule this replaced, rather than restated as a property of the implementation.
+ */
+export const INTERNAL_ONLY_CHANGE = new RegExp(
   [
     String.raw`\bem[- ]dash\b`,
     String.raw`check-no-emdash`,
@@ -346,11 +350,19 @@ export function leadingClause(text) {
  * separates on exactly that reading, in both directions.
  *
  * THE DIRECTION OF ERROR, stated because it is the unfavourable one. This can only ever turn a DROP
- * into a KEEP: a headline no rule matches at all has a leading clause no rule matches, so nothing
- * that is published today stops being published. The cost of being wrong is therefore an
- * internal-only bullet on a public page, never a lost consumer-facing one. That is why this shipped
- * with a before/after count over every pending changeset in the org rather than on the argument
- * alone, and why the boundary set above is as narrow as the measurement allows.
+ * into a KEEP, and that is a SUBSET argument rather than a claim about regexes: the old rule dropped
+ * on any match anywhere, this one drops on any match STARTING before the boundary, and the second set
+ * of matches is contained in the first. So it holds for any pattern the word list ever grows, with no
+ * dependency on that list staying free of anchors or lookarounds. The cost of being wrong is
+ * therefore an internal-only bullet on a public page, never a lost consumer-facing one. That is why
+ * this shipped with a before/after count over every pending changeset in the org rather than on the
+ * argument alone, and why the boundary set above is as narrow as the measurement allows.
+ *
+ * `findViolations` READS THE SAME RULE, and has to: the two halves must agree or a body the renderer
+ * keeps is one `assert` refuses, which is a release nobody can cut. The cost is that `assert`'s
+ * independent re-read of finished bytes is relaxed in the same step, so a body written by some OTHER
+ * path can now carry an internal clause after its leading one. That is inherent to moving them
+ * together, and `release.yml` only ever asserts the file `prepare` itself wrote.
  *
  * NOT DONE: CUTTING THE INTERNAL CLAUSE OUT and publishing the rest. That is the mid-sentence cut
  * this file exists to refuse, and the measured headline joins its clauses with a bare "and", which
@@ -358,7 +370,21 @@ export function leadingClause(text) {
  * `documentation/conventions.md`: reword the changeset, do not grow the gate.
  */
 export function isConsumerFacing(headline) {
-  return !INTERNAL_ONLY_CHANGE.test(leadingClause(headline));
+  const whole = String(headline);
+  const cut = leadingClause(whole).length;
+  // A match that STARTS in the leading clause condemns the entry even when it runs past the boundary.
+  // Testing the leading clause as a standalone string instead would systematically defeat the two
+  // rules whose match SPANS a conjunction, `\brelocat(?:e|ed|ing) .*tests?\b` and
+  // `\bworkflow\b.*\bred since\b`: "Relocate the fixtures and the tests into one place" has a neutral
+  // head half, so neither half matches alone and a wholly internal entry would be published. No
+  // pending changeset in the org hits that today, which is exactly why it is closed here rather than
+  // left to be discovered by the release that publishes it.
+  const re = new RegExp(INTERNAL_ONLY_CHANGE.source, `${INTERNAL_ONLY_CHANGE.flags.replace('g', '')}g`);
+  for (let found = re.exec(whole); found !== null; found = re.exec(whole)) {
+    if (found.index < cut) return false;
+    if (re.lastIndex === found.index) re.lastIndex += 1; // a zero-width match cannot spin the loop
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1503,14 +1529,29 @@ function cmdPrepare(options) {
       // Said at length rather than left as one line, because this is the state a human is most
       // likely to be standing in front of wondering whether the pipeline noticed. It has, and it is
       // declining to publish rather than failing to.
+      //
+      // CONDITIONAL ON THE EVIDENCE, and this file's own defect-2 lesson is why. An earlier revision
+      // printed the "this is a recovery" paragraph unconditionally, so on the widened shape (a
+      // downward move that DID consume changesets) all three of its clauses were false, and it
+      // overrode the line above it that had correctly said this is not revert-shaped. A message that
+      // contradicts its own evidence is confidently misleading at exactly the moment someone is
+      // trusting the tool, which is the defect this same commit fixes in the over-cap refusal.
       process.stdout.write(
-        `This is a recovery, not a failure, and nothing has been published. A reverted version ` +
-          `commit consumes no changesets by construction, so there is nothing here to derive notes ` +
-          `from and nothing here to release: ${release.version} is behind ` +
-          `${release.previousVersion}, which this repository has already carried. Correct the ` +
-          `changesets on main and let Changesets open a fresh "Version Packages" pull request, which ` +
-          `this run opens if any are pending: merging it bumps the version forward again, consumes ` +
-          `them, and the release it cuts is derived and checked in full.\n`,
+        release.restored.length > 0
+          ? `This is a recovery, not a failure, and nothing has been published. A reverted version ` +
+              `commit consumes no changesets by construction, so there is nothing here to derive ` +
+              `notes from and nothing here to release: ${release.version} is behind ` +
+              `${release.previousVersion}, which this repository has already carried. Correct the ` +
+              `changesets on main and let Changesets open a fresh "Version Packages" pull request, ` +
+              `which this run opens if any are pending: merging it bumps the version forward again, ` +
+              `consumes them, and the release it cuts is derived and checked in full.\n`
+          : `Nothing has been published, and nothing is being published from this commit: ` +
+              `${release.version} is behind ${release.previousVersion}, which this repository has ` +
+              `already carried, and a version may not move backwards. This commit is NOT shaped like ` +
+              `a reverted version commit, so do not assume it is one: check that lowering the ` +
+              `version was intended, and note that if changesets were consumed here their record of ` +
+              `what shipped has been spent without a release. Moving forward again through a fresh ` +
+              `"Version Packages" pull request is what this gate can derive notes from.\n`,
       );
     }
     return;

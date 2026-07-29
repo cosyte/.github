@@ -29,6 +29,7 @@ import {
   hasPriorVersion,
   headlineOf,
   inspectRelease,
+  INTERNAL_ONLY_CHANGE,
   isConsumerFacing,
   isSafeCut,
   leadingClause,
@@ -1504,6 +1505,31 @@ test('DEFECT 1: a downgrade that restored nothing is still declined, and SAYS it
   assert.deepEqual(release.restored, []);
   assert.match(release.reason, /restored no changesets/);
   assert.match(release.reason, /check that lowering the version was intended/);
+
+  // AND THE LOG MUST NOT CONTRADICT ITS OWN EVIDENCE. An earlier revision printed "This is a
+  // recovery, not a failure. A reverted version commit consumes no changesets by construction..."
+  // unconditionally, which on this shape is three false clauses overriding the correct line above it.
+  // That is exactly the defect this same commit fixes in the over-cap refusal: a message that is
+  // confidently misleading at the moment someone is trusting it.
+  const prepared = runPrepare(dir, { package: '@cosyte/fhir' });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.equal(prepared.outputs['is-release'], 'false', 'still no permission to publish');
+  assert.doesNotMatch(prepared.stdout, /This is a recovery, not a failure/);
+  assert.doesNotMatch(prepared.stdout, /consumes no changesets by construction/);
+  assert.match(prepared.stdout, /is NOT shaped like a reverted version commit, so do not assume it is/);
+  assert.match(prepared.stdout, /Nothing has been published/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEFECT 1: the revert-shaped log line is only printed when the evidence supports it', () => {
+  // The other side of the pair above: when changesets WERE restored, the recovery paragraph is right
+  // and is printed. Asserting only the absence would pass on a script that never printed either.
+  const { dir } = makeRevertedVersionCommitRepo();
+  const prepared = runPrepare(dir, { package: '@cosyte/fhir' });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.match(prepared.stdout, /This is a recovery, not a failure/);
+  assert.match(prepared.stdout, /consumes no changesets by construction/);
+  assert.doesNotMatch(prepared.stdout, /do not assume it is one/);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1624,25 +1650,46 @@ test('DEFECT 3, THE OTHER WAY: a wholly internal headline is still dropped', () 
 });
 
 test('DEFECT 3: the rule can only turn a DROP into a KEEP, never the reverse', () => {
-  // The direction of error, pinned at its cause rather than sampled. The classifier now reads
-  // `leadingClause(h)`, and that is always a PREFIX of `h`. A pattern that does not match a string
-  // cannot match a prefix of it, so any headline kept before is still kept, and the only movement
-  // this change can produce is DROP -> KEEP. That is why the risk here is an internal-only bullet
-  // slipping onto a page -- which the two measurements above bound to exactly two org-wide flips,
-  // both of them the defect being fixed -- and never a consumer-facing bullet being lost.
-  for (const headline of [
+  // The direction of error, pinned against THE RULE THIS REPLACED rather than restated as a property
+  // of the implementation. The old rule dropped on any match anywhere in the headline; the new one
+  // drops on any match STARTING before the clause boundary. The second set of matches is a SUBSET of
+  // the first, so every headline dropped now was dropped before, and the only movement this change
+  // can produce is DROP -> KEEP.
+  //
+  // Asserted as that implication -- dropped now => matched before -- which is falsifiable: it fails
+  // the moment the classifier drops something the old whole-headline test would have kept. Asserting
+  // instead that `leadingClause(h)` is a prefix of `h` proves nothing, because `whole.slice(0, cut)`
+  // is a prefix by construction and the assertion survives any change to the rule that uses it.
+  //
+  // And the subset argument does not depend on the word list staying free of anchors or lookarounds:
+  // a `$`-anchored alternative would match only at the end, i.e. after the boundary, which is a KEEP
+  // where the old rule dropped. Still the safe direction.
+  const corpus = [
     ...LIVE_MIXED_HEADLINES,
     ...LIVE_INTERNAL_ONLY_HEADLINES,
+    ...SPANNING_INTERNAL_HEADLINES,
     'Add `profiles.epic`, the sixth built-in vendor profile',
     'Correct the MSH-9 structure lookup so ORU^R01 resolves ORU_R01',
     'Read the delimiters from every header, not just the first, and keep the fields',
     'Place the amount at `HI*BE:01:::500:1` where the loop expects it',
-  ]) {
-    const leading = leadingClause(headline);
-    assert.ok(
-      headline.startsWith(leading),
-      `the leading clause must be a prefix, or monotonicity does not hold: ${JSON.stringify(leading)}`,
-    );
+    'Add streaming / incremental parse: `parseStream`',
+    '835 remittance advice decoding',
+  ];
+  // Every fragment the word list keys on, in both positions, so the implication is exercised on the
+  // rule's own vocabulary rather than only on prose someone happened to write.
+  for (const term of ['em dash', 'CodeQL', 'actionlint', 'Dependabot', 'Dictionary Regen', 'phase log']) {
+    corpus.push(`Wire ${term} into the pipeline`);
+    corpus.push(`Correct the documented behaviour and wire ${term} into the pipeline`);
+    corpus.push(`Correct the documented behaviour: wire ${term} into the pipeline`);
+  }
+  for (const headline of corpus) {
+    if (!isConsumerFacing(headline)) {
+      assert.ok(
+        INTERNAL_ONLY_CHANGE.test(headline),
+        `dropped something the whole-headline rule kept, which breaks monotonicity: ` +
+          JSON.stringify(headline),
+      );
+    }
   }
   // And the consequence, on the entries that are kept today: they stay kept.
   for (const kept of [
@@ -1653,6 +1700,33 @@ test('DEFECT 3: the rule can only turn a DROP into a KEEP, never the reverse', (
   ]) {
     assert.equal(isConsumerFacing(kept), true, `${JSON.stringify(kept)} must still be reported`);
   }
+});
+
+// The two rules whose match SPANS a conjunction. Reading the leading clause as a standalone string
+// defeats them systematically: neither half matches alone, so a wholly internal entry publishes. No
+// pending changeset in the org hits this, which is why it is a test rather than a measured flip.
+const SPANNING_INTERNAL_HEADLINES = [
+  'Relocate the fixtures and the tests into one place', // \brelocat(?:e|ed|ing) .*tests?\b
+  'Fix the workflow and the job red since Tuesday', // \bworkflow\b.*\bred since\b
+];
+
+test('DEFECT 3: a match that STARTS in the leading clause condemns the entry, however far it runs', () => {
+  for (const headline of SPANNING_INTERNAL_HEADLINES) {
+    // The head half on its own matches nothing, which is the trap.
+    assert.equal(
+      INTERNAL_ONLY_CHANGE.test(leadingClause(headline)),
+      false,
+      `this fixture is pointless unless the leading clause alone is clean: ${JSON.stringify(headline)}`,
+    );
+    // And the whole headline is internal, so it must still be dropped.
+    assert.equal(INTERNAL_ONLY_CHANGE.test(headline), true);
+    assert.equal(isConsumerFacing(headline), false, `must be dropped: ${JSON.stringify(headline)}`);
+  }
+  // The measured mixed headline is still kept: its match starts AFTER the boundary, not across it.
+  assert.equal(
+    isConsumerFacing('Correct 174 SOP Class UID names and close two holes in the dictionary regen gate'),
+    true,
+  );
 });
 
 test('DEFECT 3: the clause boundary set is narrow, and a bare comma is NOT one', () => {

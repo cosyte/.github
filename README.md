@@ -189,12 +189,27 @@ detail. All six live drops in the org separate on that reading, in both directio
 - **A code span and a parenthetical are masked when *locating* the boundary, never when reading it.**
   The clause is sliced out of the original text, or `` `scripts/sync-version.mjs` `` would be hidden
   inside its own backticks and an internal-only entry would be kept.
-- **The direction of error, stated because it is the unfavourable one.** The leading clause is always
-  a *prefix*, and a pattern that does not match a string cannot match a prefix of it, so this can only
-  ever turn a drop into a keep. The cost of being wrong is an internal-only bullet on a public page,
-  never a lost consumer-facing one. That is why it shipped on a before/after count over every pending
-  changeset in the org rather than on the argument: **exactly two bullets flip, org-wide** (`dicom`
-  3 → 4 kept, `cli` 9 → 10), and both are the defect above. Nothing that publishes today stops.
+- **A match that *starts* in the leading clause condemns the entry, however far past the boundary it
+  runs.** Testing the leading clause as a standalone string instead would systematically defeat the
+  two rules whose match spans a conjunction, `\brelocat(?:e|ed|ing) .*tests?\b` and
+  `\bworkflow\b.*\bred since\b`: `Relocate the fixtures and the tests into one place` has a neutral
+  head half, so neither half matches alone and a wholly internal entry would publish. No pending
+  changeset in the org hits that today, which is why it is closed here rather than left for the
+  release that would have published it.
+- **The direction of error, stated because it is the unfavourable one.** This can only ever turn a
+  drop into a keep, and that is a **subset** argument rather than a claim about regexes: the old rule
+  dropped on any match anywhere, this one drops on any match *starting* before the boundary, and the
+  second set of matches is contained in the first. So it holds for any pattern the word list ever
+  grows, with no dependency on that list staying free of anchors or lookarounds. The cost of being
+  wrong is an internal-only bullet on a public page, never a lost consumer-facing one. That is why it
+  shipped on a before/after count over every pending changeset in the org rather than on the argument:
+  **exactly two bullets flip, org-wide** (`dicom` 3 → 4 kept, `cli` 9 → 10), and both are the defect
+  above. Nothing that publishes today stops.
+- **`assert`'s independent half moves with it, and has to.** `findViolations` reads the same rule,
+  because if the two halves disagree the renderer keeps a bullet `assert` refuses, which is a release
+  nobody can cut. The cost is that `assert`'s re-read of finished bytes is relaxed in the same step, so
+  a body written by some *other* path can now carry an internal clause after its leading one.
+  `release.yml` only ever asserts the file `prepare` itself wrote.
 - **It does not cut the internal clause out and publish the rest.** That is the mid-sentence cut this
   pipeline exists to refuse, and the measured headline joins its clauses with a bare `and`, which
   `isSafeCut` correctly declines. The remedy for a mixed changeset remains: **reword the changeset, do
@@ -388,6 +403,13 @@ dotted numeric version, so an unorderable pair falls through to that same hard f
 | require that the commit **restored** changesets | rejected as a *precondition*, kept as reported **evidence**. Real evidence, but depending on that file shape makes the unblocking fragile (reword in the same commit, or drop one, and `fhir` stays blocked), and it buys no safety: every extra conjunct only narrows a verdict that already grants nothing. |
 | compare against the **highest** version anywhere in history | refuted by counter-example. One botched bump to `1.0.0`, reverted, would classify every subsequent genuine `0.0.x` release as superseded, forever and silently: the permanent deadlock this change removes, rebuilt. The comparison is **local** to the version commit for that reason. |
 | also require `consumed.length === 0` | considered and deliberately **widened**. A downward move that *did* consume changesets is not a release either, and today it derives notes and publishes a version lower than one the repository has already carried, which ADR 0001 forbids outright. Declining is strictly safer. The two shapes are told apart in the logged `reason` rather than one being hidden. |
+
+**The log does not claim "recovery" on the widened shape.** The reported evidence is whether the commit
+*restored* changesets, and the paragraph that says "this is a recovery, and a reverted version commit
+consumes no changesets by construction" is printed only when it did. On a downward move that *consumed*
+changesets, all three of those clauses would be false, and printing them anyway would override the line
+that had just correctly said the commit is not revert-shaped. That is the same defect as offering back
+a refused sentence: confidently misleading at the moment someone is trusting the tool.
 
 ### A repo that has never released
 
