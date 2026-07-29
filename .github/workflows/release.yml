@@ -36,6 +36,96 @@ name: Release
 # reporting that npm had the package and the gate had not run. A published version is permanent, so
 # that was a correction, not a gate. The one check that still has to follow the publish is the
 # reconciliation against the version Changesets actually reported, which does not exist until it has.
+#
+# WHO AUTHORS THE VERSION PR, and why it is not `GITHUB_TOKEN`. GitHub does not start workflow runs
+# for events produced by `GITHUB_TOKEN`. That is deliberate anti-recursion, and it is not an error
+# anyone sees. So a "Version Packages" PR opened with that token arrives with ZERO checks, and a
+# required status check that never reports is PENDING, not failing: with `bypass_actors: []` on the
+# rulesets, nobody can merge past it, an admin included.
+#
+# MEASURED, not predicted, and read on 2026-07-29: `cosyte/ccda#61` ("Version Packages", head branch
+# `changeset-release/main`, author `app/github-actions`) reports 0 check runs and
+# `mergeStateStatus: BLOCKED`, against 4 required contexts. Do NOT cite `cosyte/hl7#63` for this: it
+# is the PR the trap was FOUND on, but a human then pushed `edcf4128 chore: run CI on the version PR`
+# to it, which is the manual escape, so it now reads MERGED with 8 green checks and refutes on sight
+# the thing it was cited for.
+#
+# THE CONTROL, which is what makes this the token and not the repo or the ruleset: `cosyte/dicom#23`
+# is authored by `app/dependabot`, a BOT, in a repo governed by the SAME three rulesets as ccda
+# (`baseline-branch-protection`, `parser-ci-required-checks`, `emdash-required-check`), and it has 8
+# checks and reports CLEAN. Repo class and ruleset held constant, actor varied, outcome flipped. An
+# earlier draft cited `cosyte/.github#20` instead; that is a human-authored PR in a different repo
+# under different rulesets, so it varies three things at once and shows nothing.
+#
+# The trap predates the rulesets; the rulesets widened it, hl7 going from 3 required contexts to 5.
+#
+# THE FIX is to author that PR with a credential that is not `GITHUB_TOKEN`, which is what
+# `RELEASE_PR_TOKEN` is for. Two things are needed, and the second is the one that is easy to miss:
+#
+#   1. `GITHUB_TOKEN` in the action's `env` below, which is what it opens the PR with. The action
+#      reads `process.env.GITHUB_TOKEN || core.getInput("github-token")` (src/index.ts:15 at the sha
+#      pinned below), so the ENV WINS: adding a `github-token:` input while leaving the env in place
+#      would be a silent no-op.
+#   2. `persist-credentials: false` on the caller checkout. The version commit is pushed by
+#      `git push` (src/git.ts:11) out of the caller's checkout, NOT through the API. Left at its
+#      default, `actions/checkout` persists an `http.<host>.extraheader` Authorization into the local
+#      git config and git sends that preemptively, so the `~/.netrc` the action writes with our token
+#      (src/index.ts:49-52) is never consulted and the push stays `GITHUB_TOKEN`. Turning persistence
+#      off removes the competing credential and lets the netrc be what authenticates the push.
+#
+# Fixing (1) alone fixes the `opened` event and leaves `synchronize` broken. A Version PR is
+# force-pushed again every time another changeset lands on main, and required checks are evaluated
+# against the PR's CURRENT head sha, so an update pushed by `GITHUB_TOKEN` returns the PR to zero
+# applicable checks. The fix has to cover the push or it only works until the second changeset.
+#
+# WHY NOT JUST HAND THE PAT TO `actions/checkout`. It would also work, and it was the first draft.
+# It puts an org-scoped `Contents: read+write` + `Pull requests: read+write` credential into
+# `.git/config` at step ONE, where it then sits for the whole job. What the netrc route buys is
+# specific and worth naming exactly: the PAT is absent during `pnpm install --frozen-lockfile`, which
+# is where third-party DEPENDENCY LIFECYCLE scripts run (no caller sets `ignore-scripts`), and absent
+# during the `Verify` ladder that follows it. That is the window this narrows, and it is the one that
+# matters most, because it is the only window whose contents this org does not write.
+#
+# WHAT IT DOES NOT NARROW, measured rather than assumed, because an earlier draft of this comment
+# claimed the PAT arrived "after all third-party code has run" and that is FALSE. From the
+# `changesets/action` step onward the token is on disk in `~/.netrc` (src/index.ts:49-52, written
+# unconditionally, before the arm switch) AND injected as `GITHUB_TOKEN` into the environment of
+# `pnpm run version` and `pnpm run release` (src/run.ts:94, :294). Neither caller SCRIPT reads it,
+# but the process subtree beneath them does not stop there: `release` is `changeset publish`, which
+# spawns `pnpm publish` (every caller declares `packageManager: pnpm@10`) without `--ignore-scripts`,
+# which runs each caller's `prepublishOnly`, which is `clean && typecheck && lint && test && build &&
+# attw`, plus `gen:all` in dicom. So the entire verify ladder runs a SECOND
+# time inside that step, with the PAT in the environment. It is visible in the timings of the real
+# hl7 0.0.3 publish (run 30354998951, 2026-07-28): the `Verify` step took ~53s, and the interval
+# inside `changesets/action` between "is being published" and "packages published successfully" took
+# ~55s, which is not a 50 kB tarball upload. The netrc also survives into the later `pack:docs` step
+# and to job end.
+#
+# Note that on the publish arm the PAT buys nothing at all: with `createGithubReleases: false` the
+# action neither pushes nor opens a PR there, so its octokit goes unused. Narrowing it to the
+# version-PR arm is therefore tempting and is NOT done, because the only predicate available here,
+# `steps.notes.outputs.is-release`, is not the action's own arm predicate, and a disagreement would
+# hand `GITHUB_TOKEN` back to the Version PR, which is the one thing this change exists to prevent.
+# The exposure is accepted and written down rather than traded for that risk.
+#
+# IF THE NETRC FALLBACK DOES NOT APPLY, the push fails loudly and the run goes red with npm
+# untouched, because the publish arm does not push at all: `createGithubReleases: false` means
+# `git.pushTag` (src/run.ts:120, :144) is never reached, and the tag is created by `gh release
+# create --target` further down. So the blast radius of that failure is a Version PR that does not
+# get opened, which is strictly better than today's Version PR that opens and cannot be merged.
+#
+# WHAT DOES NOT CHANGE. `setupGitUser` is left at its default, and it hardcodes the git author of the
+# version commit to `github-actions[bot]` (src/git.ts:62-75) regardless of which token is in play, so
+# commit authorship is unaffected. Only the PR's author changes, to the token's owner.
+# `commitMode: github-api` was the considered alternative, routing the push through the API; it was
+# NOT taken because it also re-attributes and GPG-signs the version commit (src/git.ts:59-61 skips
+# `setupUser` in that mode), which is a second behaviour change this cannot test live.
+#
+# ABSENT, IT WARNS RATHER THAN FAILS. `RELEASE_PR_TOKEN` is optional and falls back to
+# `GITHUB_TOKEN`, which is exactly today's behaviour, trap included. Failing closed instead would
+# take every caller's release pipeline down the moment this lands, to protect against a state those
+# repos are already in. The fallback is announced loudly in the log rather than taken quietly,
+# because a fix that silently is not applied is worse than no fix.
 
 on:
   workflow_call:
@@ -56,6 +146,21 @@ on:
       NPM_TOKEN:
         required: true
       DOCS_REPO_DISPATCH_TOKEN:
+        required: false
+      # The credential that authors and pushes the "Version Packages" PR. See "WHO AUTHORS THE
+      # VERSION PR" above for why `GITHUB_TOKEN` cannot. Optional so that a caller without it keeps
+      # working; the run says so in the log rather than pretending it is fixed.
+      #
+      # SCOPE IT NARROWLY. What this job asks of it is exactly: push a branch, and open or update one
+      # pull request. As a fine-grained PAT owned by the cosyte org that is `Contents: read+write`,
+      # `Pull requests: read+write`, `Metadata: read`, on the caller repos and nothing else. It does
+      # NOT need `Workflows: write`: the action commits with `git add .`, and what `pnpm run version`
+      # changes is `package.json`, `CHANGELOG.md`, `.changeset/`, and the `VERSION` constant that
+      # `scripts/sync-version.mjs` rewrites in `src/index.ts` (`src/version.ts` in dicom). None of
+      # that is under `.github/workflows/`. A classic PAT with `repo` is far wider than
+      # this and should not be used. Do NOT reuse `DOCS_REPO_DISPATCH_TOKEN` for it either: that one
+      # needs write on cosyte/docs alone, so a single token serving both is over-scoped for each.
+      RELEASE_PR_TOKEN:
         required: false
 
 permissions:
@@ -80,6 +185,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          # Half of the version-PR fix, and the half that keeps working after the second changeset.
+          # Left at its default, the GITHUB_TOKEN persisted here as an `http.<host>.extraheader`
+          # outranks the `~/.netrc` that `changesets/action` writes, so the version commit's push
+          # stays GITHUB_TOKEN-authored and every `synchronize` on the PR goes uncheck-ed. Clearing
+          # it lets the netrc authenticate that push. Nothing else in this job pushes over git: `gh`
+          # uses the API, and the tag is created by `gh release create --target` below.
+          persist-credentials: false
       # The shared release tooling. A reusable workflow runs against the CALLER's checkout, so this
       # repo's scripts/ is not on disk unless we fetch it. `job_workflow_sha` is the commit of THIS
       # workflow file, so the script can never drift from the YAML that calls it, even though every
@@ -124,6 +236,39 @@ jobs:
         run: |
           node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
             --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
+      # Say plainly, in the log of the run that is about to open the PR, whether the PR it opens will
+      # be mergeable. Without the token this is not a degraded fix, it is no fix, and the symptom
+      # (a PR sitting at zero checks) reads like a slow queue rather than a permanent block.
+      #
+      # It sits AFTER the notes gate purely so it can read `is-release`, which is the closest signal
+      # available here to "this run opens no Version PR". Be precise about what it actually means:
+      # `is-release == 'true'` means the publish command is NOT withheld, which USUALLY but not
+      # always coincides with the action's own publish arm (`!hasChangesets && hasPublishScript`).
+      # `is-release` is derived from version-versus-tag and has no view of pending changesets, so a
+      # version-commit run that failed before `changeset publish` and was followed by a push carrying
+      # a new changeset would have `is-release == 'true'` AND pending changesets, and the advisory
+      # would be suppressed on a run that does open a PR. That costs one missing annotation on a rare
+      # run, and it is why the suppression is used for a LOG LINE and emphatically not for the token
+      # itself: the same non-equivalence, applied there, would hand `GITHUB_TOKEN` back to the PR.
+      # It does not identify the converse either; on `false` this run may or may not have pending
+      # changesets, which is why the text is conditional rather than an assertion.
+      #
+      # The token branch is deliberately in bash rather than a step-level `if`: the `secrets` context
+      # is not available to `jobs.<id>.steps.<id>.if`. That is caught rather than silent (actionlint,
+      # which self-check.yml runs over this repo, reports "context \"secrets\" is not allowed here"
+      # and exits 1, verified 2026-07-29), but the way to satisfy it is `env`, which can read it.
+      - name: Report whether a version PR would be able to run its checks
+        if: ${{ steps.notes.outputs.is-release != 'true' }}
+        env:
+          HAS_RELEASE_PR_TOKEN: ${{ secrets.RELEASE_PR_TOKEN != '' }}
+        shell: bash
+        run: |
+          if [ "$HAS_RELEASE_PR_TOKEN" = "true" ]; then
+            echo "RELEASE_PR_TOKEN is set. If this run opens a Version Packages PR, that PR will be"
+            echo "authored by the token's owner, so its required checks will actually run."
+          else
+            echo "::warning title=Version PR will land with zero checks::RELEASE_PR_TOKEN is not set, so if this run opens a Version Packages PR it will be authored by GITHUB_TOKEN. GitHub does not start workflow runs for that token's events, required checks that never report count as PENDING rather than failing, and with bypass_actors empty the PR cannot be merged by anyone, an admin included. Set RELEASE_PR_TOKEN to fix it."
+          fi
       - run: pnpm install --frozen-lockfile
       - name: Verify
         run: |
@@ -187,7 +332,10 @@ jobs:
           # attaches the artifacts to it.
           createGithubReleases: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The other half of the version-PR fix: this is the token the action opens the PR with.
+          # It MUST be set here rather than via the `github-token` input, which this env var takes
+          # precedence over in the action's own source at the sha pinned above.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
@@ -284,6 +432,18 @@ jobs:
       # defensive anyway, because the npm version moves under us, these are PUBLIC repos, and
       # artifacts are downloadable by anyone with read access. If anything credential-shaped survives
       # redaction the upload is skipped: a support diagnostic is not worth a leaked token.
+      #
+      # The GitHub-token SHAPE patterns (`ghp_`/`gho_`/`ghs_`/`github_pat_`) were added with
+      # `RELEASE_PR_TOKEN`, because that put a second class of credential on this runner. They are
+      # NOT covered by the 2026-07-27 measurement above and were not re-measured: npm's log records
+      # config paths rather than contents and never reads `~/.netrc`, so the expected hit rate is
+      # zero. They are here on the same defensive grounds as the rest, not on evidence.
+      #
+      # A rule for netrc's space-separated `password <token>` form was written and then REMOVED. It
+      # is redundant against the shape rules above for anything that could actually leak here, and it
+      # rewrites ordinary English: npm's own "incorrect or missing password is required" becomes
+      # "password REDACTED is required". This step exists so the next E403 ticket has a READABLE log,
+      # so a redaction that corrupts diagnostic prose costs more than it buys.
       - name: Collect the npm debug log
         if: failure()
         id: npm-log
@@ -304,10 +464,12 @@ jobs:
               -e 's/(_authToken|_auth|_password|authToken)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1\2REDACTED/gI' \
               -e 's/([Aa]uthorization[^[:alnum:]]{0,4})(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+=\/-]+/\1\2REDACTED/g' \
               -e 's/npm_[A-Za-z0-9]{36}/npm_REDACTED/g' \
+              -e 's/gh[pousr]_[A-Za-z0-9]{36,}/gh_REDACTED/g' \
+              -e 's/github_pat_[A-Za-z0-9_]{22,}/github_pat_REDACTED/g' \
               "$log" > "$dest/$(basename "$log")"
           done
           # Assert on the bytes that would be uploaded, not on the fact that sed ran.
-          if grep -rqiE 'npm_[A-Za-z0-9]{36}|(_auth|_authToken|_password)[[:space:]]*[=:][[:space:]]*[^R[:space:]]|(bearer|basic)[[:space:]]+[A-Za-z0-9._~+=/-]{16,}' "$dest"; then
+          if grep -rqiE 'npm_[A-Za-z0-9]{36}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|(_auth|_authToken|_password)[[:space:]]*[=:][[:space:]]*[^R[:space:]]|(bearer|basic)[[:space:]]+[A-Za-z0-9._~+=/-]{16,}' "$dest"; then
             echo "::error::Credential-shaped text survived redaction in the npm debug log, so it will NOT be uploaded. Fix the redaction in cosyte/.github before relying on this artifact."
             rm -rf "$dest"
             exit 1

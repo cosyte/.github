@@ -1051,3 +1051,96 @@ test('release.yml withholds the publish command unless the notes gate derived no
   // as well would stop releases from ever starting.
   assert.match(workflow, /^\s*version:\s*pnpm run version\s*$/m);
 });
+
+// The version-PR CI trap, asserted on the YAML because it cannot be asserted anywhere else.
+//
+// A "Version Packages" PR opened with GITHUB_TOKEN arrives with ZERO checks, because GitHub does not
+// start workflow runs for that token's events. A required check that never reports is PENDING, not
+// failing, so with `bypass_actors: []` the PR is unmergeable by anyone. The only true test of the fix
+// is a live Version PR, which is exactly what nothing in this repo is allowed to merge. So what is
+// provable here is the wiring, and the wiring is where all three ways to get this wrong live.
+test('release.yml authors the version PR with a credential that is not GITHUB_TOKEN', () => {
+  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
+  const EXPECTED = '${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}';
+
+  // Declared, and OPTIONAL. Required would take every caller's release pipeline down on the first
+  // run after this lands, to protect them from a state they are already in.
+  assert.match(
+    workflow,
+    /^ {6}RELEASE_PR_TOKEN:\n {8}required: false$/m,
+    'RELEASE_PR_TOKEN must be a declared, optional workflow_call secret',
+  );
+
+  // WRONG WAY 1: fixing only the PR and not the push. The version commit is pushed by `git push` out
+  // of the caller's checkout, and actions/checkout persists an Authorization extraheader that git
+  // sends preemptively, which outranks the `~/.netrc` the action writes with our token. Leave that
+  // persisted and the `opened` event is fixed while every later `synchronize` is not, so the PR
+  // returns to zero applicable checks as soon as a second changeset lands on main.
+  // Anchored STRUCTURALLY, on the first step of the job rather than on text adjacency. An earlier
+  // version matched `fetch-depth: 0` followed by `persist-credentials: false` anywhere, which passes
+  // if the caller checkout loses the setting while the SECOND (tooling) checkout, which has always
+  // had it, happens to sit next to a `fetch-depth: 0`. The caller checkout is the one that owns the
+  // push, and it is the first step; that is the thing worth pinning.
+  const steps = workflow.slice(workflow.indexOf('\n    steps:')).split(/\n      - (?=\S)/);
+  const callerCheckout = steps[1];
+  assert.match(
+    callerCheckout ?? '',
+    /^uses: actions\/checkout@/,
+    'the first step of the release job is expected to be the caller checkout',
+  );
+  assert.match(
+    callerCheckout,
+    /^\s*persist-credentials: false$/m,
+    'the caller checkout must set persist-credentials: false, or its GITHUB_TOKEN extraheader wins over the netrc and the version commit push stays bot-authored',
+  );
+  assert.match(callerCheckout, /^\s*fetch-depth: 0$/m, 'the caller checkout still needs full history');
+
+  // WRONG WAY 1b, the tempting shortcut: handing the PAT to actions/checkout instead. It works, and
+  // it puts an org-scoped credential in .git/config from step one, through `pnpm install` (no caller
+  // sets ignore-scripts) and the whole verify ladder, in public repos. The netrc route keeps the PAT
+  // off this runner until the changesets step, which removes exactly that window. It does NOT remove
+  // every window, and the workflow says where the rest are rather than implying there are none.
+  assert.doesNotMatch(
+    workflow,
+    /^\s*token:/m,
+    'do not persist the release-PR token into git config; the netrc route has a far smaller window',
+  );
+
+  // WRONG WAY 2: leaving the action's env at GITHUB_TOKEN. This is the token it opens the PR with.
+  const envTokens = [...workflow.matchAll(/^\s*GITHUB_TOKEN:\s*(.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(
+    envTokens,
+    [EXPECTED],
+    'changesets/action must open the PR with the release-PR token',
+  );
+
+  // WRONG WAY 3, and the quiet one: setting the action's `github-token` INPUT and considering it
+  // done. Read against the action's source at the sha pinned in the workflow, it resolves
+  // `process.env.GITHUB_TOKEN || core.getInput("github-token")`, so an env var set anywhere in that
+  // step BEATS the input. The input would look like the fix, lint clean, and change nothing.
+  assert.doesNotMatch(
+    workflow,
+    /^\s*github-token:/m,
+    'github-token is an input the GITHUB_TOKEN env var overrides; set the env, not the input',
+  );
+
+  // The fallback has to be audible. Unset, the behaviour is byte-identical to the trap, and the
+  // symptom (a PR sitting at zero checks) reads like a slow queue rather than a permanent block.
+  assert.match(workflow, /::warning title=Version PR will land with zero checks::/);
+  // Read via `env`, never a step-level `if`: the `secrets` context is not available to
+  // `jobs.<id>.steps.<id>.if`. actionlint rejects it there, so the mistake is loud rather than
+  // silent, but `env` is the construct that can actually read it.
+  assert.match(workflow, /^\s*HAS_RELEASE_PR_TOKEN:\s*\$\{\{ secrets\.RELEASE_PR_TOKEN != '' \}\}$/m);
+  assert.doesNotMatch(workflow, /^\s*if:.*secrets\.RELEASE_PR_TOKEN/m);
+
+  // Every claim above is a property of ONE revision of changesets/action: that the env beats the
+  // input, that the push is `git push` and not an API call, that `setupGitUser` hardcodes the commit
+  // author. A pin bump can falsify any of them while leaving every assertion above green, so the pin
+  // is asserted too. If this line fails, the answer is to re-read the action's source at the new sha
+  // before changing the number, not to change the number.
+  assert.match(
+    workflow,
+    /uses: changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/,
+    'the version-PR reasoning was read against this sha; re-read the source before repinning',
+  );
+});

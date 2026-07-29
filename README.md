@@ -40,8 +40,91 @@ jobs:
     uses: cosyte/.github/.github/workflows/release.yml@main
     with:
       package-name: "@cosyte/hl7"
-    secrets: inherit # NPM_TOKEN + DOCS_REPO_DISPATCH_TOKEN
+    secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
 ```
+
+## Who authors the "Version Packages" PR
+
+**`GITHUB_TOKEN` cannot, and the failure is silent.** GitHub does not start workflow runs for events
+produced by `GITHUB_TOKEN`. That is deliberate anti-recursion. The consequence for Changesets is that
+the "Version Packages" PR arrives with **zero checks**, and a required status check that never
+reports is **pending, not failing**, so with `bypass_actors: []` on the rulesets nobody can merge it,
+an admin included. It looks like a slow queue. It is a permanent block.
+
+**Measured, not predicted, read 2026-07-29:** `cosyte/ccda#61` ("Version Packages", head branch
+`changeset-release/main`, author `app/github-actions`) reports **0 check runs** and
+`mergeStateStatus: BLOCKED` against 4 required contexts. Do not cite `cosyte/hl7#63` for this. It is
+the PR the trap was found on, but a human then pushed `edcf4128 chore: run CI on the version PR` to
+it, which is the manual escape, so it now reads MERGED with 8 green checks and refutes on sight the
+thing it was cited for.
+
+**The control**, which is what makes this the token rather than the repo or the ruleset:
+`cosyte/dicom#23` is authored by `app/dependabot`, a **bot**, in a repo governed by the **same three
+rulesets** as `ccda`, and it has 8 checks and reports `CLEAN`. Repo class and ruleset held constant,
+actor varied, outcome flipped.
+
+The trap predates the rulesets added on 2026-07-27/28; those widened it, taking `hl7` from 3 required
+contexts to 5.
+
+**The fix is `RELEASE_PR_TOKEN`**, a credential that is not `GITHUB_TOKEN`. Two things are needed,
+and doing only the first buys a fix that decays after one changeset:
+
+1. **the `GITHUB_TOKEN` env var on `changesets/action`**, which is what it opens the PR with. The
+   action reads `process.env.GITHUB_TOKEN || core.getInput("github-token")`, so **the env wins**:
+   adding a `github-token:` input while leaving the env in place is a silent no-op.
+2. **`persist-credentials: false` on the caller checkout.** The version commit is pushed by
+   `git push`, not through the API. Left at its default, `actions/checkout` persists an Authorization
+   extraheader into the local git config and git sends it preemptively, so the `~/.netrc` that
+   `changesets/action` writes with our token is never consulted and the push stays `GITHUB_TOKEN`.
+   That push is what produces the `synchronize` event on every later update to the PR.
+
+**Why not simply hand the PAT to `actions/checkout`?** It also works, and it was the first draft. It
+puts an org-scoped credential into `.git/config` at step one, where it sits for the whole job. What
+the netrc route buys is specific and worth naming exactly: the PAT is **absent during
+`pnpm install --frozen-lockfile`**, which is where third-party dependency lifecycle scripts run (no
+caller sets `ignore-scripts`), and absent during the `Verify` ladder after it. That is the window
+that matters most, because it is the only one whose contents this org does not write.
+
+**What it does not narrow**, measured rather than assumed, because an earlier draft of this section
+claimed the PAT arrived "after all third-party code has run" and that is **false**. From the
+`changesets/action` step onward the token is on disk in `~/.netrc` (written unconditionally, before
+the arm switch) and injected as `GITHUB_TOKEN` into the environment of `pnpm run version` and
+`pnpm run release`. Neither caller *script* reads it, but the process subtree does not stop there:
+`release` is `changeset publish`, which spawns `pnpm publish` (every caller declares
+`packageManager: pnpm@10`) without `--ignore-scripts`, which runs each caller's `prepublishOnly`
+(`clean && typecheck && lint && test && build && attw`, plus `gen:all` in `dicom`). **The whole
+verify ladder therefore runs a second time inside that step with the PAT in the environment.** It is
+visible in the real `hl7` 0.0.3 publish (run `30354998951`, 2026-07-28): the `Verify` step took ~53s,
+and the interval inside `changesets/action` between "is being published" and "packages published
+successfully" took ~55s, which is not a 50 kB tarball upload.
+
+On the publish arm the PAT buys nothing at all, since `createGithubReleases: false` leaves the
+action's octokit unused there. Narrowing it to the version-PR arm is not done: the only predicate
+available is `steps.notes.outputs.is-release`, which is not the action's own arm predicate, and a
+disagreement would hand `GITHUB_TOKEN` back to the Version PR. The exposure is accepted and written
+down rather than traded for that risk.
+
+**If the netrc fallback does not apply**, the push fails loudly and the run goes red with npm
+untouched, because the publish arm does not push at all (`createGithubReleases: false` means the
+action never pushes a tag; `gh release create --target` makes it). The failure mode is a Version PR
+that does not get opened, which is strictly better than one that opens and cannot be merged.
+
+**Scope it narrowly.** All this job asks is: push a branch, open or update one pull request. As a
+fine-grained PAT that is `Contents: read+write`, `Pull requests: read+write`, `Metadata: read`, on the
+caller repos and nothing else. It does **not** need `Workflows: write`: the action commits with
+`git add .`, and what `pnpm run version` changes is `package.json`, `CHANGELOG.md`, `.changeset/`,
+and the `VERSION` constant `scripts/sync-version.mjs` rewrites in `src/index.ts` (`src/version.ts` in
+`dicom`), none of which is under `.github/workflows/`. A classic PAT with `repo` is far wider
+than what is needed here. **Do not reuse `DOCS_REPO_DISPATCH_TOKEN`**, which needs write on
+`cosyte/docs` alone: one token serving both purposes is over-scoped for each of them.
+
+**What does not change:** `setupGitUser` still hardcodes the version commit's git author to
+`github-actions[bot]` whichever token is in play. Only the PR's author changes, to the token's owner.
+
+**Unset, the workflow warns rather than fails.** The secret is optional and falls back to
+`GITHUB_TOKEN`, which is exactly the old behaviour, trap included. Failing closed would take every
+caller's release pipeline down to protect against a state those repos are already in. The fallback is
+announced in the run log, because a fix that silently is not applied is worse than no fix.
 
 ## Release notes
 
