@@ -254,7 +254,11 @@ const ORPHAN_STUMP = /(?:^|\s)[a-z][.!?]?$/;
 // THE READER, so these are dropped from the note entirely rather than reworded. Founder, on seeing
 // the em-dash gate in hl7's notes: "The em dash gate does not need to be shown to the consumers
 // either. That should be internal and not something brought to the users attention."
-const INTERNAL_ONLY_CHANGE = new RegExp(
+/**
+ * Exported so the monotonicity guarantee in isConsumerFacing can be tested as the SUBSET argument it
+ * is, against the rule this replaced, rather than restated as a property of the implementation.
+ */
+export const INTERNAL_ONLY_CHANGE = new RegExp(
   [
     String.raw`\bem[- ]dash\b`,
     String.raw`check-no-emdash`,
@@ -285,9 +289,109 @@ const INTERNAL_ONLY_CHANGE = new RegExp(
   'i',
 );
 
-/** False when the change cannot be observed by someone installing the package. */
+// Spans whose insides are one token rather than a phrase: a code span and a parenthetical. Masked to
+// the SAME LENGTH so an index found in the masked text indexes the original, because the boundary is
+// located in the masked text and the clause is then sliced out of the ORIGINAL. Masking the text the
+// classifier reads would hide `sync-version.mjs` inside its own backticks and keep an internal-only
+// entry.
+function maskSpans(text) {
+  return String(text)
+    .replace(/`[^`]*`/g, (m) => 'x'.repeat(m.length))
+    .replace(/\([^()]*\)/g, (m) => 'x'.repeat(m.length));
+}
+
+// What separates one INDEPENDENT clause from the next. `;` and `:` only when whitespace follows, for
+// the reason separatorBefore gives: the colons in `HI*BE:01:::500:1` and `10:30` bind their elements
+// together and are structural. Plus the coordinating conjunction, which is how the measured headline
+// joins its two clauses with no comma at all.
+//
+// A BARE COMMA IS DELIBERATELY NOT A BOUNDARY, and this is measured rather than assumed. Three live
+// `@cosyte/deid` changesets open "Repository CI configuration only, with no runtime impact: ...", and
+// that comma introduces a prepositional phrase, not a clause, so reading it as a boundary makes the
+// leading clause "Repository CI configuration only", which no rule matches, and republishes three
+// entries that say of themselves that nothing changed for a reader.
+const CLAUSE_BOUNDARIES = [/[;:](?=\s)/, /\sand\s/];
+
+/**
+ * Everything up to the first boundary between independent clauses.
+ *
+ * Exported so a test can pin the boundary set rather than infer it from a verdict.
+ */
+export function leadingClause(text) {
+  const whole = String(text);
+  const masked = maskSpans(whole);
+  let cut = whole.length;
+  for (const pattern of CLAUSE_BOUNDARIES) {
+    const found = new RegExp(pattern.source).exec(masked);
+    if (found && found.index < cut) cut = found.index;
+  }
+  return whole.slice(0, cut);
+}
+
+/**
+ * False when the change cannot be observed by someone installing the package.
+ *
+ * READ ON THE LEADING CLAUSE, NOT THE WHOLE HEADLINE, and that is the whole of this rule.
+ *
+ * WHAT WAS WRONG. This tested the whole sentence, so ONE internal clause condemned the entry it sat
+ * in however consumer-facing the rest of it was. Measured on `@cosyte/dicom` 2026-07-29: "Correct 174
+ * SOP Class UID names and close two holes in the dictionary regen gate" was dropped WHOLE on
+ * `\bDictionary Regen\b` matching its second clause, so a version that genuinely corrected 174 SOP
+ * Class UID names (`UIDS["1.2.840.10008.5.1.4.1.1.2"].name` really did read `"CT Image Storage
+ * Storage"` at 0.0.3) would have published three bullets for five changesets and never mentioned the
+ * correction. A consumer-visible correction vanishing from a release body is the same class of harm
+ * as a mangled sentence: the page is well-formed and wrong.
+ *
+ * THE PRINCIPLE, so this is not curve-fitting. A release bullet is ABOUT ITS LEADING CLAUSE. The
+ * subject of a sentence sits in its head, and later clauses coordinate with or elaborate on it. So
+ * internal-tooling language in the HEAD means the change IS internal tooling and the bullet goes;
+ * the same language in a later clause means a consumer-observable change carrying internal detail,
+ * and dropping THAT bullet loses the observable fact. Every one of the six live drops in the org
+ * separates on exactly that reading, in both directions.
+ *
+ * WITH ONE STATED EXCEPTION: the two rules that span a gap, `\brelocat(?:e|ed|ing) .*tests?\b` and
+ * `\bworkflow\b.*\bred since\b`, are in effect read as WHOLE-HEADLINE rules, because a match starting
+ * in the head can end anywhere. So "Add a `workflow` option to the runner and fix the suite red since
+ * Tuesday" is dropped even though the phrase that condemns it straddles the boundary. That is the
+ * conservative direction (it drops), it is what closes the hole those two rules would otherwise have,
+ * and no pending changeset in the org sits in it.
+ *
+ * THE DIRECTION OF ERROR, stated because it is the unfavourable one. This can only ever turn a DROP
+ * into a KEEP, and that is a SUBSET argument rather than a claim about regexes: the old rule dropped
+ * on any match anywhere, this one drops on any match STARTING before the boundary, and the second set
+ * of matches is contained in the first. So it holds for any pattern the word list ever grows, with no
+ * dependency on that list staying free of anchors or lookarounds. The cost of being wrong is
+ * therefore an internal-only bullet on a public page, never a lost consumer-facing one. That is why
+ * this shipped with a before/after count over every pending changeset in the org rather than on the
+ * argument alone, and why the boundary set above is as narrow as the measurement allows.
+ *
+ * `findViolations` READS THE SAME RULE, and has to: the two halves must agree or a body the renderer
+ * keeps is one `assert` refuses, which is a release nobody can cut. The cost is that `assert`'s
+ * independent re-read of finished bytes is relaxed in the same step, so a body written by some OTHER
+ * path can now carry an internal clause after its leading one. That is inherent to moving them
+ * together, and `release.yml` only ever asserts the file `prepare` itself wrote.
+ *
+ * NOT DONE: CUTTING THE INTERNAL CLAUSE OUT and publishing the rest. That is the mid-sentence cut
+ * this file exists to refuse, and the measured headline joins its clauses with a bare "and", which
+ * isSafeCut correctly declines. The remedy for a mixed changeset is still the standing one in
+ * `documentation/conventions.md`: reword the changeset, do not grow the gate.
+ */
 export function isConsumerFacing(headline) {
-  return !INTERNAL_ONLY_CHANGE.test(headline);
+  const whole = String(headline);
+  // A match that STARTS in the leading clause condemns the entry even when it runs past the boundary.
+  // Testing the leading clause as a standalone string instead would systematically defeat the two
+  // rules whose match SPANS a conjunction, `\brelocat(?:e|ed|ing) .*tests?\b` and
+  // `\bworkflow\b.*\bred since\b`: "Relocate the fixtures and the tests into one place" has a neutral
+  // head half, so neither half matches alone and a wholly internal entry would be published. No
+  // pending changeset in the org hits that today, which is exactly why it is closed here rather than
+  // left to be discovered by the release that publishes it.
+  //
+  // ONE `exec` IS ENOUGH, and a loop over further matches would be dead code: the regex is not global,
+  // so `exec` returns the LEFTMOST match, whose index is minimal. If that one does not start before
+  // the boundary then none does. Not global also means `lastIndex` is neither read nor written, so
+  // exporting this regex cannot leak state into a classification.
+  const found = INTERNAL_ONLY_CHANGE.exec(whole);
+  return !(found !== null && found.index < leadingClause(whole).length);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -661,12 +765,35 @@ export function collectHeadlines(files, packageName) {
     // ("slice" -> "change") and `rewriteEmDashes` can each add a character to a sentence that was
     // exactly at the cap. A gate that refuses what its own renderer produces is one nobody can
     // satisfy, and a gate that measures something other than what ships is measuring the wrong thing.
+    // NO REPLACEMENT SENTENCE IS OFFERED, and that is deliberate. This message used to end "open the
+    // changeset with a sentence that fits ...: <sentence>", where <sentence> was the author's raw
+    // opening sentence, i.e. CHARACTER FOR CHARACTER THE ONE IT HAD JUST REFUSED. Measured on
+    // `@cosyte/dicom`, `@cosyte/ccda` and `@cosyte/fhir` on 2026-07-29: all three refusals offered
+    // back the over-cap sentence as the fix, so a reader who adopted it verbatim failed the next
+    // attempt identically. A wrong suggestion in an error message is worse than no suggestion,
+    // because it is confidently misleading at exactly the moment someone is trusting the tool.
+    //
+    // And a CORRECT suggestion cannot be derived here: choosing what to leave out of a sentence is a
+    // judgement about which facts matter, which is precisely the judgement this gate refuses to make
+    // on the author's behalf (see headlineOf: a mechanical cut published "...two different drugs with
+    // o." to a real release). So the message states the constraint, quotes the refused text AS
+    // refused, and stops.
     if (headline.length > MAX_HEADLINE_CHARS) {
+      const over = headline.length - MAX_HEADLINE_CHARS;
+      const measured =
+        headline === raw
+          ? `The refused sentence is: ${JSON.stringify(raw)}`
+          : `The refused sentence is: ${JSON.stringify(raw)}, which this gate would publish as ` +
+            `${JSON.stringify(headline)} once internal project bookkeeping is removed, and it is that ` +
+            `published form that is measured`;
       throw new NotesError(
-        `${file.id}: its opening sentence is ${headline.length} characters, and a release bullet is ` +
-          `capped at ${MAX_HEADLINE_CHARS}. Shortening it here would publish a cut-off sentence that ` +
-          `reads as a complete one, so open the changeset with a sentence that fits and put the ` +
-          `detail in the paragraphs after it: ${JSON.stringify(raw)}\n${RECOVERY}`,
+        `${file.id}: its opening sentence becomes a release bullet of ${headline.length} characters, ` +
+          `and a bullet is capped at ${MAX_HEADLINE_CHARS}, so it is ${over} over. ${measured}. ` +
+          `No shortened version of it is suggested here, on purpose: deciding which facts to leave ` +
+          `out is a judgement about meaning, and a mechanical cut publishes a fragment that reads as ` +
+          `a complete sentence. Rewrite the changeset yourself so it OPENS with a sentence of at most ` +
+          `${MAX_HEADLINE_CHARS} characters saying what changed for a reader, and move the rest of ` +
+          `the detail into the paragraphs after it, where it is not measured.\n${RECOVERY}`,
       );
     }
     // A cut that would break the sentence is REFUSED, never taken. This is the mid-sentence half of
@@ -995,6 +1122,33 @@ export function findVersionCommit(repo, version) {
   return null;
 }
 
+/** A plain dotted numeric version and nothing else: no prerelease, no build metadata, no `v`. */
+const NUMERIC_VERSION = /^\d+(?:\.\d+)*$/;
+
+/**
+ * Compare two versions, or `null` when they cannot be compared with certainty.
+ *
+ * Deliberately NARROW. Anything that is not a plain dotted numeric version -- a prerelease tag, build
+ * metadata, a range, an empty string -- returns `null` rather than a guess. `null` is the
+ * conservative answer here: the one caller treats it as "not a downward move", which leaves the
+ * existing hard failure in place rather than reclassifying a commit nobody can order.
+ *
+ * @returns {-1|0|1|null} -1 when `a` is strictly lower than `b`.
+ */
+export function compareNumericVersions(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  if (!NUMERIC_VERSION.test(left) || !NUMERIC_VERSION.test(right)) return null;
+  const la = left.split('.').map(Number);
+  const lb = right.split('.').map(Number);
+  for (let i = 0; i < Math.max(la.length, lb.length); i += 1) {
+    const x = la[i] ?? 0;
+    const y = lb[i] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 /** True when the checkout is shallow, so its history cannot be reasoned about to its beginning. */
 function isShallowClone(repo) {
   return (gitOrNull(repo, ['rev-parse', '--is-shallow-repository']) ?? '').trim() === 'true';
@@ -1087,6 +1241,9 @@ export function hasPriorVersion(repo, version) {
  *                      has been released and no changeset has been consumed. There is no release
  *                      here to describe, and the next thing that should happen is the "Version
  *                      Packages" PR. Quiet, exit 0. See hasPriorVersion.
+ *   version-reverted   the commit that introduced HEAD's version moved the version DOWN, so this is
+ *                      a recovery from a stranded version commit rather than a release. The release
+ *                      is the FRESH Version PR that bumps back up. Quiet, exit 0.
  *   no-package-json    there is no version to reason about at all.
  *   no-version-commit  the version at HEAD appears in no commit, so what this push would publish
  *                      cannot be established from git.
@@ -1165,6 +1322,91 @@ export function inspectRelease(repo, packageName) {
         `usual cause is a shallow checkout, whose oldest commit reads as a root commit and hides ` +
         `the version bump. Check that the release job checks out with fetch-depth: 0.`,
     );
+  }
+
+  // A VERSION THAT MOVED DOWN IS A RECOVERY, NEVER A RELEASE.
+  //
+  // WHAT THIS UNBLOCKS. Recovering a stranded version commit means REVERTING it: the version goes
+  // back down (`0.0.4` -> `0.0.3`) and the reverting commit consumes no changesets -- it RESTORES
+  // them, by construction, since the commit it undoes is the one that deleted them. This gate read
+  // that as a pending `0.0.3` release with nothing to derive from and refused in `prepare`, which
+  // runs BEFORE `changesets/action` with no `continue-on-error`. So no Version PR ever opened and
+  // every later push to main failed identically. `@cosyte/fhir` was held there on 2026-07-29 and
+  // there is no fix available inside fhir: any commit that lowers a version consumes no changesets.
+  // `ccda` and `dicom` survived a byte-identical recovery only because they carry tags from real
+  // publishes and hit the `already-released` short-circuit above; fhir has zero tags, local and
+  // remote, because an npm name-similarity rejection has kept it unpublished. And `never-versioned`
+  // does not cover it either, because `0.0.4` IS a real prior version.
+  //
+  // THE SIGNAL IS THE DIRECTION OF THE MOVE, read at the commit that introduced HEAD's version and
+  // nowhere else. Under ADR 0001 a version never moves backwards and a published version is
+  // permanent, so a version this repository's own history has already moved PAST is not one it is
+  // releasing; it is one it has returned to. The release that follows a recovery is the FRESH Version
+  // PR, which bumps back up, consumes the reworded changesets, and goes through this gate whole.
+  //
+  // IT CANNOT BE WRONG IN THE DANGEROUS DIRECTION, and that does not rest on the detector being
+  // accurate. This verdict GRANTS NOTHING: it sets `is-release=false`, which is precisely what
+  // WITHHOLDS the publish command from `changesets/action`. There is no path from this answer to npm.
+  // The worst a false positive can do is decline to publish, which a fresh Version PR then undoes.
+  //
+  // AND IT DOES NOT WEAKEN THE FAIL-CLOSED PROPERTY BELOW. A FORWARD move that consumed no
+  // changesets still throws, loudly, exactly as before: that refusal is what catches a version commit
+  // whose changesets went missing, and it is not reached from here because a forward move is not a
+  // downward one. The test is strictly on `-1`, and `compareNumericVersions` answers `null` -- which
+  // is not `-1` -- for anything it cannot order with certainty, so an unorderable pair falls through
+  // to that same hard failure rather than into this branch.
+  //
+  // ALTERNATIVES REJECTED, each for a reason rather than a preference:
+  //
+  //   tag `v0.0.3` on the unpublished version to force `already-released` -- REJECTED BY THE FOUNDER
+  //     and not implemented. The tag is this pipeline's proxy for "npm has this version". Creating one
+  //     for a version npm does not have makes the proxy assert a falsehood, and trades away a
+  //     deliberately fail-closed ADR 0001 property to route around a bug in the classifier.
+  //   detect "the reverting commit RESTORED changesets" as the precondition -- rejected as a
+  //     PRECONDITION, kept as reported EVIDENCE below. It is real evidence, but making the fix depend
+  //     on the recovery commit having that exact file shape makes the unblocking fragile (reword the
+  //     changesets in the same commit, or drop one, and fhir stays blocked), and it buys no safety:
+  //     every extra conjunct only narrows a verdict that already grants nothing.
+  //   compare against the HIGHEST version anywhere in history -- rejected on a counter-example. One
+  //     botched bump to `1.0.0`, reverted, would then classify every subsequent genuine `0.0.x`
+  //     release as superseded, forever and silently. That is the permanent deadlock this change
+  //     exists to remove, rebuilt. The comparison is LOCAL to the version commit for that reason.
+  //   require `consumed.length === 0` as well -- considered and deliberately widened. A downward move
+  //     that DID consume changesets is not a release either, and today it derives notes and publishes
+  //     a version lower than one this repository has already carried, which ADR 0001 forbids outright.
+  //     Declining is strictly safer than that. The two shapes are told apart in the `reason` instead
+  //     of one of them being hidden, so the log still says which happened.
+  if (compareNumericVersions(version, commit.previousVersion) === -1) {
+    const restored = git(repo, [
+      'diff',
+      '--diff-filter=A',
+      '--name-only',
+      `${commit.sha}^`,
+      commit.sha,
+      '--',
+      '.changeset',
+    ])
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^\.changeset\/.+\.md$/.test(line) && !/\/README\.md$/i.test(line));
+    // Evidence, not a precondition: it tells the reader of the log which of the two shapes this is.
+    const shape =
+      restored.length > 0
+        ? `that commit restored ${restored.length} changeset(s), which is the shape of a reverted ` +
+          `version commit`
+        : `that commit restored no changesets, so it is not shaped like a reverted version commit; ` +
+          `check that lowering the version was intended`;
+    return {
+      isRelease: false,
+      code: 'version-reverted',
+      version,
+      previousVersion: commit.previousVersion,
+      restored,
+      reason:
+        `${packageName} moved DOWN from ${commit.previousVersion} to ${version} in ` +
+        `${commit.sha.slice(0, 7)}, so ${version} is a version this repository has already moved past ` +
+        `rather than one it is releasing, and ${shape}`,
+    };
   }
 
   const consumed = git(repo, [
@@ -1258,7 +1500,17 @@ function cmdPrepare(options) {
     // is, and answering "then do not publish" would be a guess dressed as a decision: it would end
     // green having shipped nothing, on a commit that may well have been a release. Stop instead, red
     // and before the publish step, which is the whole point of deriving the notes first.
-    if (release.code !== 'already-released' && release.code !== 'never-versioned') {
+    //
+    // `version-reverted` is benign by the same argument and a third route: the version at HEAD is
+    // LOWER than one this repository has already carried, so under ADR 0001 it is not a version this
+    // pipeline may publish at all. What this run should do is let `changesets/action` open the fresh
+    // "Version Packages" PR that bumps back up and consumes the reworded changesets, and that is
+    // exactly what `is-release=false` allows.
+    if (
+      release.code !== 'already-released' &&
+      release.code !== 'never-versioned' &&
+      release.code !== 'version-reverted'
+    ) {
       fail(
         `Cannot establish what a publish of ${packageName} from this commit would ship: ` +
           `${release.reason}. Release notes are derived from git, so an unclassifiable commit has no ` +
@@ -1278,6 +1530,35 @@ function cmdPrepare(options) {
           `Packages" pull request, which this run opens if any changesets are pending: merging it ` +
           `bumps the version and consumes them, and the release it cuts is derived from those ` +
           `changesets and checked in full.\n`,
+      );
+    }
+    if (release.code === 'version-reverted') {
+      // Said at length rather than left as one line, because this is the state a human is most
+      // likely to be standing in front of wondering whether the pipeline noticed. It has, and it is
+      // declining to publish rather than failing to.
+      //
+      // CONDITIONAL ON THE EVIDENCE, and this file's own defect-2 lesson is why. An earlier revision
+      // printed the "this is a recovery" paragraph unconditionally, so on the widened shape (a
+      // downward move that DID consume changesets) all three of its clauses were false, and it
+      // overrode the line above it that had correctly said this is not revert-shaped. A message that
+      // contradicts its own evidence is confidently misleading at exactly the moment someone is
+      // trusting the tool, which is the defect this same commit fixes in the over-cap refusal.
+      process.stdout.write(
+        release.restored.length > 0
+          ? `This is a recovery, not a failure, and nothing has been published. A reverted version ` +
+              `commit consumes no changesets by construction, so there is nothing here to derive ` +
+              `notes from and nothing here to release: ${release.version} is behind ` +
+              `${release.previousVersion}, which this repository has already carried. Correct the ` +
+              `changesets on main and let Changesets open a fresh "Version Packages" pull request, ` +
+              `which this run opens if any are pending: merging it bumps the version forward again, ` +
+              `consumes them, and the release it cuts is derived and checked in full.\n`
+          : `Nothing has been published, and nothing is being published from this commit: ` +
+              `${release.version} is behind ${release.previousVersion}, which this repository has ` +
+              `already carried, and a version may not move backwards. This commit is NOT shaped like ` +
+              `a reverted version commit, so do not assume it is one: check that lowering the ` +
+              `version was intended, and note that if changesets were consumed here their record of ` +
+              `what shipped has been spent without a release. Moving forward again through a fresh ` +
+              `"Version Packages" pull request is what this gate can derive notes from.\n`,
       );
     }
     return;
