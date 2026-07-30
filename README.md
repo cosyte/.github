@@ -3,8 +3,8 @@
 Org-wide reusable GitHub Actions workflows for the `@cosyte/*` suite. Each repo's own workflow is a
 thin caller, so the pipeline is defined once here. All actions are pinned to commit SHAs.
 
-> Currently **private** (the suite is pre-launch). It must become **public** at launch, because a
-> public repository cannot call reusable workflows from a private one.
+> This repository is **public**, which is what lets the public `@cosyte/*` repos call these
+> workflows: a public repository cannot call a reusable workflow from a private one.
 
 ## Reusable workflows
 
