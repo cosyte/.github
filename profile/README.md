@@ -1,4 +1,4 @@
-![cosyte](https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png)
+![](https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png)
 
 # cosyte
 
@@ -36,7 +36,7 @@ npm install @cosyte/hl7
 | [`@cosyte/synth`](https://www.npmjs.com/package/@cosyte/synth) | Deterministic, seedable synthetic test data across six formats, never real PHI |
 | [`@cosyte/cli`](https://www.npmjs.com/package/@cosyte/cli) | The `cosyte` command + MCP server, for the terminal or an LLM |
 
-Three of these do not install cleanly yet, and it is fair to know before you try: `transform` and `synth`
+Some of these do not install cleanly yet, and it is fair to know before you try: `transform` and `synth`
 declare a peer dependency on [`@cosyte/fhir`](https://github.com/cosyte/fhir), which is not on npm yet,
 and `@cosyte/cli@0.0.1`'s published manifest points at local tarballs. `terminology` and `deid` install
 on their own today.
