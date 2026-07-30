@@ -433,11 +433,81 @@ jobs:
               --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes"
           fi
 
-          if [ "$DISPATCH_DOCS" = "true" ] && [ -n "$DISPATCH_TOKEN" ]; then
-            GH_TOKEN="$DISPATCH_TOKEN" gh api repos/cosyte/docs/dispatches \
-              -f event_type=package-released \
-              -F "client_payload[package]=$PACKAGE_NAME" \
-              -F "client_payload[version]=$version"
+          # THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth
+          # outcome -- doing nothing, quietly -- is what this actually did for its whole life.
+          #
+          # `-f`, NOT `-F`. `gh api -F/--field` applies magic type conversion, and one of its rules
+          # is that "if the value starts with `@`, the rest of the value is interpreted as a
+          # filename to read the value from" (`gh api --help`, gh 2.96.0). Every package in this org
+          # is `@cosyte/*`, so `-F "client_payload[package]=@cosyte/synth"` made gh strip the `@` and
+          # try to open the file `cosyte/synth`, exiting 1 with
+          #   error parsing "client_payload[package]" value: open cosyte/synth: no such file or directory
+          # `-f/--raw-field` is the plain-string form: no `@` interpretation, and it still builds the
+          # nested object from the `client_payload[...]` keys, which is what cosyte/docs reads as
+          # `github.event.client_payload.package` / `.version`.
+          #
+          # `version` takes `-f` too, deliberately, even though a version can never start with `@`.
+          # `-F` also coerces bare integers to JSON numbers, so a hypothetical `7` would arrive typed
+          # differently from `0.0.7`; and a reader who sees two flags here has to work out why they
+          # differ. Neither field has any reason to be magic, so neither one is.
+          #
+          # WHY THIS SURFACED ON 2026-07-30 AND NOT LONG AGO. The old guard also required a non-empty
+          # DOCS_REPO_DISPATCH_TOKEN, and that secret did not exist in this org until that morning.
+          # The guard was false on every release this org had ever run, so this dispatch had never
+          # once executed and nothing about it was ever exercised. Creating the token broke nothing:
+          # it switched on a path that had been dead since it was written, with the bug waiting in
+          # it. A step nothing has ever run is not a working step. That is also why the skip branch
+          # below is now loud -- a path that is asked for and quietly not taken is indistinguishable
+          # from one that works.
+          #
+          # A FAILED DISPATCH NO LONGER FAILS THE JOB, DELIBERATELY. By the time this runs, npm has
+          # published (permanent, ADR 0001) and the GitHub release exists; its URL is printed a few
+          # lines above. The only thing a failed dispatch costs is that docs.cosyte.com rebuilds
+          # later rather than now, and a push to that repo rebuilds it anyway. Failing here made four
+          # correct releases report as failed runs on 2026-07-30 (dicom 0.0.4, synth 0.0.2, deid
+          # 0.0.2, terminology 0.0.4), which is worse than the miss it reports: a red conclusion on a
+          # successful publish invites someone to re-run a release job that has already published,
+          # and it buries a real publish failure among cosmetic ones. The run conclusion should say
+          # what happened to the artifact. So this warns instead, at `::error::` level so it annotates
+          # the run, with the exact command to finish the job by hand.
+          #
+          # STATE THE RESIDUAL RATHER THAN LEAVING IT IMPLIED. A run whose conclusion is `success`
+          # notifies nobody, so nothing chases this annotation. If DOCS_REPO_DISPATCH_TOKEN expires
+          # or loses its scope, every release annotates red on a green run and "docs rebuilds later"
+          # becomes unbounded. What bounds it today is that `cosyte/docs` also rebuilds on any push
+          # to its `main`, and its prebuild re-reads every package's latest release, so one rebuild
+          # covers every dispatch that was missed. That is a real backstop and it is not a monitor.
+          # The thing that would close it is the sticky-issue pattern `dispatch-receiver.yml` already
+          # uses for its own failures, raised from here on the failure branch -- deliberately NOT
+          # built into this fix, because a notifier is a feature and this is a one-character bug.
+          if [ "$DISPATCH_DOCS" != "true" ]; then
+            echo "Docs dispatch not requested (dispatch-docs=false); skipping."
+          elif [ -z "$DISPATCH_TOKEN" ]; then
+            echo "::warning title=Docs rebuild not triggered::dispatch-docs is true but DOCS_REPO_DISPATCH_TOKEN is unset, so cosyte/docs was never told that $PACKAGE_NAME@$version shipped."
+            {
+              echo "### Docs rebuild NOT triggered"
+              echo ""
+              echo "\`dispatch-docs\` is \`true\` but \`DOCS_REPO_DISPATCH_TOKEN\` is not set for this repo,"
+              echo "so docs.cosyte.com has not been told that \`$PACKAGE_NAME@$version\` shipped."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          elif GH_TOKEN="$DISPATCH_TOKEN" gh api repos/cosyte/docs/dispatches \
+                 -f event_type=package-released \
+                 -f "client_payload[package]=$PACKAGE_NAME" \
+                 -f "client_payload[version]=$version"; then
+            echo "Dispatched package-released to cosyte/docs for $PACKAGE_NAME@$version."
+          else
+            echo "::error title=Docs rebuild dispatch failed::The publish and the GitHub release SUCCEEDED. Only the cosyte/docs rebuild dispatch for $PACKAGE_NAME@$version failed, and it needs running by hand."
+            {
+              echo "### Docs rebuild dispatch FAILED (the release itself is fine)"
+              echo ""
+              echo "\`$PACKAGE_NAME@$version\` published and its GitHub release exists. The only thing"
+              echo "that did not happen is the docs.cosyte.com rebuild. Trigger it by hand:"
+              echo ""
+              echo '```bash'
+              echo "gh api repos/cosyte/docs/dispatches -f event_type=package-released \\"
+              echo "  -f 'client_payload[package]=$PACKAGE_NAME' -f 'client_payload[version]=$version'"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
 
       # When a publish fails, npm writes the only useful diagnostic to
