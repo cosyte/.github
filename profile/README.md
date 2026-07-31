@@ -1,4 +1,7 @@
-![](https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png">
+  <img alt="" src="https://cosyte.com/tile/cosyte-lockup-tile-on-light-1200x300.png">
+</picture>
 
 # cosyte
 
