@@ -272,6 +272,79 @@ test('a cut is taken only where the sentence survives it', () => {
   assert.equal(isSafeCut('It no longer carries phase language, and more', 21, 35), false);
 });
 
+test('a phase phrase at the END of a sentence is cut whole, not decapitated', () => {
+  // BOTH OF THESE ARE REAL. Verbatim from synth@.changeset/synth-11-release-hardening.md and
+  // deid@.changeset/deid-10. `roadmap phase` is the HEAD NOUN of "the final roadmap phase", so
+  // matching it alone stranded the determiner run: @cosyte/synth v0.0.1 published "Release
+  // hardening: the final." (corrected by hand afterwards) and @cosyte/deid wrote the same shape.
+  // isSafeCut allows it because a cut at the end of a sentence has nothing on its right to break,
+  // and DANGLING_TAIL is FORBIDDEN to catch it -- `final` is a content word.
+  assert.equal(toHeadline('Phase 9 (SYNTH-11): release hardening — the final roadmap phase').headline, 'Release hardening');
+  assert.equal(toHeadline('DEID-10 — release hardening (roadmap §Phase 10), the final roadmap phase').headline, 'Release hardening');
+  // Which is byte-for-byte what @cosyte/x12, @cosyte/ncpdp and @cosyte/astm already publish for the
+  // same change, so the rule lands on the corpus's own answer rather than inventing one.
+  assert.equal(toHeadline('Phase 10 — release hardening').headline, 'Release hardening');
+
+  // ANCHORED TO THE TAIL. A determiner run is only stranded when no noun follows it, so mid-sentence
+  // this alternative must not fire: unanchored it rewrites the line below to "Complete and ship the
+  // parser", which is well-formed and has lost the object the author gave the verb. What it does
+  // instead is whatever it did before this alternative existed -- imperfect, pre-existing, and not
+  // this rule's to fix. Pinned so the anchor cannot be dropped without a test going red.
+  assert.equal(toHeadline('Complete the final roadmap phase and ship the parser').headline, 'Complete the final ship the parser');
+
+  // A GENERAL VERSION WAS BUILT AND WITHDRAWN: widen any tail cut leftwards over "a determiner plus
+  // up to two lowercase modifiers". It fixed both bullets above and moved nothing else in the 406-
+  // changeset corpus, and it was still wrong, because what it CAN reach is not bounded by the
+  // corpus. These four are its casualties, and every one must render exactly as it did before.
+  assert.equal(toHeadline('Regenerate and re-publish the DICOM dictionary roadmap phase').headline, 'Regenerate and re-publish the DICOM dictionary');
+  assert.equal(toHeadline('Add the check that catches phase 5b').headline, 'Add the check that catches');
+  assert.equal(toHeadline('Read the 837 interchange roadmap phase').headline, 'Read the 837 interchange');
+  assert.equal(toHeadline('Model the `Q` record roadmap phase').headline, 'Model the `Q` record');
+
+  // AND THE MODIFIER SLOT IS A WORD LIST, NOT `\w+`. A wildcard there takes a content noun with it,
+  // which reproduces the same object deletion one word narrower: these two published "Regenerate and
+  // re-publish" and "Finish" while `\w+` was in the slot. Every word in the list is a sequence
+  // adjective that cannot BE the object of a verb, which is what makes it a named shape.
+  assert.equal(toHeadline('Regenerate and re-publish the dictionary roadmap phase').headline, 'Regenerate and re-publish the dictionary');
+  assert.equal(toHeadline('Finish the parser roadmap phase').headline, 'Finish the parser');
+
+  // And a wider cut has further to fall, so both landings are checked. When the phrase WAS the whole
+  // sentence nothing is left and the run stops for a human; when a stub survives it, the body-level
+  // minimum catches it. Neither publishes.
+  assert.throws(
+    () => collectHeadlines([{ id: 'p.md', text: '---\n"@cosyte/hl7": patch\n---\n\nThe final roadmap phase.\n' }], '@cosyte/hl7'),
+    /nothing is left of/,
+  );
+  assert.equal(toHeadline('Ship the final roadmap phase.').headline, 'Ship');
+  assert.ok(
+    assertPublishableNotes('### What changed\n\n- Ship.\n').some((p) => p.includes('says nothing')),
+    'a stub left by the wider cut must still be refused at the body',
+  );
+});
+
+test('a stranded determiner is still a refusal, and a stranded negation is still the carried hole', () => {
+  // Verbatim from ccda@.changeset. The cut leaves "...not a", DANGLING_TAIL sees the stranded `a`,
+  // and the run stops for a human. Unchanged by the rule above and pinned here because the withdrawn
+  // general version broke it: widening took the `a` too and left "...not", which DANGLING_TAIL is
+  // forbidden to catch, turning a visible refusal into a silent publish of a mangled sentence.
+  const summary = 'Docs: rewrite `docs-content/` capability claims as a capability doc, not a phase log (CCDA-P7 documentation residual).';
+  const { headline } = toHeadline(summary);
+  assert.ok(headline.endsWith('not a'), `the stranded determiner must survive: ${JSON.stringify(headline)}`);
+  assert.ok(DANGLING_TAIL.test(headline), 'and it must still be visible to the detector');
+  assert.throws(
+    () => collectHeadlines([{ id: 'docs.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${summary}\n` }], '@cosyte/ccda'),
+    /which trails off/,
+  );
+
+  // THE HOLE, STATED RATHER THAN CLOSED. A tail cut can destroy a negation's complement, and no rule
+  // here sees it: DANGLING_TAIL may not hold `not`, because walking back off one turns "the emitter
+  // does not" into "the emitter does". This is PRE-EXISTING -- the base leaves "...not the next" on
+  // the same input, equally uncaught -- so the rule above changes the residue, not the class. There
+  // is no live instance in the corpus. Closing it needs its own evidence and its own change.
+  assert.equal(toHeadline('Ship the emitter now, not the next roadmap phase').headline, 'Ship the emitter now, not');
+  assert.ok(!DANGLING_TAIL.test('Ship the emitter now, not'), 'and this is exactly why it is a hole');
+});
+
 test('DEFECT 1: a mid-clause cut is REFUSED, and the banned text survives so the gate can see it', () => {
   // Verbatim from hl7@1c5c0f5:.changeset/public-surface-hygiene-dist.md, which was one approval
   // away from a real @cosyte/hl7 publish. Before this change the translator produced "...no longer

@@ -364,6 +364,99 @@ message now states the constraint (the measured length, the cap, the overage), q
 form measured, and says plainly that no shortened version is offered and why. The refusal itself is
 unchanged: still red, still before npm.
 
+### A phase phrase at the end of a sentence is cut whole, not decapitated
+
+**`@cosyte/synth` `v0.0.1` published "Release hardening: the final."** `PHASE_TALK` matches `roadmap
+phase`, and in *"…release hardening — the final roadmap phase"* that is the **head noun of "the final
+roadmap phase"**. `isSafeCut` allows it because a cut at the end of a sentence has nothing on its
+right to break, so the determiner run is left standing with nothing to govern. `DANGLING_TAIL` cannot
+see it and **must not be grown to**: `final` is a content word, and that list may only ever hold words
+that cannot change a sentence's meaning. `@cosyte/deid` wrote the same shape and would have published
+"Release hardening, the final."
+
+`PHASE_TALK` now names the phrase (`the <sequence adjective> roadmap phase`, **anchored to the end
+of the sentence**), beside the `the \w+ and final phase` alternative that was already there for the
+same reason. It publishes **"Release hardening."**, which is letter for letter what `x12` `v0.0.1`,
+`ncpdp` `v0.0.1` and `astm` `v0.0.1` already publish for the same change, and what a human wrote by
+hand when correcting `synth`'s body. **The modifier slot is a word list, not `\w+`**: `final`,
+`last`, `next`, `first`, `current`, `remaining`, `penultimate`, every one a word that orders our own
+work and can never be the *object* of a verb. A wildcard there reproduces the object deletion below
+one word narrower: it turns "Regenerate and re-publish the dictionary roadmap phase" into
+"Regenerate and re-publish". Across the corpus the slot is filled by `final` 5 times across the 464 changeset bodies (3 of the 406
+opening sentences, 2 of them tail-anchored) and by nothing else; the older sibling still wildcards its own slot, which is pre-existing and its own work.
+
+**The anchor is load-bearing:** a determiner run is only stranded when no noun follows it. Unanchored, the same alternative rewrites "Complete the final roadmap phase and ship
+the parser" to "Complete and ship the parser", which is well-formed and missing the object the author
+gave the verb. Mid-sentence the plain `roadmap phase` alternative still matches, so phase language is
+detected exactly where it was before; only the wider cut is confined to the tail.
+
+**Cost, measured on 406 opening sentences.** Every commit touching `.changeset/*.md` in the 15 repos
+that carry them yields 464 distinct changeset blobs, which dedupe to 406 distinct (repo, opening
+sentence) pairs. State the dedupe with the number, because the blob count is a different denominator.
+**2 bullets change, both are the defect, and no changeset moves between publishing and being
+refused.** Nothing else in the corpus moves.
+
+### A general version of that rule was built and WITHDRAWN. Do not rebuild it
+
+The general form is: widen any **tail** cut leftwards over "a determiner plus up to two lowercase
+modifiers", so a cut takes the noun phrase rather than its head. It fixes both bullets above, moves
+nothing else in the 406-changeset corpus, and is still **wrong**, because what it *can* reach is not
+bounded by what the corpus happens to contain. It
+
+- deletes the object of *"Regenerate and re-publish the DICOM dictionary roadmap phase"*, publishing
+  *"Regenerate and re-publish"*;
+- reads the **relative pronoun** in *"Add the check that catches phase 5b"* as a determiner and
+  publishes *"Add the check"*, a claim the author never made. `that <lowercase word>` occurs in 32 of
+  those 406 opening sentences, so the shape is native to this register;
+- shortens a headline enough to flip the **200-character refusal into a publish**;
+- takes the `a` from *"…as a capability doc, not a phase log"*, leaving *"…not"*, which
+  `DANGLING_TAIL` is **forbidden** to catch, converting a visible refusal into a silent publish.
+
+Every one of those turns a visible break into well-formed prose that is not what the author wrote,
+which is this file's worst failure mode. **A named shape cannot delete a word the author chose: it
+matches only the words it names**, which is why the alternative that replaced it names both the
+phrase and the words allowed in its one variable slot. That is the general lesson, and it is why the
+list above is a list.
+
+One interaction is worth stating rather than leaving to be rediscovered: because the phrase is now
+cut whole, a headline in the narrow band that was **just** over the 200-character cap can come in
+under it and publish where it used to be refused. That is the cap behaving as specified: it is
+**measured on the translated headline**, and the translated headline is the author's sentence minus
+phase language. No changeset in the corpus sits in that band.
+
+**A carried hole, stated rather than closed.** A tail cut can still destroy a negation's complement.
+*"Ship the emitter now, not the next roadmap phase"* → *"…not"*, and nothing sees it, because
+`DANGLING_TAIL` may not hold `not`. This is **pre-existing**: the base leaves *"…not the next"* on the
+same input, equally uncaught. There is no live instance. Closing it needs its own evidence.
+
+### Two gates proposed for the `synth` fragments, both REFUTED by the corpus
+
+`synth` `v0.0.1` published **seven** bullets that read as fragments, and the standing diagnosis was
+that the translator had cut away the subject and the verb. **Re-derived from the real release, it had
+not: exactly one of the seven is the renderer's doing** (the one above). The other six are the
+author's own words with a label removed. *"Phase 1 (SYNTH-1): the generator core"* has no verb
+anywhere in it to lose. Two gates follow from the wrong diagnosis, and both are refused here:
+
+- **"Refuse a bullet with no finite verb."** A release bullet is very often a noun phrase on this
+  suite, and it publishes correctly. Verified live on the published pages: `Release hardening.`
+  (`x12`, `ncpdp` and `astm` v0.0.1; `synth`'s own bullet was rewritten by hand and no longer reads
+  this way), `Spec-clean Part 10 serializer.`, `Source/vendor profile
+  system.`, `Safety-critical domain helpers.`, `VR value decode + dataset navigation.`,
+  `Pre-publication docs polish.` (`dicom` v0.0.1), `The first working parser.`, `The clinical
+  reconciliation triad.` (`ccda` v0.0.1) and `RxNorm drug relationship graph.` (`terminology`
+  v0.0.1). The rule refuses every one of them.
+- **"Refuse the `Phase N (ID):` headline shape at authoring time."** Under the reading that catches
+  the `synth` bullets (*translation removes a run at index 0, and the remainder then opens on one of
+  `, ; : . / -` or an em dash*), it fires on **133 of 406 opening sentences, across 13 repos**, and
+  nearly all of them publish correctly: `Builder emits a Family History section.`, `835 Healthcare
+  Claim Payment/Advice (ERA), TR3 005010X221A1.`, `Metadata-level de-identification (PS3.15 Annex
+  E).` A gate that refuses a third of everything is one nobody can satisfy. **State the reading with
+  the number**: looser ones ("the headline starts with `Phase`") measure 117 to 168 and are a
+  different claim.
+
+**The remedy for a terse bullet is the standing one: reword the changeset, not grow the gate.** Do not
+re-propose either rule without new evidence.
+
 ### A version that moved backwards is a recovery, not a release
 
 **Recovering a stranded version commit means reverting it, and a revert moves the version DOWN and
