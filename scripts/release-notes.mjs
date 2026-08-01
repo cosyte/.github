@@ -180,11 +180,54 @@ const ORDINAL =
   String.raw`thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|` +
   String.raw`twenty-first|twenty-second|twenty-third|twenty-fourth|\d+(?:st|nd|rd|th))`;
 
+// Sequence adjectives: words that order our own work and can never be the object of a verb. This is
+// the modifier slot of the phase-phrase alternative below -- see the comment there for why it is a
+// list rather than `\w+`.
+const SEQUENCE_MODIFIER = '(?:final|last|next|first|current|remaining|penultimate)';
+
 // Phase and slice language. Note `Phase 5b` and `Phase W`: a digits-only pattern misses both, and
 // the ordinal forms ("thirteenth slice", "second wave") are ours too. The negative lookahead keeps
 // ordinary English off the list, so "in phase with the source system" survives.
+//
+// TWO ALTERNATIVES MATCH A WHOLE NOUN PHRASE RATHER THAN ITS HEAD NOUN, and they are the reason a
+// list of shapes beats a general rule here. `roadmap phase` is the HEAD of "the final roadmap
+// phase", so matching it alone strands the determiner run that governed it: `@cosyte/synth` v0.0.1
+// published "Release hardening: the final." and `@cosyte/deid` wrote the same shape. isSafeCut
+// cannot see it, because a cut at the end of a sentence has nothing on its right to break, and
+// DANGLING_TAIL cannot either -- `final` is a CONTENT word, and that list may only ever hold words
+// that cannot change a sentence's meaning. So the phrase is named here, where the blast radius is
+// exactly the shape written down. `the \w+ and final phase` was already here for the same reason;
+// this one is its sibling and was measured the same way.
+//
+// THE MODIFIER SLOT IS A WORD LIST, NOT `\w+`, and that is the difference between naming a shape and
+// wildcarding one. A wildcard takes any single word, INCLUDING A CONTENT NOUN: `the \w+ roadmap
+// phase` turns "Regenerate and re-publish the dictionary roadmap phase" into "Regenerate and
+// re-publish", deleting the object the author gave the verb, silently and in well-formed prose.
+// Every word below is a sequence adjective that cannot BE the object of a verb, so the rule can only
+// ever remove text that is ordering our own work. Across the corpus the slot is filled by `final` 5
+// times across the 464 changeset bodies (3 of the 406 opening sentences, 2 of them tail-anchored),
+// and by nothing else. Six of the seven words below are reasoned in rather than measured in: no
+// instance exists, and none can be a verb's object, which is the property the list is chosen for. (The older sibling still wildcards its slot, and is not tail-anchored
+// either; that is pre-existing and its own piece of work.)
+//
+// AND IT IS ANCHORED TO THE END OF THE SENTENCE, because that is where the whole measured defect
+// lives: a determiner run is only stranded when there is no following noun for it to govern. Left
+// unanchored it also fires mid-sentence, where "Complete the final roadmap phase and ship the
+// parser" becomes "Complete and ship the parser" -- well-formed, and missing the object the author
+// gave the verb. Mid-sentence the plain `roadmap phase` alternative below still matches, so phase
+// language is detected in exactly the places it was before; only the WIDER cut is confined to the
+// tail. Detection over a finished body is unaffected, since that alternative is what fires there.
+//
+// A GENERAL VERSION OF THIS WAS BUILT AND WITHDRAWN, and the withdrawal is the finding. Widening any
+// tail cut leftwards over "a determiner plus up to two lowercase modifiers" fixes both live bullets
+// and nothing else in the corpus -- but the cases it CAN reach are not bounded by the corpus. It
+// deletes the object of "re-publish the DICOM dictionary roadmap phase", reads the relative pronoun
+// in "the check that catches phase 5b" as a determiner and publishes "Add the check", and shortens a
+// headline enough to flip the 200-character refusal into a publish. Each turns a visible break into
+// well-formed prose that is not what the author wrote, which is this file's worst failure mode. A
+// named shape cannot do any of that: it matches the words it names.
 const PHASE_TALK = new RegExp(
-  String.raw`\b(?:roadmap phase\b[ ]?[A-Za-z0-9]*|` +
+  String.raw`\b(?:the ${SEQUENCE_MODIFIER} roadmap phase\b(?=[\s.]*$)|roadmap phase\b[ ]?[A-Za-z0-9]*|` +
     String.raw`phase (?!of\b|with\b|in\b|out\b|the\b|and\b|is\b|for\b|to\b)[A-Za-z0-9]+[a-z]?\b|` +
     String.raw`wave \d+\b|the \w+ and final phase\b|documentation residual\b|` +
     String.raw`${ORDINAL} (?:slice|wave)\b)`,
