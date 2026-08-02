@@ -352,20 +352,30 @@ so only the unambiguously-internal determiner forms are rewritten.
 **A founder call about how much a release bullet is allowed to say, not a workaround for one failing
 run.** `MAX_HEADLINE_CHARS` in `scripts/release-notes.mjs` is now **400**.
 
-What it was decided on: **two publishes were refused by the 200 cap that day, after their "Version
-Packages" PRs had already merged**, which wedges the repo rather than merely annoying it. By the time
-`prepare` runs, the changeset has been consumed by the version commit, so recovery is the revert
-dance the refusal message spells out. `@cosyte/dicom`'s opening bullet measured **229** characters
-and `@cosyte/astm` had one at **220**. Both sentences were carrying safety-relevant content:
-dicom's named a PHI leak through an unrecognised VR, made sharp by the
-`(0012,0062) PatientIdentityRemoved = YES` sitting next to it. Cutting either to 200 forced real
-facts out of the opening sentence, and the opening sentence is the only part that becomes a bullet.
+What it was decided on: **`@cosyte/dicom` `0.0.7` was refused by the 200 cap on 2026-08-02, after its
+"Version Packages" PR had already merged**, which wedges the repo rather than merely annoying it. By
+the time `prepare` runs the changeset has been consumed by the version commit, so recovery is the
+revert dance the refusal message spells out. **Two** of that release's changesets were over the cap,
+at **229** and **218** characters, though the run only ever named the first (see the open defect
+below). The 229 opened *"PHI: an element whose on-wire VR is not one of the 34 PS3.5 §6.2 defines was
+kept verbatim by `deidentify()`, carrying a source `(0010,0020)` Patient ID into de-identified output
+next to `(0012,0062) PatientIdentityRemoved = YES`"*. That is a PHI leak, and what makes it sharp is
+the juxtaposition: the output asserts the identity was removed while carrying it. **Cutting it to 200
+forced real facts out of the opening sentence**, and the opening sentence is the only part that
+becomes a bullet.
+
+**`@cosyte/astm` `0.0.9` was wedged the same day and is NOT evidence for this raise**, which is worth
+stating because the two get told as one story. Its opening sentence was 220 raw characters, but the
+cap is measured on the **translated** headline, which was **185**, comfortably under even the old
+cap. What refused astm was the internal-identifier rule: `ASTM-UNKNOWN-RECORD-REMERGE` was the object
+of its opening verb and could not be lifted out. **The raise does not change astm's outcome by one
+byte**, and the rule that refused it is untouched here on purpose.
 
 **What the raise did not change.** Over-cap is still a **refusal**, not a trim: nothing is shortened
 on the author's behalf, for the reasons in the section below. And the rule that an internal
 identifier may not be load-bearing in the opening sentence is **untouched** by this call. That rule
-caught a real defect on the same day; it is a question about meaning, not about length, and the two
-should not be moved together.
+is what actually refused `astm` above; it is a question about meaning, not about length, and the two
+do not move together.
 
 **The number lives in exactly one place** and every message, gate half and test derives from it:
 `MAX_HEADLINE_CHARS` is read by the refusal in `collectHeadlines` (which computes the overage from

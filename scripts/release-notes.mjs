@@ -90,20 +90,27 @@ const MAX_BODY_CHARS = 125000;
 // nearest word boundary.
 //
 // RAISED FROM 200 TO 400 ON 2026-08-02. This is a founder call about how much a release bullet is
-// allowed to say, not a workaround for one failing run. What it was decided on: two publishes were
-// refused by the 200 cap that day AFTER their "Version Packages" PRs had already merged, which
-// wedges the repo (the changeset is consumed by then, so recovery is the revert dance in RECOVERY
-// below). `@cosyte/dicom`'s opening bullet measured 229 characters, and `@cosyte/astm` had one at
-// 220. Both sentences were carrying safety-relevant content: dicom's named a PHI leak through an
-// unrecognised VR, made sharp by the `(0012,0062) PatientIdentityRemoved = YES` sitting next to it.
-// Cutting either to 200 forced real facts out of the opening sentence, and the opening sentence is
-// the only part that becomes a bullet. A cap that costs a reader the fact that matters is the wrong
-// cap; 400 is where it now sits.
+// allowed to say, not a workaround for one failing run. What it was decided on: `@cosyte/dicom`
+// `0.0.7` was refused by the 200 cap that day AFTER its "Version Packages" PR had already merged,
+// which wedges the repo (the changeset is consumed by then, so recovery is the revert dance in
+// RECOVERY below). Two of that release's changesets were over the cap, at 229 and 218 characters,
+// though the run only ever named the first. The 229 opened "PHI: an element whose on-wire VR is not
+// one of the 34 PS3.5 section 6.2 defines was kept verbatim by `deidentify()`, carrying a source
+// `(0010,0020)` Patient ID into de-identified output next to `(0012,0062) PatientIdentityRemoved =
+// YES`". That is a PHI leak, and the juxtaposition is what makes it sharp: the output asserts the
+// identity was removed while carrying it. Cutting that to 200 forced real facts out of the opening
+// sentence, and the opening sentence is the only part that becomes a bullet. A cap that costs a
+// reader the fact that matters is the wrong cap; 400 is where it now sits.
 //
-// WHAT THIS DID NOT CHANGE, said here because the two get conflated. Over-cap is still a refusal:
-// nothing is shortened on the author's behalf, for the reasons at the refusal site below. And the
-// rule that an internal identifier may not be load-bearing in the opening sentence is untouched by
-// this call. That rule caught a real defect the same day and is a separate question from length.
+// `@cosyte/astm` `0.0.9` wedged the same day and is NOT evidence for this raise, said here because
+// the two get told as one story. Its opening sentence was 220 raw characters, but the cap is
+// measured on the TRANSLATED headline (see the refusal site below for why), and that was 185,
+// comfortably under even the old cap. What refused astm was the internal-identifier rule.
+//
+// WHAT THIS DID NOT CHANGE. Over-cap is still a refusal: nothing is shortened on the author's
+// behalf, for the reasons at the refusal site below. And the rule that an internal identifier may
+// not be load-bearing in the opening sentence is untouched by this call. That rule is what actually
+// refused astm, it is a question about meaning rather than length, and the two do not move together.
 const MAX_HEADLINE_CHARS = 400;
 // A change entry shorter than this is not a description of anything. There is deliberately NO
 // whole-body minimum on top of it: "Add `profiles.epic`." is a complete and legitimate release.
