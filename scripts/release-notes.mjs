@@ -94,13 +94,15 @@ const MAX_BODY_CHARS = 125000;
 // `0.0.7` was refused by the 200 cap that day AFTER its "Version Packages" PR had already merged,
 // which wedges the repo (the changeset is consumed by then, so recovery is the revert dance in
 // RECOVERY below). Two of that release's changesets were over the cap, at 229 and 218 characters,
-// though the run only ever named the first. The 229 opened "PHI: an element whose on-wire VR is not
-// one of the 34 PS3.5 section 6.2 defines was kept verbatim by `deidentify()`, carrying a source
-// `(0010,0020)` Patient ID into de-identified output next to `(0012,0062) PatientIdentityRemoved =
-// YES`". That is a PHI leak, and the juxtaposition is what makes it sharp: the output asserts the
-// identity was removed while carrying it. Cutting that to 200 forced real facts out of the opening
-// sentence, and the opening sentence is the only part that becomes a bullet. A cap that costs a
-// reader the fact that matters is the wrong cap; 400 is where it now sits.
+// though the run only ever named the first. The 229 said, in one sentence, that an element whose
+// on-wire VR is not one of the 34 PS3.5 defines was kept verbatim by `deidentify()`, carrying a
+// source `(0010,0020)` Patient ID into de-identified output sitting next to
+// `(0012,0062) PatientIdentityRemoved = YES`. That is a PHI leak, and the juxtaposition is what
+// makes it sharp: the output asserts the identity was removed while carrying it. Cutting that to 200
+// forced real facts out of the opening sentence, and the opening sentence is the only part that
+// becomes a bullet. A cap that costs a reader the fact that matters is the wrong cap; 400 is where
+// it now sits. (That is a paraphrase, not a quotation: this file is ASCII only, and the sentence is
+// not. The README quotes it byte-exact, which is where to go to count the 229.)
 //
 // `@cosyte/astm` `0.0.9` wedged the same day and is NOT evidence for this raise, said here because
 // the two get told as one story. Its opening sentence was 220 raw characters, but the cap is

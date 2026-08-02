@@ -367,9 +367,10 @@ becomes a bullet.
 **`@cosyte/astm` `0.0.9` was wedged the same day and is NOT evidence for this raise**, which is worth
 stating because the two get told as one story. Its opening sentence was 220 raw characters, but the
 cap is measured on the **translated** headline, which was **185**, comfortably under even the old
-cap. What refused astm was the internal-identifier rule: `ASTM-UNKNOWN-RECORD-REMERGE` was the object
-of its opening verb and could not be lifted out. **The raise does not change astm's outcome by one
-byte**, and the rule that refused it is untouched here on purpose.
+cap. What refused astm was the internal-identifier rule: `ASTM-UNKNOWN-RECORD-REMERGE` sat mid-clause
+in *"Close the two findings `ASTM-UNKNOWN-RECORD-REMERGE` measured, pinned and deliberately did not
+fix"*, where lifting it out leaves a sentence that does not parse. **The raise does not change astm's
+outcome by one byte**, and the rule that refused it is untouched here on purpose.
 
 **What the raise did not change.** Over-cap is still a **refusal**, not a trim: nothing is shortened
 on the author's behalf, for the reasons in the section below. And the rule that an internal
@@ -384,10 +385,14 @@ from both sides in `test/release-notes.test.mjs`: 400 characters ship entire, 40
 the arithmetic asserted literally, so moving the constant without moving the test goes red.
 
 **Known open defect, filed not fixed:** `collectHeadlines` throws on the **first** refusal, so a run
-with several bad changesets names one and hides the rest. This cost a second recovery round in
-`astm` and again in `dicom`, where a second changeset at 218 characters was refused and reported
-nowhere. Collecting all refusals and reporting them together is a real improvement and a behaviour
-change in its own right, so it is not folded into the cap raise.
+with several bad changesets names one and hides the rest. Both wedged releases hit it: `dicom`'s run
+named the 229 and never reached the changeset at **218**, and `astm`'s second changeset failed a
+check its run never got to. Neither actually paid a second recovery round, because both were fixed by
+running the pipeline locally instead of resubmitting and reading CI one refusal at a time. **That is
+the cost, and it is a cost even when nobody pays it twice:** the tool is only safe to use if you know
+not to trust it to tell you everything that is wrong. Collecting all refusals and reporting them
+together is a real improvement and a behaviour change in its own right, so it is not folded into the
+cap raise.
 
 ### The over-cap refusal offers no replacement sentence, on purpose
 
