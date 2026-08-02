@@ -383,9 +383,25 @@ test('DEFECT 2: an over-long opening sentence is REFUSED, never silently shorten
     'drugs** with one silently dropped.';
   const head = headlineOf(long);
   assert.ok(head.endsWith('with one silently dropped'), `the sentence was cut: ${JSON.stringify(head)}`);
-  assert.ok(head.length > 200, 'this fixture must exercise the over-cap path');
+
+  // It is 220 characters, so since the cap was raised to 400 on 2026-08-02 this real sentence now
+  // SHIPS ENTIRE rather than being refused. That is the raise doing what it was called for: the
+  // published v0.0.2 body cut it to "...naming **two different drugs** with o.", and the fault
+  // there was the cut, not the sentence. Kept here at its real length so the change of outcome is
+  // recorded against the case that motivated the original refusal.
+  assert.equal(head.length, 220);
+  const { kept } = collectHeadlines(
+    [{ id: 'residuals.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${long}\n` }],
+    '@cosyte/ccda',
+  );
+  assert.deepEqual(kept, [head], 'at the 400-character cap it publishes whole');
+
+  // And a sentence that IS over the cap is still refused rather than shortened. The refusal is what
+  // the raise left alone; only the number it fires at moved.
+  const over = `${long.slice(0, -1)}, ${'x'.repeat(200)}.`;
+  assert.ok(headlineOf(over).length > 400, 'this fixture must exercise the over-cap path');
   assert.throws(
-    () => collectHeadlines([{ id: 'residuals.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${long}\n` }], '@cosyte/ccda'),
+    () => collectHeadlines([{ id: 'over.md', text: `---\n"@cosyte/ccda": patch\n---\n\n${over}\n` }], '@cosyte/ccda'),
     /becomes a release bullet of \d+ characters/,
   );
 });
@@ -401,7 +417,7 @@ test('the gate sees a body that was cut short, whatever produced it', () => {
   );
   const dangling = '### What changed\n\n- Rewrite the capability claims as a capability doc, not a.\n';
   assert.ok(findViolations(dangling).some((v) => v.rule === 'a change entry cut short mid-sentence'));
-  const overlong = `### What changed\n\n- ${'A described change that runs on. '.repeat(8)}\n`;
+  const overlong = `### What changed\n\n- ${'A described change that runs on. '.repeat(13)}\n`;
   assert.ok(findViolations(overlong).some((v) => v.rule === 'a change entry longer than a release bullet'));
   for (const body of [stump, dangling, overlong]) {
     assert.ok(assertPublishableNotes(body).some((p) => p.startsWith('line 3 carries')), body);
@@ -498,28 +514,48 @@ test('a complete sentence is never read as a cut-off one', () => {
 test('the renderer and the gate agree on what fits in a bullet, at the cap exactly', () => {
   // renderNotes appends the full stop, so a headline of exactly the cap renders one character over
   // it. A gate that refuses what its own renderer produces is a gate nobody can satisfy.
-  for (const length of [198, 199, 200]) {
+  for (const length of [398, 399, 400]) {
     const headline = `Correct the MSH-9 structure lookup ${'x'.repeat(length - 35)}`;
     assert.equal(headline.length, length);
     const body = renderNotes({ packageName: '@cosyte/hl7', version: '0.0.3', headlines: [headline] });
     assert.deepEqual(assertPublishableNotes(body), [], `${length} characters must pass both halves`);
   }
 
-  // The cap is measured on what SHIPS, so translation is accounted for in both directions.
   const frontmatter = '---\n"@cosyte/hl7": patch\n---\n\n';
-  const grows = `Correct the MSH-9 lookup in the final slice ${'x'.repeat(156)}`;
-  assert.equal(grows.length, 200, 'the author sentence is exactly at the cap');
-  assert.equal(toHeadline(`${grows}.`).headline.length, 201, '"slice" -> "change" pushes it over');
+
+  // THE BOUNDARY ITSELF, stated as a pair on collectHeadlines so the number is pinned from both
+  // sides. 400 ships; 401 is refused, and the refusal arithmetic is asserted literally rather than
+  // as `\d+`, so a cap that moved without this test moving goes red here. Written out because a cap
+  // with no test at its boundary is decorative: lower MAX_HEADLINE_CHARS by one and the first
+  // assertion reds, raise it by one and the second does.
+  const atCap = `Correct the MSH-9 structure lookup ${'x'.repeat(365)}`;
+  assert.equal(atCap.length, 400, 'exactly at the cap');
+  assert.deepEqual(
+    collectHeadlines([{ id: 'at.md', text: `${frontmatter}${atCap}.\n` }], '@cosyte/hl7').kept,
+    [atCap],
+    '400 characters ships entire',
+  );
+  const overCap = `Correct the MSH-9 structure lookup ${'x'.repeat(366)}`;
+  assert.equal(overCap.length, 401, 'one character over the cap');
   assert.throws(
-    () => collectHeadlines([{ id: 'g.md', text: `${frontmatter}${grows}.\n` }], '@cosyte/hl7'),
-    /becomes a release bullet of 201 characters/,
+    () => collectHeadlines([{ id: 'over.md', text: `${frontmatter}${overCap}.\n` }], '@cosyte/hl7'),
+    /becomes a release bullet of 401 characters, and a bullet is capped at 400, so it is 1 over/,
   );
 
-  const shrinks = `Add conformance-profile tooling (HL7-U, roadmap Phase U) ${'x'.repeat(150)}`;
-  assert.ok(shrinks.length > 200, 'the author sentence is over the cap');
+  // The cap is measured on what SHIPS, so translation is accounted for in both directions.
+  const grows = `Correct the MSH-9 lookup in the final slice ${'x'.repeat(356)}`;
+  assert.equal(grows.length, 400, 'the author sentence is exactly at the cap');
+  assert.equal(toHeadline(`${grows}.`).headline.length, 401, '"slice" -> "change" pushes it over');
+  assert.throws(
+    () => collectHeadlines([{ id: 'g.md', text: `${frontmatter}${grows}.\n` }], '@cosyte/hl7'),
+    /becomes a release bullet of 401 characters/,
+  );
+
+  const shrinks = `Add conformance-profile tooling (HL7-U, roadmap Phase U) ${'x'.repeat(360)}`;
+  assert.ok(shrinks.length > 400, 'the author sentence is over the cap');
   const { kept } = collectHeadlines([{ id: 's.md', text: `${frontmatter}${shrinks}.\n` }], '@cosyte/hl7');
   assert.equal(kept.length, 1, 'but the bullet that ships fits, so it is not refused');
-  assert.ok(kept[0].length <= 200);
+  assert.ok(kept[0].length <= 400);
 });
 
 test('the gate sees the wreckage a cut leaves in the bytes', () => {
@@ -595,10 +631,10 @@ test('headlineOf takes the first sentence, including one closed inside emphasis'
 });
 
 test('headlineOf never shortens: the first sentence comes back entire, however long', () => {
-  const long = `Ratify the parser choice and add ${'the first runtime dependency '.repeat(12)}chosen for safety.`;
+  const long = `Ratify the parser choice and add ${'the first runtime dependency '.repeat(14)}chosen for safety.`;
   const head = headlineOf(long);
   assert.equal(head, long.replace(/\.$/, ''), 'the whole sentence must survive');
-  assert.ok(head.length > 200, 'and it is over the bullet cap, which collectHeadlines refuses');
+  assert.ok(head.length > 400, 'and it is over the bullet cap, which collectHeadlines refuses');
 });
 
 test('changes a consumer cannot observe are recognised', () => {
@@ -998,8 +1034,13 @@ for (const [label, bad, good, expected] of [
   ],
   [
     'an opening sentence too long for a bullet',
+    // 436 characters, over the 400 cap. The `good` line is the REAL ccda sentence from
+    // ccda@.changeset/ccda-nullflavor-residuals.md at 221: it was refused under the old 200 cap and
+    // publishes whole under 400, so it doubles as the fixture for what the raise bought. The bad
+    // one is that sentence with three more defects packed into the same opening breath, which is
+    // the shape the cap exists to push into the paragraphs underneath.
+    'Close the two residuals the previous change named and argued rather than fixed: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, a medication naming **two different drugs** with one silently dropped, an allergy severity read from the wrong participant, a result value taken from the display text rather than the coded element, and a document date parsed without its timezone offset so it lands a day early west of UTC.',
     'Close the two residuals the previous change named and argued rather than fixed: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
-    'Close two reading defects: a **patient identifier** read out of a `nullFlavor`-marked `<id>`, and a medication naming **two different drugs** with one silently dropped.',
     /becomes a release bullet of \d+ characters/,
   ],
 ]) {
@@ -1619,7 +1660,9 @@ test('DEFECT 2: the over-cap refusal does not hand back the sentence it just ref
   // Measured on dicom (253 chars), ccda (213) and fhir (241) on 2026-07-29: the refusal offered
   // "open the changeset with a sentence that fits ...: <sentence>", and <sentence> was character for
   // character the one it had just rejected. A worker adopting it verbatim failed identically.
-  const long = `Correct the SOP Class UID names ${'x'.repeat(220)}`;
+  // Those three real lengths are all under the 400 cap in force since 2026-08-02 and would publish
+  // today, so the fixture below is sized over the current cap to reach the same message.
+  const long = `Correct the SOP Class UID names ${'x'.repeat(400)}`;
   const text = `---\n"@cosyte/dicom": patch\n---\n\n${long}.\n`;
   let message = '';
   assert.throws(
@@ -1632,7 +1675,7 @@ test('DEFECT 2: the over-cap refusal does not hand back the sentence it just ref
 
   // The constraint is stated in numbers a reader can act on.
   assert.match(message, /becomes a release bullet of \d+ characters/);
-  assert.match(message, /capped at 200, so it is \d+ over/);
+  assert.match(message, /capped at 400, so it is \d+ over/);
   // The over-cap sentence appears ONLY labelled as the thing being refused.
   assert.match(message, /The refused sentence is: /);
   assert.ok(message.includes(JSON.stringify(long)), 'the refused text is still quoted, so it is findable');
@@ -1646,7 +1689,7 @@ test('DEFECT 2: the over-cap refusal does not hand back the sentence it just ref
     const index = message.indexOf(quoted);
     const introduced = message.slice(Math.max(0, index - 60), index);
     assert.ok(
-      span.length <= 200 || /refused|would publish/.test(introduced),
+      span.length <= 400 || /refused|would publish/.test(introduced),
       `an over-cap sentence is quoted without being introduced as refused: ${introduced}`,
     );
   }
@@ -1655,7 +1698,7 @@ test('DEFECT 2: the over-cap refusal does not hand back the sentence it just ref
 test('DEFECT 2, THE OTHER WAY: the refusal itself still happens, and still stops the run', () => {
   // Rewording an error message must not soften what it is an error about. The over-cap sentence is
   // still refused rather than trimmed, which is what keeps a cut fragment off a permanent page.
-  const long = `Correct the SOP Class UID names ${'x'.repeat(220)}`;
+  const long = `Correct the SOP Class UID names ${'x'.repeat(400)}`;
   const { dir } = makeVersionCommitRepo({
     changesets: { 'a.md': `---\n"@cosyte/hl7": patch\n---\n\n${long}.\n` },
   });

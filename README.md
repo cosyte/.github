@@ -231,7 +231,7 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 | Em dash | `U+2014`, inherited from changesets written before that ban |
 | Unobservable change | a bullet describing something no consumer can see |
 | A sentence built around the identifier | removing it would leave prose that does not parse |
-| An opening sentence too long for a bullet | over 200 characters, where the alternative is cutting it. **No replacement sentence is offered**, see below |
+| An opening sentence too long for a bullet | over 400 characters, where the alternative is cutting it. **No replacement sentence is offered**, see below |
 | A bullet that was cut short | a one-letter stump, or an over-length entry, in the finished bytes |
 | Mangled prose | doubled or orphaned clause punctuation, an emptied parenthetical |
 | An unclassifiable commit | no readable `package.json` at `HEAD`, or a version that appears in no commit |
@@ -347,6 +347,38 @@ so only the unambiguously-internal determiner forms are rewritten.
   unreadable at `HEAD`, or the version at `HEAD` appears in no commit (a shallow checkout, so mind
   `fetch-depth: 0`), the run stops there rather than letting the publish step decide on its own.
 
+### The bullet cap was raised from 200 to 400 on 2026-08-02
+
+**A founder call about how much a release bullet is allowed to say, not a workaround for one failing
+run.** `MAX_HEADLINE_CHARS` in `scripts/release-notes.mjs` is now **400**.
+
+What it was decided on: **two publishes were refused by the 200 cap that day, after their "Version
+Packages" PRs had already merged**, which wedges the repo rather than merely annoying it. By the time
+`prepare` runs, the changeset has been consumed by the version commit, so recovery is the revert
+dance the refusal message spells out. `@cosyte/dicom`'s opening bullet measured **229** characters
+and `@cosyte/astm` had one at **220**. Both sentences were carrying safety-relevant content:
+dicom's named a PHI leak through an unrecognised VR, made sharp by the
+`(0012,0062) PatientIdentityRemoved = YES` sitting next to it. Cutting either to 200 forced real
+facts out of the opening sentence, and the opening sentence is the only part that becomes a bullet.
+
+**What the raise did not change.** Over-cap is still a **refusal**, not a trim: nothing is shortened
+on the author's behalf, for the reasons in the section below. And the rule that an internal
+identifier may not be load-bearing in the opening sentence is **untouched** by this call. That rule
+caught a real defect on the same day; it is a question about meaning, not about length, and the two
+should not be moved together.
+
+**The number lives in exactly one place** and every message, gate half and test derives from it:
+`MAX_HEADLINE_CHARS` is read by the refusal in `collectHeadlines` (which computes the overage from
+it) and by `findViolations` in `assert`, so the two halves cannot drift apart. The boundary is pinned
+from both sides in `test/release-notes.test.mjs`: 400 characters ship entire, 401 are refused with
+the arithmetic asserted literally, so moving the constant without moving the test goes red.
+
+**Known open defect, filed not fixed:** `collectHeadlines` throws on the **first** refusal, so a run
+with several bad changesets names one and hides the rest. This cost a second recovery round in
+`astm` and again in `dicom`, where a second changeset at 218 characters was refused and reported
+nowhere. Collecting all refusals and reporting them together is a real improvement and a behaviour
+change in its own right, so it is not folded into the cap raise.
+
 ### The over-cap refusal offers no replacement sentence, on purpose
 
 **It used to offer one, and the one it offered was the sentence it had just refused.** Measured on
@@ -408,7 +440,8 @@ bounded by what the corpus happens to contain. It
 - reads the **relative pronoun** in *"Add the check that catches phase 5b"* as a determiner and
   publishes *"Add the check"*, a claim the author never made. `that <lowercase word>` occurs in 32 of
   those 406 opening sentences, so the shape is native to this register;
-- shortens a headline enough to flip the **200-character refusal into a publish**;
+- shortens a headline enough to flip the **length refusal into a publish** (the cap was 200 when this
+  was measured and is 400 now; the failure mode is the same at any cap);
 - takes the `a` from *"…as a capability doc, not a phase log"*, leaving *"…not"*, which
   `DANGLING_TAIL` is **forbidden** to catch, converting a visible refusal into a silent publish.
 
@@ -419,10 +452,11 @@ phrase and the words allowed in its one variable slot. That is the general lesso
 list above is a list.
 
 One interaction is worth stating rather than leaving to be rediscovered: because the phrase is now
-cut whole, a headline in the narrow band that was **just** over the 200-character cap can come in
-under it and publish where it used to be refused. That is the cap behaving as specified: it is
-**measured on the translated headline**, and the translated headline is the author's sentence minus
-phase language. No changeset in the corpus sits in that band.
+cut whole, a headline in the narrow band that was **just** over the cap can come in under it and
+publish where it used to be refused. That is the cap behaving as specified: it is **measured on the
+translated headline**, and the translated headline is the author's sentence minus phase language. No
+changeset in the corpus sat in that band when it was measured, against the 200-character cap then in
+force; the cap is 400 from 2026-08-02 and the band moved with it.
 
 **A carried hole, stated rather than closed.** A tail cut can still destroy a negation's complement.
 *"Ship the emitter now, not the next roadmap phase"* → *"…not"*, and nothing sees it, because
@@ -613,8 +647,11 @@ principle pair one against the wrong changeset; none did here, and `--json` prin
 
 **It is a classifier, not a regenerator, and that limit is the finding underneath it.** Running
 `release-notes.mjs prepare` against the historical version commits **refuses on six of them**, because
-their source changesets' opening sentences are themselves over the 200-character cap, which is
-exactly why they were cut. These bodies cannot be regenerated mechanically: each needs a person to
+their source changesets' opening sentences are themselves over the cap, which is exactly why they
+were cut. That count was measured against the **200-character cap then in force**; the cap was raised
+to 400 on 2026-08-02 and the sweep has not been re-run, so read "six" as the number then and expect a
+smaller one now. The limit it illustrates does not move with the cap. These bodies cannot be
+regenerated mechanically: each needs a person to
 write a shorter sentence that keeps the meaning. So the tool quotes the missing tail and stops, and
 there is no command that emits a replacement body. `sweep` exits 1 when anything is cut, which makes
 it a check you can run; **nothing in this repo's workflows runs it**, on purpose, because a red build
