@@ -86,9 +86,34 @@ const EM_DASH = '\u2014';
 
 /** GitHub rejects a release body longer than this. */
 const MAX_BODY_CHARS = 125000;
-// The longest a single change entry may be. This is the number that was already here: what changed
-// is that exceeding it is now a refusal instead of a silent cut at the nearest word boundary.
-const MAX_HEADLINE_CHARS = 200;
+// The longest a single change entry may be. Exceeding it is a REFUSAL, never a silent cut at the
+// nearest word boundary.
+//
+// RAISED FROM 200 TO 400 ON 2026-08-02. This is a founder call about how much a release bullet is
+// allowed to say, not a workaround for one failing run. What it was decided on: `@cosyte/dicom`
+// `0.0.7` was refused by the 200 cap that day AFTER its "Version Packages" PR had already merged,
+// which wedges the repo (the changeset is consumed by then, so recovery is the revert dance in
+// RECOVERY below). Two of that release's changesets were over the cap, at 229 and 218 characters,
+// though the run only ever named the first. The 229 said, in one sentence, that an element whose
+// on-wire VR is not one of the 34 PS3.5 defines was kept verbatim by `deidentify()`, carrying a
+// source `(0010,0020)` Patient ID into de-identified output sitting next to
+// `(0012,0062) PatientIdentityRemoved = YES`. That is a PHI leak, and the juxtaposition is what
+// makes it sharp: the output asserts the identity was removed while carrying it. Cutting that to 200
+// forced real facts out of the opening sentence, and the opening sentence is the only part that
+// becomes a bullet. A cap that costs a reader the fact that matters is the wrong cap; 400 is where
+// it now sits. (That is a paraphrase, not a quotation: this file is ASCII only, and the sentence is
+// not. The README quotes it byte-exact, which is where to go to count the 229.)
+//
+// `@cosyte/astm` `0.0.9` wedged the same day and is NOT evidence for this raise, said here because
+// the two get told as one story. Its opening sentence was 220 raw characters, but the cap is
+// measured on the TRANSLATED headline (see the refusal site below for why), and that was 185,
+// comfortably under even the old cap. What refused astm was the internal-identifier rule.
+//
+// WHAT THIS DID NOT CHANGE. Over-cap is still a refusal: nothing is shortened on the author's
+// behalf, for the reasons at the refusal site below. And the rule that an internal identifier may
+// not be load-bearing in the opening sentence is untouched by this call. That rule is what actually
+// refused astm, it is a question about meaning rather than length, and the two do not move together.
+const MAX_HEADLINE_CHARS = 400;
 // A change entry shorter than this is not a description of anything. There is deliberately NO
 // whole-body minimum on top of it: "Add `profiles.epic`." is a complete and legitimate release.
 const MIN_ENTRY_CHARS = 12;
@@ -223,7 +248,8 @@ const SEQUENCE_MODIFIER = '(?:final|last|next|first|current|remaining|penultimat
 // and nothing else in the corpus -- but the cases it CAN reach are not bounded by the corpus. It
 // deletes the object of "re-publish the DICOM dictionary roadmap phase", reads the relative pronoun
 // in "the check that catches phase 5b" as a determiner and publishes "Add the check", and shortens a
-// headline enough to flip the 200-character refusal into a publish. Each turns a visible break into
+// headline enough to flip the length refusal into a publish (the cap was 200 when this was measured
+// and is 400 now; the failure mode is the same at any cap). Each turns a visible break into
 // well-formed prose that is not what the author wrote, which is this file's worst failure mode. A
 // named shape cannot do any of that: it matches the words it names.
 const PHASE_TALK = new RegExp(

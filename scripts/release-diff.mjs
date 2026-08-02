@@ -28,8 +28,12 @@
 // IT IS A CLASSIFIER, NOT A REGENERATOR, and that is a deliberate limit rather than an unfinished
 // feature. Re-deriving these bodies mechanically is impossible and known to be impossible: running
 // `release-notes.mjs prepare` against the historical version commits REFUSES on six of them,
-// because the source changesets' opening sentences are themselves over the 200-character cap, which
-// is exactly why they were cut in the first place. A tool that emitted a replacement body would have
+// because the source changesets' opening sentences are themselves over the cap, which is exactly
+// why they were cut in the first place. THAT COUNT WAS MEASURED AT THE 200-CHARACTER CAP IN FORCE
+// AT THE TIME; the cap was raised to 400 on 2026-08-02 and this sweep has not been re-run since, so
+// read "six" as the number then, not the number now, and expect it to be lower. The limit it
+// illustrates does not move with the cap: whatever the number, a tool that emitted a replacement
+// body would have
 // to shorten those sentences, which is the original defect wearing a repair's clothes. Each one
 // needs a human to write a shorter sentence that keeps the meaning. This file's output is the list
 // of which ones, and the evidence for each.
