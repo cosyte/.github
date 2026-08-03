@@ -40,12 +40,29 @@ jobs:
         language: ${{ fromJSON(inputs.languages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # THE INVARIANT: EVERY `github/codeql-action/*` PIN IN THIS REPO CARRIES ONE SHA. That is both
+      # uses below plus `upload-sarif` in scorecard.yml. It is not tidiness, it is the whole defect
+      # class, and it is not enforced by anything, so it has to be read here.
+      #
+      # `analyze` reads the config file `init` wrote and REFUSES IT WHEN THE VERSIONS DIFFER:
+      # config-utils.ts throws a ConfigurationError, "Loaded a configuration file for version 'X',
+      # but running version 'Y'", on ANY mismatch, not just a major one. Thirteen repos call this
+      # workflow @main, so a skewed pair is thirteen red CodeQL jobs and thirteen SARIF uploads that
+      # never happen: static analysis goes dark across the org.
+      #
+      # DEPENDABOT CANNOT PRODUCE A SAFE CHANGE HERE, WHICH IS THE PART THAT COSTS A DEFECT TO
+      # REDISCOVER. It opens ONE PR PER ACTION PATH and rebases each INDEPENDENTLY, so the PRs drift
+      # onto different patch versions while they sit. Measured 2026-08-03: #13 (`init`) had moved to
+      # v4.37.4 while #15 (`analyze`) was still on v4.37.3. Merging one was obviously wrong; merging
+      # BOTH, the correct-looking act, would have landed 4.37.4 against 4.37.3 and thrown the same
+      # error. So: NEVER merge a codeql-action Dependabot PR here. Supersede the set with one commit
+      # that sets every pin to one version, and close the PRs. 2026-08-03 did that at v4.37.5.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
         with:
           languages: ${{ matrix.language }}
           queries: ${{ inputs.queries }}
       - name: Analyze
-        uses: github/codeql-action/analyze@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3.37.1
+        uses: github/codeql-action/analyze@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
         with:
           category: "/language:${{ matrix.language }}"
