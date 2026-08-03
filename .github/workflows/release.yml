@@ -208,6 +208,31 @@ jobs:
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      # `registry-url` makes setup-node write an .npmrc holding
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it.
+      #
+      # WHAT THE v6 -> v7 MAJOR CHANGED HERE, AND WHY IT IS SAFE, MEASURED 2026-08-03 RATHER THAN
+      # ASSUMED. v6 exported a DUMMY `NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX` job-wide whenever the
+      # caller had not set one; v7 (actions/setup-node#1558) exports it only when it is already set.
+      # So in every step below that does not set it, that `${NODE_AUTH_TOKEN}` no longer resolves.
+      #
+      # The effect is a WARNING, not a failure, and it is bigger than the token line: pnpm's
+      # env-replace throws, and pnpm catches it at FILE scope and discards the WHOLE userconfig,
+      # `registry=` included. Measured on pnpm 10.0.0, 10.34.5 and 11.17.0 (the `packageManager`
+      # versions pinned across the callers): `pnpm install --frozen-lockfile` prints
+      # "Failed to replace env in config" on STDERR and exits 0, and dropping `registry=` is a no-op
+      # because it is restating pnpm's default. `pnpm attw` shells out to `npm pack`, and npm's own
+      # env-replace does not throw at all: it leaves the literal `${NODE_AUTH_TOKEN}` and exits 0
+      # (checked on npm 10.9.8 and 11.16.0).
+      #
+      # ▶ THE LATENT HALF, so it is not rediscovered: this is benign ONLY because the discarded
+      # `registry=` equals pnpm's default. ADD A `scope:` INPUT HERE AND THE DISCARDED LINE BECOMES A
+      # SCOPED REGISTRY THAT SILENTLY STOPS APPLYING to every step that lacks the token. If a scope
+      # is ever needed, set `NODE_AUTH_TOKEN` at JOB level too, not just on the publish step.
+      #
+      # The publish path is unaffected either way: the `changesets/action` step below sets
+      # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
+      # to a registry.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
