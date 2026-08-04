@@ -655,11 +655,27 @@ export async function installIntoCleanRoom({
   // "why not just hand the PAT to actions/checkout" section is careful about exactly this window, so
   // opening it here would have contradicted the file it sits in.
   //
-  // ▶ WHAT IT COSTS, STATED RATHER THAN ARGUED AWAY. A real consumer's `npm install` DOES run
-  // lifecycle scripts. This probe now does not, so it CANNOT catch a package whose `postinstall`,
-  // `install` or `preinstall` fails for a consumer: that package installs clean here and breaks for
-  // them. This gate exists precisely because a check that is not what a consumer does misses what
-  // consumers hit, and this is a bounded instance of that same gap, inside the gate itself.
+  // ▶ WHAT IT COSTS, STATED RATHER THAN ARGUED AWAY, AND IT CUTS BOTH WAYS. A real consumer's
+  // `npm install` DOES run lifecycle scripts. This probe now does not, which creates TWO residuals,
+  // and the second is the more dangerous one because this gate's whole history is of accidentally
+  // redding correct releases:
+  //
+  //   MISSED DETECTION. It cannot catch a package whose `preinstall`/`install`/`postinstall` fails
+  //   for a consumer: that package installs clean here and breaks for them. This gate exists because
+  //   a check that is not what a consumer does misses what consumers hit, and this is a bounded
+  //   instance of that same gap, inside the gate itself.
+  //
+  //   FALSE RED. `--ignore-scripts` is not only "skip a hook". `node-gyp rebuild` is npm's DEFAULT
+  //   `install` script for any package carrying a `binding.gyp`, so a native dependency is left
+  //   UNBUILT, and a `postinstall` that generates files the entry point imports is left unrun. The
+  //   install still exits 0, and then `probeEntryPoints` fails to load the package and the verdict
+  //   becomes `uninstallable`, which EXITS 1 on a release that is perfectly fine for consumers.
+  //
+  // Both are empty today and that is measured, not assumed: none of the twelve published `@cosyte`
+  // packages declares an install lifecycle script, and the widest tree in the org, `@cosyte/cli`
+  // at 111 transitive packages, contains no install script and no `binding.gyp` anywhere. The
+  // false-red residual therefore has nothing to fire on. IF A NATIVE DEPENDENCY EVER ENTERS ANY OF
+  // THESE TREES, THIS FLAG BECOMES A SOURCE OF RED RELEASES AND MUST BE RE-DECIDED FIRST.
   //
   // WHY THE TRADE IS TAKEN ANYWAY, and the condition under which it should be revisited: no
   // published `@cosyte/*` package declares an install script today, so the gap is currently empty and

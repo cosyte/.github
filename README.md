@@ -102,11 +102,22 @@ successfully" took ~55s, which is not a 50 kB tarball upload.
 performs an `npm install` of the just-published package, whose transitive dependencies are
 **range-resolved at probe time rather than lockfile-pinned**, which is a strictly wider class of
 third-party code than anything else in this job. It therefore passes **`--ignore-scripts`** (founder
-decision, 2026-08-04), so it adds no third-party lifecycle execution to the list above. **The cost is
-named at the call site rather than waved off:** a real consumer's install *does* run lifecycle scripts,
-so the probe cannot catch a package whose `postinstall` fails for a consumer. No published
-`@cosyte/*` package declares an install script today, so the gap is currently empty; the moment one
-does, the trade gets re-decided against that concrete case.
+decision, 2026-08-04), so it adds no third-party lifecycle execution to the list above.
+
+**The cost is named rather than waved off, and it cuts both ways.** A real consumer's install *does*
+run lifecycle scripts, so (1) the probe **cannot catch** a package whose `postinstall` fails for a
+consumer, and (2) more dangerously, `--ignore-scripts` is not merely "skip a hook": `node-gyp rebuild`
+is npm's **default `install` script** for anything carrying a `binding.gyp`, so a native dependency is
+left **unbuilt** and a `postinstall` that generates files the entry point imports is left unrun. The
+install still exits 0, `probeEntryPoints` then fails to load the package, and the verdict becomes
+`uninstallable`, which **exits 1 on a release that is fine for consumers**. Given this gate's history
+of accidentally redding correct releases, that direction is the one to watch.
+
+**Both residuals are empty today, measured rather than assumed:** none of the twelve published
+`@cosyte/*` packages declares an install lifecycle script, and the widest tree in the org,
+`@cosyte/cli` at **111 transitive packages**, contains no install script and no `binding.gyp` anywhere.
+**If a native dependency ever enters any of these trees, this flag becomes a source of red releases and
+must be re-decided first.**
 
 On the publish arm the PAT buys nothing at all, since `createGithubReleases: false` leaves the
 action's octokit unused there. Narrowing it to the version-PR arm is not done: the only predicate
