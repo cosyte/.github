@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint | every parser |
-| [`release.yml`](.github/workflows/release.yml) | Changesets → npm publish **with provenance** → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs`. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch is the one operation whose failure **warns rather than failing the run**: it happens after the publish is permanent, so the run conclusion is reserved for what happened to the artifact | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | Changesets → npm publish **with provenance** → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 
@@ -125,6 +125,123 @@ than what is needed here. **Do not reuse `DOCS_REPO_DISPATCH_TOKEN`**, which nee
 `GITHUB_TOKEN`, which is exactly the old behaviour, trap included. Failing closed would take every
 caller's release pipeline down to protect against a state those repos are already in. The fallback is
 announced in the run log, because a fix that silently is not applied is worse than no fix.
+
+## The post-publish install gate
+
+**Nothing in this pipeline had ever installed what it published.** Every other gate reads the working
+tree or a locally packed tarball, where the monorepo's own resolution is in scope and every sibling is
+a directory on disk. None of them asks the question a consumer asks: take the name and the version,
+from the registry, in a directory that knows nothing, and install.
+
+A manifest can be valid locally and meaningless remotely, and this org has shipped that three times:
+
+| Package | What the registry serves | What a consumer gets |
+|---|---|---|
+| `@cosyte/cli` `0.0.1` and `0.0.2` | four `file:vendor/*.tgz` dependencies plus six more in `optionalDependencies` | `ENOENT` on `node_modules/@cosyte/cli/vendor/cosyte-fhir-0.0.0.tgz`. Both versions are permanent and stay broken forever (ADR 0001) |
+| `@cosyte/transform` `0.0.5` | a required peer on `@cosyte/fhir` | `E404`, because `@cosyte/fhir` is not on the registry (`FHIR-NPM-NAME`) |
+| `@cosyte/synth` `0.0.6` | the same peer, marked **optional** in `peerDependenciesMeta` | `ERESOLVE`. An optional peer whose packument 404s still fails the tree. **Optionality is not protection** |
+
+[`scripts/install-check.mjs`](scripts/install-check.mjs) closes it, unit-tested in
+[`test/install-check.test.mjs`](test/install-check.test.mjs) with no network and no npm, against
+fixtures transcribed from the live registry. Run it by hand against anything published:
+
+```bash
+node scripts/install-check.mjs --package @cosyte/hl7 --version 0.0.7
+node scripts/install-check.mjs --package @cosyte/cli --version 0.0.1 --expect-unpublished-deps "@cosyte/fhir"
+```
+
+### Clean means anonymous, not merely empty
+
+The probe directory sits under `RUNNER_TEMP`, which is not a parent of the workspace, so npm's upward
+walk finds no sibling `node_modules`. It gets its own `package.json` so the walk stops there, its own
+cache so nothing is served warm, and **empty user and global npmrc files** so the install is exactly
+what an anonymous outsider gets. That last one is not cosmetic: `setup-node` writes an `_authToken`
+into the job's npmrc, and installing with it would mask a package accidentally published private.
+
+Two npm behaviours that each cost a measurement, recorded so they are not rediscovered:
+
+- Pointing `NPM_CONFIG_USERCONFIG` and `NPM_CONFIG_GLOBALCONFIG` at the **same file** makes npm abort
+  with `double-loading config ... as "global", previously loaded as "user"`. They must be two files.
+- **`npm install` has no stable failure exit code.** `@cosyte/cli@0.0.1` exits **254** where
+  `transform` and `synth` exit **1**. Only zero versus non-zero is load-bearing anywhere in the script.
+
+### The five verdicts
+
+| Verdict | Exit | When |
+|---|---|---|
+| `pass` | 0 | installed from the registry into a clean anonymous directory, and the declared entry points load |
+| `non-registry-specifier` | **1** | the manifest **the registry serves** carries a specifier that cannot resolve from a registry. Deterministic, offline, no retry, and **never excusable by the allowance** |
+| `uninstallable` | **1** | a clean install failed for a reason the allowance does not name, after the retry budget; or it installed and its declared entry points do not load |
+| `blocked-peer` | 0 | uninstallable, and **fully** explained by dependencies declared in `expect-unpublished-deps` |
+| `not-propagated` | 0 | the registry never served the version within the budget |
+
+The specifier lint is evaluated **first and independently of the install**, and that ordering is the
+point rather than a detail. `@cosyte/cli@0.0.1` has both `file:` specifiers **and** a genuinely blocked
+`@cosyte/fhir`. Classified after the install, the allowance would have excused a package that is broken
+for a completely different and permanent reason.
+
+### Why it can fail the run, when the docs dispatch one line above cannot
+
+The dispatch was deliberately changed to warn, "because by then npm has published permanently and the
+release exists, so a red conclusion misreports the artifact and invites a re-run of a job that already
+published". That reasoning is right and **it does not reach this gate**:
+
+1. **A failed dispatch meant the artifact was fine** and only a notification was missing. A positive
+   finding here means the artifact **itself** is defective: published, permanent, uninstallable. A red
+   conclusion is then the most accurate statement available about that release, not a misreport of it.
+   The two cases sit on opposite sides of the single axis the precedent turns on.
+2. **The dispatch has a backstop and this has none.** `cosyte/docs` rebuilds on any push to its main
+   and re-reads every package's latest release, so one later rebuild covers every missed dispatch.
+   Nothing anywhere re-checks installability. `@cosyte/cli@0.0.1` was found by a human doing an
+   unrelated README sweep days later, and `0.0.2` shipped carrying the identical defect in between.
+3. **"Invites a re-run" is structurally absent here, twice over.** By the time this runs the release
+   step has created the `v<version>` tag on the remote, so a re-run's `release-notes.mjs prepare`
+   classifies the commit `already-released`, sets `is-release=false`, and the publish command is
+   withheld. Independently of that, `changeset publish` queries npm and skips a version already on the
+   registry. A re-run cannot double-publish.
+
+**The sticky-issue route was the preferred design and is not available.** Opening an issue needs
+`issues: write`, and a called workflow's token can only be equal to or more restrictive than the
+caller's. Every caller pins exactly `contents` + `id-token` + `pull-requests` against a repo default of
+`contents: read`, so requesting more would be an escalation and GitHub rejects the whole workflow at
+startup, one second, no jobs, no logs, for **all thirteen callers at once**. The menu is therefore
+exactly {warn, fail}, and a warning on a green run notifies nobody. `release.yml` already writes that
+residual down for the dispatch and accepts it there **only** because a backstop exists.
+
+### Fail-closed on proof, fail-open on ambiguity
+
+This runs in the shared pipeline for thirteen packages, so a bug in it must not be able to red a
+correct release. It exits non-zero only on a **positive determination**. A network fault, a 5xx, a rate
+limit, a malformed response, an npm crash, and any unexpected throw anywhere in the script all warn and
+exit 0. A registry that answers anything other than 200 or 404 for a package is read as **present**, so
+a flaky registry can never manufacture an `uninstallable` verdict.
+
+### The retry wraps the whole attempt, not just our own name
+
+npm's registry is eventually consistent, so an install fired immediately after a publish can 404 a
+package that is genuinely there. The naive fix is to poll until our own version resolves, then install
+once. That is not enough here, because **this org publishes in waves**: ten packages landed
+near-simultaneously on 2026-08-02, and in a wave a package's sibling may have been published seconds
+ago and be just as unpropagated. Retrying only on our own name would read a propagating sibling as a
+permanently missing dependency and red a correct release.
+
+So the retry wraps the entire attempt and the verdict is taken once the budget is spent. What
+distinguishes "not propagated yet" from "genuinely uninstallable" is not a message, it is **which
+oracle is still failing at the end**: our own version still unserved, versus a dependency name still
+absent, versus an install that fails with every declared name present. The oracles are plain registry
+HTTP (a packument `GET`, a version-manifest `GET`, a `HEAD` on `dist.tarball`), not `npm view`, which
+is three fewer npm behaviours to depend on.
+
+### The allowance is a dated exception, not a setting
+
+`expect-unpublished-deps` defaults to `@cosyte/fhir` and exists so that `transform` and `synth` do not
+red on a condition nobody can fix from those repos. A permanently red gate is one people learn to
+ignore, which is the same failure as a step that never runs.
+
+It is an **exact** allowance, not a mute: any absent dependency **not** named in it still fails, so a
+new unpublished dependency is still caught. And it is self-clearing. The moment `@cosyte/fhir`
+publishes, nothing is absent, the installs simply pass, and the gate reports the entry as **stale** in
+the step summary so it gets deleted. **Delete it then; it is not load-bearing.**
 
 ## Release notes
 

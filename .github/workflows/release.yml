@@ -142,6 +142,22 @@ on:
         description: "Command that builds dist-artifacts/{docs-content,source}.tar.gz."
         type: string
         default: "pnpm pack:docs"
+      # THE DECLARED ALLOWANCE for the post-publish install gate below, and it is a dated exception
+      # rather than a setting. A package whose dependency is absent from the registry is genuinely
+      # uninstallable, and today that is TRUE AND EXPECTED for `@cosyte/transform` and `@cosyte/synth`,
+      # both of which depend on `@cosyte/fhir`, which npm refuses with a persistent unexplained E403
+      # (FHIR-NPM-NAME). Without this the gate would red every one of their releases for a condition
+      # nobody can fix from those repos, and a permanently red gate is one people learn to ignore,
+      # which is the same failure as the dispatch step that had never once executed.
+      #
+      # It is asserted as an EXACT allowance, not a mute: the gate refuses any absent dependency that
+      # is NOT named here, so a new unpublished dependency still fails. And it is self-clearing. The
+      # moment `@cosyte/fhir` publishes, nothing is absent, the installs simply pass, and the gate
+      # reports the entry as stale so it gets deleted. DELETE IT THEN; it is not load-bearing.
+      expect-unpublished-deps:
+        description: "Dependencies known to be absent from the registry, comma separated. See FHIR-NPM-NAME."
+        type: string
+        default: "@cosyte/fhir"
     secrets:
       NPM_TOKEN:
         required: true
@@ -534,6 +550,54 @@ jobs:
               echo '```'
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
+
+      # THE POST-PUBLISH INSTALL GATE. Nothing in this pipeline has ever installed what it published.
+      # Every gate above reads the working tree or a locally packed tarball, so a manifest that is
+      # valid locally and meaningless remotely passes all of them, which is exactly how
+      # `@cosyte/cli@0.0.1` and `0.0.2` reached the registry carrying `file:vendor/*.tgz` specifiers
+      # that cannot resolve from anywhere but the machine that built them. This takes the name and
+      # the version and installs them from the REGISTRY into a clean, anonymous directory, which is
+      # the only question a consumer actually asks. The full reasoning, the taxonomy and the npm
+      # behaviours it is built around are at the top of `scripts/install-check.mjs`.
+      #
+      # IT CAN FAIL THE RUN, WHICH IS THE OPPOSITE OF THE DISPATCH STEP ABOVE, DELIBERATELY. That one
+      # was changed to warn because a failed dispatch meant the ARTIFACT WAS FINE and only a
+      # notification was missing, so a red conclusion misreported it. Here a positive finding means
+      # the artifact itself is defective: published, permanent, and uninstallable. A red conclusion is
+      # then the most accurate thing that can be said about the release, not a misreport of it. The
+      # dispatch also had a real backstop (any push to cosyte/docs rebuilds and re-reads every
+      # release); nothing anywhere re-checks installability, which is the whole premise of this gate.
+      # The preferred design, a sticky issue, is UNAVAILABLE: it needs `issues: write`, a called
+      # workflow's token can only be equal to or more restrictive than the caller's, and every caller
+      # pins exactly contents + id-token + pull-requests against a repo default of `contents: read`.
+      # Requesting more would be an escalation and GitHub rejects the whole workflow at startup, for
+      # all thirteen callers at once. So the menu is {warn, fail}, and a warning on a green run
+      # notifies nobody.
+      #
+      # WHAT IT WILL NOT DO IS RED A CORRECT RELEASE. It exits non-zero only on a positive
+      # determination: a non-registry specifier in the manifest THE REGISTRY SERVES, or a clean
+      # install that failed for a reason the allowance does not name, after the retry budget. Registry
+      # propagation lag, a declared unpublished dependency, a network fault, and any unexpected throw
+      # inside the script all warn and exit 0. The retry wraps the whole attempt rather than just our
+      # own name, because this org publishes in waves and a sibling published seconds ago is just as
+      # unpropagated; reading that as a permanent absence would red a correct release.
+      #
+      # `!cancelled()` rather than `success()` so that a failure in the release/dispatch step above
+      # does not skip the one check that says whether the thing on the registry can be installed. The
+      # `published == 'true'` half is the same predicate the step above uses, which is a predicate
+      # this org has watched fire on real releases rather than one written and never taken.
+      - name: The published package must be installable from the registry
+        if: ${{ !cancelled() && steps.changesets.outputs.published == 'true' }}
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          EXPECT_UNPUBLISHED_DEPS: ${{ inputs.expect-unpublished-deps }}
+        shell: bash
+        run: |
+          version=$(node -e "const p=JSON.parse(process.env.PUBLISHED_PACKAGES); const m=p.find(x=>x.name===process.env.PACKAGE_NAME)||p[0]; process.stdout.write(m.version)")
+          node .cosyte-release-tooling/scripts/install-check.mjs \
+            --package "$PACKAGE_NAME" --version "$version" \
+            --expect-unpublished-deps "$EXPECT_UNPUBLISHED_DEPS"
 
       # When a publish fails, npm writes the only useful diagnostic to
       # /home/runner/.npm/_logs/<timestamp>-debug-0.log on an ephemeral runner, and nothing preserves
