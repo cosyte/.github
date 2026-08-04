@@ -30,6 +30,7 @@ import {
   renderAnnotation,
   renderSummary,
   parseArgs,
+  withFetchTimeout,
   cleanRoomEnv,
   runCheck,
 } from "../scripts/install-check.mjs";
@@ -52,6 +53,18 @@ const CLI_0_0_1 = {
   },
   bin: { cosyte: "dist/bin/cosyte.mjs" },
   exports: { ".": { import: { default: "./dist/index.mjs" }, require: { default: "./dist/index.cjs" } } },
+  dist: { tarball: "https://registry.npmjs.org/@cosyte/cli/-/cli-0.0.1.tgz" },
+};
+
+const CLI_0_0_1_CLEAN_SPECIFIERS = {
+  name: "@cosyte/cli",
+  version: "0.0.1",
+  dependencies: Object.fromEntries(
+    ["hl7", "fhir", "transform", "terminology", "x12", "astm", "ccda", "mllp", "dicom", "ncpdp"].map(
+      (n) => [`@cosyte/${n}`, "^0.0.1"],
+    ),
+  ),
+  exports: { ".": { import: { default: "./dist/index.mjs" } } },
   dist: { tarball: "https://registry.npmjs.org/@cosyte/cli/-/cli-0.0.1.tgz" },
 };
 
@@ -968,4 +981,87 @@ test("the deadline verdict has its own annotation and never says the package is 
   assert.match(line, /^::warning title=Install gate ran out of time::/);
   assert.doesNotMatch(line, /not installable|did not complete/);
   assert.match(line, /installability is UNKNOWN/);
+});
+
+// ── Every registry fetch is bounded (pass 2) ────────────────────────────────────────────────────
+//
+// `globalThis.fetch` has NO default request timeout. Measured in this gate against a socket that
+// accepts and never answers: a single unbounded fetch stalls 300.8 SECONDS. The deadline is only
+// checked BETWEEN attempts, so one attempt holding several stalled fetches could run past the
+// workflow step's `timeout-minutes` without the guard getting a turn, and a step timeout is a red
+// run. Bounding the request is what closes it.
+
+test("withFetchTimeout attaches an abort signal to every request", async () => {
+  const seen = [];
+  const wrapped = withFetchTimeout(async (url, options) => {
+    seen.push(options?.signal);
+    return { status: 200, json: async () => ({}), headers: new Map() };
+  }, 5000);
+  await wrapped("https://r/x");
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0], "no signal was attached, so the request is unbounded");
+  assert.equal(typeof seen[0].aborted, "boolean");
+});
+
+test("withFetchTimeout does not clobber a caller's own signal", async () => {
+  const mine = new AbortController().signal;
+  let got;
+  const wrapped = withFetchTimeout(async (url, options) => {
+    got = options.signal;
+    return { status: 200, json: async () => ({}), headers: new Map() };
+  }, 5000);
+  await wrapped("https://r/x", { signal: mine });
+  assert.equal(got, mine);
+});
+
+test("a timed-out fetch is UNKNOWN, which warns, and is never read as absence", async () => {
+  // NOTE FOR ANYONE EDITING THIS: `AbortSignal.timeout()` creates an UNREF'D timer, so it does not
+  // keep the event loop alive on its own. In production the pending socket does that. With a fake
+  // fetch nothing does, the loop drains, and the abort never fires, so the test needs a ref'd
+  // keepalive or it hangs. That is a property of the test harness, not of the gate.
+  const keepAlive = setInterval(() => {}, 1);
+  // A real AbortSignal.timeout rejection, not a simulated one.
+  const stalling = withFetchTimeout(
+    (url, options) =>
+      new Promise((resolve, reject) => {
+        const signal = options.signal;
+        // Guard the already-aborted case: if the signal fired before this listener attached, the
+        // event never comes and the promise hangs forever, which is the very failure being tested.
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    5,
+  );
+  assert.equal(await dependencyStatus("https://r", "@cosyte/fhir", stalling), "unknown");
+  assert.equal(await packumentListsVersion("https://r", "@cosyte/hl7", "0.0.7", stalling), "unknown");
+  assert.equal(await fetchVersionManifest("https://r", "@cosyte/hl7", "0.0.7", stalling), null);
+  assert.equal(await tarballServed("https://r/t.tgz", stalling), false);
+  clearInterval(keepAlive);
+});
+
+test("the dependency sweep stops at the deadline and calls the rest unknown, not present", async () => {
+  // `@cosyte/cli` declares ten consumer dependencies, so the sweep length is set by the package
+  // rather than by this file. A package with many dependencies against a slow registry must not walk
+  // past the deadline inside a single attempt.
+  let clock = 0;
+  const h = harness({
+    manifest: CLI_0_0_1_CLEAN_SPECIFIERS,
+    installResults: [{ ok: false, code: 1, output: "boom" }],
+  });
+  const r = await runCheck({
+    name: "@cosyte/cli",
+    version: "0.0.1",
+    attempts: 1,
+    delayMs: 1,
+    deadlineMs: 300,
+    installTimeoutMs: 10,
+    now: () => (clock += 100),
+    ...h.opts,
+  });
+  assert.equal(r.verdict, "inconclusive", "an unreached dependency must be unknown, never present");
+  assert.equal(r.failing, false);
+  assert.ok(r.unknownDependencies.length > 0);
 });

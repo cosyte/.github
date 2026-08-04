@@ -166,6 +166,28 @@ export const DEFAULT_DELAY_MS = 15_000;
 // deadline is checked before each attempt, and an attempt is only STARTED if the whole of its
 // install could still finish inside it.
 export const DEFAULT_DEADLINE_MS = 540_000;
+// EVERY REGISTRY FETCH IS BOUNDED, because `globalThis.fetch` is not.
+//
+// Node's fetch has no default request timeout. Measured in this gate: a single unbounded fetch
+// against a socket that accepts and never answers stalls for 300.8 SECONDS before Node gives up. The
+// deadline above is only checked BETWEEN attempts, so one attempt holding three stalled registry
+// fetches plus a stalled dependency sweep could run past the workflow step's `timeout-minutes`
+// without the deadline guard ever getting a turn, and a step timeout is a red run.
+//
+// Bounding the individual request is the fix, and it composes with everything else: a timed-out
+// packument GET is indistinguishable from a 5xx here, which already means `unknown`, which already
+// means retry and then warn. So this makes the gate faster to give up and changes no verdict.
+export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Wrap a fetch so every request carries a deadline. The wrapper preserves the caller's own `signal`
+ * if one is supplied, and injected test doubles simply ignore the extra option.
+ */
+export function withFetchTimeout(fetchImpl, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) {
+  if (!timeoutMs || typeof AbortSignal?.timeout !== "function") return fetchImpl;
+  return (url, options = {}) =>
+    fetchImpl(url, { ...options, signal: options.signal ?? AbortSignal.timeout(timeoutMs) });
+}
 
 // ── Specifier classification ────────────────────────────────────────────────────────────────────
 //
@@ -695,8 +717,9 @@ export async function runCheck({
   delayMs = DEFAULT_DELAY_MS,
   deadlineMs = DEFAULT_DEADLINE_MS,
   installTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
   now = () => Date.now(),
-  fetchImpl = globalThis.fetch,
+  fetchImpl: rawFetchImpl = globalThis.fetch,
   installer = installIntoCleanRoom,
   cleanRoomFactory = makeCleanRoom,
   entryProber = probeEntryPoints,
@@ -725,6 +748,7 @@ export async function runCheck({
   let servedManifest = null;
   const startedAt = now();
   let deadlineExceeded = false;
+  const fetchImpl = withFetchTimeout(rawFetchImpl, fetchTimeoutMs);
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     // Only START an attempt whose install could still finish inside the deadline. Checking merely
@@ -836,6 +860,15 @@ export async function runCheck({
       const present = [];
       const unknown = [];
       for (const dep of declaredNames) {
+        // The sweep is the one loop inside an attempt whose length is set by the PACKAGE rather than
+        // by this file: `@cosyte/cli` declares ten. Checked here as well as between attempts, so a
+        // package with many dependencies against a slow registry cannot walk past the deadline
+        // inside a single attempt. A dependency not reached is `unknown`, not `present`, which is
+        // the conservative reading: it yields `inconclusive` and warns.
+        if (now() - startedAt > deadlineMs) {
+          unknown.push(...declaredNames.filter((n) => !present.includes(n) && !missing.includes(n)));
+          break;
+        }
         // eslint-disable-next-line no-await-in-loop
         const status = await dependencyStatus(registry, dep, fetchImpl);
         if (status === "present") present.push(dep);
@@ -1083,6 +1116,7 @@ async function main(argv) {
     attempts: Number(args.attempts || DEFAULT_ATTEMPTS),
     delayMs: Number(args["delay-ms"] ?? DEFAULT_DELAY_MS),
     deadlineMs: Number(args["deadline-ms"] || DEFAULT_DEADLINE_MS),
+    fetchTimeoutMs: Number(args["fetch-timeout-ms"] || DEFAULT_FETCH_TIMEOUT_MS),
     tempParent: args["temp-parent"] || process.env.RUNNER_TEMP || tmpdir(),
     log: (m) => process.stdout.write(`${m}\n`),
   });

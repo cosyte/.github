@@ -242,7 +242,17 @@ attempts of that is roughly thirty minutes. So the gate carries `--deadline-ms` 
 attempt is only **started** if its whole install could still finish inside it. Checking merely that the
 deadline had not yet passed would let a 180s install begin one second before it and overrun.
 
-The layering: install timeout 180s, gate deadline 540s, step `timeout-minutes: 15`. A killed install is
+**Every registry fetch is bounded too, because `globalThis.fetch` is not.** Node's fetch has no
+default request timeout; measured in this gate against a socket that accepts and never answers, a
+single unbounded fetch stalls **300.8 seconds**. Since the deadline is only checked *between*
+attempts, one attempt holding several stalled fetches could run past the step's `timeout-minutes`
+without the guard ever getting a turn. Requests now carry `AbortSignal.timeout` (30s default), and the
+dependency sweep, whose length is set by the package rather than by this file (`@cosyte/cli` declares
+ten), checks the deadline on each iteration and calls anything it did not reach **unknown**, never
+present. Against a black-hole registry the gate now gives up in about two seconds with
+`deadline-exceeded`, exit 0.
+
+The layering: fetch 30s, install 180s, gate deadline 540s, step `timeout-minutes: 15`. A killed install is
 fed back into the retry ladder as an ordinary failure, never as a verdict, and the deadline yields
 `deadline-exceeded`, which asserts nothing about the package either way. The one thing the deadline
 does **not** launder is a `non-registry-specifier` finding: that lint is offline and complete however
