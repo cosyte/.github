@@ -576,11 +576,16 @@ jobs:
       #
       # WHAT IT WILL NOT DO IS RED A CORRECT RELEASE. It exits non-zero only on a positive
       # determination: a non-registry specifier in the manifest THE REGISTRY SERVES, or a clean
-      # install that failed for a reason the allowance does not name, after the retry budget. Registry
-      # propagation lag, a declared unpublished dependency, a network fault, and any unexpected throw
-      # inside the script all warn and exit 0. The retry wraps the whole attempt rather than just our
-      # own name, because this org publishes in waves and a sibling published seconds ago is just as
-      # unpropagated; reading that as a permanent absence would red a correct release.
+      # install that failed after the retry budget, with the registry having ANSWERED for every
+      # dependency the package declares, for a reason the allowance does not name. Registry
+      # propagation lag, a declared unpublished dependency, a dependency the registry would not answer
+      # for at all, a network fault, a timed-out install, and any unexpected throw inside the script
+      # all warn and exit 0.
+      #
+      # The retry wraps the whole attempt rather than just our own name, because this org publishes in
+      # waves and a sibling published seconds ago is just as unpropagated; reading that as a permanent
+      # absence would red a correct release. Every failure the allowance has not ALREADY SETTLED
+      # spends the whole budget before a verdict is taken.
       #
       # `!cancelled()` rather than `success()` so that a failure in the release/dispatch step above
       # does not skip the one check that says whether the thing on the registry can be installed. The
