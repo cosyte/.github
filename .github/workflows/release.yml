@@ -588,6 +588,13 @@ jobs:
       # this org has watched fire on real releases rather than one written and never taken.
       - name: The published package must be installable from the registry
         if: ${{ !cancelled() && steps.changesets.outputs.published == 'true' }}
+        # This job holds a PROTECTED `release` environment while it runs, so the step is bounded
+        # rather than left on the six-hour job default. The retry budget is 8 attempts at 15s plus
+        # the installs themselves, so a healthy run finishes in well under a minute and a fully
+        # exhausted one in a few minutes. A stalled registry socket must not hold the environment for
+        # the rest of the day; the script bounds each `npm install` too, and a timeout there is
+        # treated as an ordinary retryable failure rather than a verdict.
+        timeout-minutes: 15
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}

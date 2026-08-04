@@ -158,6 +158,16 @@ cache so nothing is served warm, and **empty user and global npmrc files** so th
 what an anonymous outsider gets. That last one is not cosmetic: `setup-node` writes an `_authToken`
 into the job's npmrc, and installing with it would mask a package accidentally published private.
 
+**The whole `npm_config_*` namespace is stripped from the inherited environment, in both cases.** An
+earlier version set only the lowercase `npm_config_userconfig`, and `actions/setup-node` exports the
+**uppercase** `NPM_CONFIG_USERCONFIG` job-wide, which **wins in both insertion orders** (measured on
+npm 10.9.8). So the probe was loading the job's authenticated npmrc while claiming to be anonymous. It
+was benign only by accident of a second line blanking `NODE_AUTH_TOKEN`, and that accident is one edit
+away from arming: the `setup-node` comment in `release.yml` already tells a future maintainer to set
+`NODE_AUTH_TOKEN` at job level if a `scope:` input is ever added. Stripping the namespace rather than
+overriding the two names known to matter is the difference between defending against a list and
+defending against the mechanism.
+
 Two npm behaviours that each cost a measurement, recorded so they are not rediscovered:
 
 - Pointing `NPM_CONFIG_USERCONFIG` and `NPM_CONFIG_GLOBALCONFIG` at the **same file** makes npm abort
@@ -169,11 +179,12 @@ Two npm behaviours that each cost a measurement, recorded so they are not redisc
 
 | Verdict | Exit | When |
 |---|---|---|
-| `pass` | 0 | installed from the registry into a clean anonymous directory, and the declared entry points load |
+| `pass` | 0 | installed from the registry into a clean anonymous directory, and everything it declares loads |
 | `non-registry-specifier` | **1** | the manifest **the registry serves** carries a specifier that cannot resolve from a registry. Deterministic, offline, no retry, and **never excusable by the allowance** |
-| `uninstallable` | **1** | a clean install failed for a reason the allowance does not name, after the retry budget; or it installed and its declared entry points do not load |
+| `uninstallable` | **1** | a clean install failed, the budget is spent, the registry **answered** for every dependency declared, and the allowance still does not explain it; or it installed and its declared entry points do not load |
 | `blocked-peer` | 0 | uninstallable, and **fully** explained by dependencies declared in `expect-unpublished-deps` |
 | `not-propagated` | 0 | the registry never served the version within the budget |
+| `inconclusive` | 0 | the install failed and the registry gave **no usable answer** for a dependency, so the failure cannot be attributed |
 
 The specifier lint is evaluated **first and independently of the install**, and that ordering is the
 point rather than a detail. `@cosyte/cli@0.0.1` has both `file:` specifiers **and** a genuinely blocked
@@ -194,11 +205,13 @@ published". That reasoning is right and **it does not reach this gate**:
    and re-reads every package's latest release, so one later rebuild covers every missed dispatch.
    Nothing anywhere re-checks installability. `@cosyte/cli@0.0.1` was found by a human doing an
    unrelated README sweep days later, and `0.0.2` shipped carrying the identical defect in between.
-3. **"Invites a re-run" is structurally absent here, twice over.** By the time this runs the release
-   step has created the `v<version>` tag on the remote, so a re-run's `release-notes.mjs prepare`
-   classifies the commit `already-released`, sets `is-release=false`, and the publish command is
-   withheld. Independently of that, `changeset publish` queries npm and skips a version already on the
-   registry. A re-run cannot double-publish.
+3. **"Invites a re-run" does not carry the same cost here.** `changeset publish` queries npm and skips
+   a version already on the registry, so a re-run cannot double-publish, **unconditionally**. A second
+   mechanism usually also applies, that the release step has by then pushed the `v<version>` tag so a
+   re-run classifies `already-released` and the publish command is withheld, but it is **not**
+   unconditional: this step runs under `!cancelled()` precisely so it still reports when the release
+   step failed, and in that case the tag may never have been pushed. The property holds once always,
+   and twice in the ordinary case.
 
 **The sticky-issue route was the preferred design and is not available.** Opening an issue needs
 `issues: write`, and a called workflow's token can only be equal to or more restrictive than the
@@ -212,9 +225,13 @@ residual down for the dispatch and accepts it there **only** because a backstop 
 
 This runs in the shared pipeline for thirteen packages, so a bug in it must not be able to red a
 correct release. It exits non-zero only on a **positive determination**. A network fault, a 5xx, a rate
-limit, a malformed response, an npm crash, and any unexpected throw anywhere in the script all warn and
-exit 0. A registry that answers anything other than 200 or 404 for a package is read as **present**, so
-a flaky registry can never manufacture an `uninstallable` verdict.
+limit, a malformed response, an npm crash, a timed-out install, and any unexpected throw anywhere in
+the script all warn and exit 0.
+
+The step is bounded at `timeout-minutes: 15` and each `npm install` at five minutes, because the job
+holds a **protected `release` environment** while it runs and a stalled registry socket must not hold it
+for the six-hour job default. A killed install is fed back into the retry ladder as an ordinary
+failure, never as a verdict.
 
 ### The retry wraps the whole attempt, not just our own name
 
@@ -225,12 +242,35 @@ near-simultaneously on 2026-08-02, and in a wave a package's sibling may have be
 ago and be just as unpropagated. Retrying only on our own name would read a propagating sibling as a
 permanently missing dependency and red a correct release.
 
-So the retry wraps the entire attempt and the verdict is taken once the budget is spent. What
-distinguishes "not propagated yet" from "genuinely uninstallable" is not a message, it is **which
-oracle is still failing at the end**: our own version still unserved, versus a dependency name still
-absent, versus an install that fails with every declared name present. The oracles are plain registry
-HTTP (a packument `GET`, a version-manifest `GET`, a `HEAD` on `dist.tarball`), not `npm view`, which
-is three fewer npm behaviours to depend on.
+So the retry wraps the entire attempt, and **every failure the allowance has not already settled spends
+the whole budget** before a verdict is taken. Only a failure the allowance fully explains skips it,
+because the allowance is a statement that the absence is standing rather than transient.
+
+> **This was wrong in the first implementation and a refuter caught it.** The retry fired *only* when
+> an absent dependency was undeclared, so an install failure with **nothing** missing returned
+> `uninstallable` on attempt one with the budget untouched. "Nothing missing" is **vacuously true for
+> the six packages that declare no consumer dependencies at all**, so for them ordinary propagation lag
+> went straight to a red on a permanent release.
+
+What distinguishes "not propagated yet" from "genuinely uninstallable" is not a message, it is **which
+oracle is still failing at the end**. The oracles are plain registry HTTP, not `npm view`: a packument
+`GET`, a version-manifest `GET`, and a `HEAD` on `dist.tarball`. **All three are asked, and the
+packument is not redundant with the version document.** They are separate objects with independent
+propagation, and the packument is the one npm resolves a version from, so there is a real window in
+which the version document and the tarball are live and the packument still tops out at the previous
+version. Believing the version document alone declared a correct release uninstallable.
+
+### There is no safe boolean for "does this dependency exist"
+
+Asking the registry whether a dependency is published has **three** answers, not two, and collapsing
+them is what turns a gate into a flake. On a 503:
+
+- reading it as **present** eliminates the explanation for the install failure, so the verdict silently
+  becomes "the defect is in this package's own tree", which is a **red**;
+- reading it as **absent** invents an excuse the registry never gave.
+
+So the answer is `present` / `absent` / `unknown`, and an unanswered dependency yields `inconclusive`,
+which reports and exits 0. **A failure the gate cannot EXPLAIN must not be a failure it CONDEMNS.**
 
 ### The allowance is a dated exception, not a setting
 

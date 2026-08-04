@@ -23,7 +23,8 @@ import {
   binTargets,
   classify,
   staleAllowanceEntries,
-  packageExists,
+  dependencyStatus,
+  packumentListsVersion,
   fetchVersionManifest,
   tarballServed,
   renderAnnotation,
@@ -312,21 +313,43 @@ const fakeFetch = (routes) => async (url, options = {}) => {
   };
 };
 
-test("a 404 packument means the package is absent", async () => {
+test("a 404 packument means the dependency is absent", async () => {
   const f = fakeFetch({ "GET https://r/@cosyte%2ffhir": { status: 404, body: null } });
-  assert.equal(await packageExists("https://r", "@cosyte/fhir", f), false);
+  assert.equal(await dependencyStatus("https://r", "@cosyte/fhir", f), "absent");
 });
 
-test("a 200 packument means the package is present", async () => {
+test("a 200 packument means the dependency is present", async () => {
   const f = fakeFetch({ "GET https://r/@cosyte%2fhl7": { status: 200, body: { name: "@cosyte/hl7" } } });
-  assert.equal(await packageExists("https://r", "@cosyte/hl7", f), true);
+  assert.equal(await dependencyStatus("https://r", "@cosyte/hl7", f), "present");
 });
 
-test("a 5xx or a rate limit is NOT read as absence, so a flaky registry cannot manufacture a red", async () => {
+test("a 5xx, a rate limit or a thrown fetch is UNKNOWN, never present and never absent", async () => {
+  // Both booleans are unsafe. "Present" eliminates the explanation for an install failure and the
+  // verdict silently becomes the package's own defect, which is a red; "absent" invents an excuse.
   for (const status of [500, 502, 429, 403]) {
     const f = fakeFetch({ "GET https://r/@cosyte%2fhl7": { status, body: null } });
-    assert.equal(await packageExists("https://r", "@cosyte/hl7", f), true, `status ${status}`);
+    assert.equal(await dependencyStatus("https://r", "@cosyte/hl7", f), "unknown", `status ${status}`);
   }
+  const boom = fakeFetch({ "GET https://r/@cosyte%2fhl7": new Error("ECONNRESET") });
+  assert.equal(await dependencyStatus("https://r", "@cosyte/hl7", boom), "unknown");
+});
+
+test("the packument oracle answers yes, no and unknown, and it is not the version document", async () => {
+  // The object npm actually resolves a version from. It propagates independently of the version
+  // document, so a version doc that is live while the packument still tops out at the previous
+  // version is a real state, and it used to red a correct release.
+  const listed = fakeFetch({
+    "GET https://r/@cosyte%2fhl7": { status: 200, body: { versions: { "0.0.6": {}, "0.0.7": {} } } },
+  });
+  const lagging = fakeFetch({
+    "GET https://r/@cosyte%2fhl7": { status: 200, body: { versions: { "0.0.6": {} } } },
+  });
+  const down = fakeFetch({ "GET https://r/@cosyte%2fhl7": { status: 503, body: null } });
+  const garbage = fakeFetch({ "GET https://r/@cosyte%2fhl7": { status: 200, body: { versions: "nope" } } });
+  assert.equal(await packumentListsVersion("https://r", "@cosyte/hl7", "0.0.7", listed), "yes");
+  assert.equal(await packumentListsVersion("https://r", "@cosyte/hl7", "0.0.7", lagging), "no");
+  assert.equal(await packumentListsVersion("https://r", "@cosyte/hl7", "0.0.7", down), "unknown");
+  assert.equal(await packumentListsVersion("https://r", "@cosyte/hl7", "0.0.7", garbage), "unknown");
 });
 
 test("the version manifest oracle distinguishes served from not served", async () => {
@@ -367,16 +390,26 @@ function harness({ servedAfter = 1, installResults = [], routes = {}, manifest =
   let versionCalls = 0;
   const slept = [];
   const installs = [];
+  const ownPackument = `https://r/${manifest.name.replace("/", "%2f")}`;
+  const reply = (status, body) => ({ status, json: async () => body, headers: new Map() });
   const fetchImpl = async (url, options = {}) => {
     const method = options.method || "GET";
-    if (method === "HEAD") return { status: 200, json: async () => null, headers: new Map() };
+    if (method === "HEAD") return reply(200, null);
+    // The version document for the package under test, gated on propagation.
     if (url.endsWith(`/${manifest.version}`)) {
       versionCalls += 1;
-      return { status: versionCalls >= servedAfter ? 200 : 404, json: async () => manifest, headers: new Map() };
+      return versionCalls >= servedAfter ? reply(200, manifest) : reply(404, null);
     }
-    const key = `GET ${url}`;
-    const hit = routes[key];
-    return { status: hit ? hit.status : 200, json: async () => (hit ? hit.body : {}), headers: new Map() };
+    // Its packument, which is a SEPARATE object and the one npm resolves from. Served in step with
+    // the version document unless a test overrides it via `routes`.
+    if (url === ownPackument && !routes[`GET ${url}`]) {
+      return versionCalls >= servedAfter
+        ? reply(200, { versions: { [manifest.version]: {} } })
+        : reply(404, null);
+    }
+    const hit = routes[`GET ${url}`];
+    // A dependency packument nothing routed: present, and shaped like a real one.
+    return hit ? reply(hit.status, hit.body) : reply(200, { versions: {} });
   };
   return {
     slept,
@@ -390,7 +423,7 @@ function harness({ servedAfter = 1, installResults = [], routes = {}, manifest =
         installs.push(args);
         return installResults[installs.length - 1] ?? installResults.at(-1) ?? { ok: true, code: 0, output: "" };
       },
-      entryProber: async () => [],
+      entryProber: async () => ({ failures: [], probed: ["esm", "cjs"] }),
       waiter: async (ms) => {
         slept.push(ms);
       },
@@ -547,7 +580,7 @@ test("a failing entry-point probe reds a package that installed cleanly", async 
     attempts: 2,
     delayMs: 1,
     ...h.opts,
-    entryProber: async () => ["ESM entry point failed to load: ERR_MODULE_NOT_FOUND"],
+    entryProber: async () => ({ failures: ["ESM entry point failed to load: ERR_MODULE_NOT_FOUND"], probed: ["esm"] }),
   });
   assert.equal(r.verdict, "uninstallable");
   assert.equal(r.failing, true);
@@ -652,4 +685,201 @@ test("an empty allowance argument is not read as a package named the empty strin
   assert.deepEqual(parseAllowance(parseArgs(["--expect-unpublished-deps", "--attempts", "3"])["expect-unpublished-deps"]), ["true"]);
   // ...which is why the workflow always passes a value, and why an absent flag yields [].
   assert.deepEqual(parseAllowance(parseArgs(["--attempts", "3"])["expect-unpublished-deps"]), []);
+});
+
+// ── Regression tests for the defects the gate-refuter found (2026-08-04) ────────────────────────
+//
+// Each of these FAILED against the first implementation. They are the reason the retry rule, the
+// registry oracle and the clean-room environment look the way they do.
+
+test("REGRESSION: an install failure with NOTHING missing spends the whole budget", async () => {
+  // THE BLOCKER. The retry used to fire only when a dependency name was absent AND undeclared, so a
+  // failure with nothing missing returned `uninstallable` on attempt 1 with the budget untouched.
+  // "Nothing missing" is VACUOUSLY true for the six packages that declare no consumer dependencies,
+  // so for them ordinary propagation lag went straight to a red on a permanent release.
+  const h = harness({ manifest: HL7_0_0_7, installResults: [{ ok: false, code: 1, output: "E404" }] });
+  const r = await runCheck({ name: "@cosyte/hl7", version: "0.0.7", attempts: 5, delayMs: 1, ...h.opts });
+  assert.equal(h.installs.length, 5, "every attempt must be spent before condemning a permanent release");
+  assert.equal(h.slept.length, 4);
+  assert.equal(r.attemptsUsed, 5);
+  assert.equal(r.verdict, "uninstallable");
+});
+
+test("REGRESSION: a package with no dependencies that starts installing mid-budget passes", async () => {
+  // The same shape as above, with the lag resolving. This is the correct release the old code redded.
+  const h = harness({
+    manifest: HL7_0_0_7,
+    installResults: [
+      { ok: false, code: 1, output: "E404" },
+      { ok: false, code: 1, output: "E404" },
+      { ok: true, code: 0, output: "added 1 package" },
+    ],
+  });
+  const r = await runCheck({ name: "@cosyte/hl7", version: "0.0.7", attempts: 8, delayMs: 1, ...h.opts });
+  assert.equal(r.verdict, "pass");
+  assert.equal(r.failing, false);
+  assert.equal(h.installs.length, 3);
+});
+
+test("REGRESSION: the packument lagging behind the version document is not a defect", async () => {
+  // `GET /pkg/version` and `GET /pkg` are separate objects with independent propagation, and npm
+  // resolves from the packument. Believing the version document alone declared a live, correct
+  // release uninstallable. Here the version doc and tarball are live and the packument is not.
+  const h = harness({
+    manifest: HL7_0_0_7,
+    routes: { "GET https://r/@cosyte%2fhl7": { status: 200, body: { versions: { "0.0.6": {} } } } },
+  });
+  const r = await runCheck({ name: "@cosyte/hl7", version: "0.0.7", attempts: 3, delayMs: 1, ...h.opts });
+  assert.equal(r.verdict, "not-propagated");
+  assert.equal(r.failing, false);
+  assert.equal(h.installs.length, 0, "npm must not be asked to resolve a version its packument lacks");
+});
+
+test("REGRESSION: a 503 on a dependency packument is inconclusive, not a red", async () => {
+  // The 5xx path used to read as PRESENT, which emptied the absent set, which made `classify`
+  // conclude the defect was in the package's own tree. A transient registry fault turned the
+  // declared, expected blocked-peer warning on transform and synth into a failed release.
+  const h = harness({
+    manifest: TRANSFORM_0_0_5,
+    installResults: [{ ok: false, code: 1, output: "npm error code E404" }],
+    routes: {
+      "GET https://r/@cosyte%2ffhir": { status: 503, body: null },
+      "GET https://r/@cosyte%2fhl7": { status: 200, body: { versions: {} } },
+    },
+  });
+  const r = await runCheck({
+    name: "@cosyte/transform",
+    version: "0.0.5",
+    attempts: 2,
+    delayMs: 1,
+    allowance: ["@cosyte/fhir"],
+    ...h.opts,
+  });
+  assert.equal(r.verdict, "inconclusive");
+  assert.equal(r.failing, false);
+  assert.deepEqual(r.unknownDependencies, ["@cosyte/fhir"]);
+  assert.match(renderAnnotation(r), /^::warning title=Install gate could not attribute a failure::/);
+});
+
+test("REGRESSION: an unanswered dependency cannot be excused into a pass either", async () => {
+  // Fail-open must not become excuse-everything: `inconclusive` reports the failure, it does not
+  // claim the package is fine.
+  const h = harness({
+    manifest: TRANSFORM_0_0_5,
+    installResults: [{ ok: false, code: 1, output: "boom" }],
+    routes: { "GET https://r/@cosyte%2ffhir": { status: 500, body: null } },
+  });
+  const r = await runCheck({ name: "@cosyte/transform", version: "0.0.5", attempts: 2, delayMs: 1, ...h.opts });
+  assert.notEqual(r.verdict, "pass");
+  assert.equal(r.verdict, "inconclusive");
+});
+
+test("REGRESSION: the clean room neutralizes the UPPERCASE npm config the job exports", async () => {
+  // `actions/setup-node` exports NPM_CONFIG_USERCONFIG job-wide, pointing at the npmrc holding
+  // `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`, and the uppercase form WINS over the
+  // lowercase one in both insertion orders. Setting only the lowercase name meant the probe loaded
+  // the job's authenticated npmrc, so "exactly what an anonymous outsider gets" was false.
+  const saved = { ...process.env };
+  try {
+    process.env.NPM_CONFIG_USERCONFIG = "/job/.npmrc";
+    process.env.NPM_CONFIG_GLOBALCONFIG = "/job/global.npmrc";
+    process.env.NPM_CONFIG_REGISTRY = "https://evil.example.com/";
+    process.env.npm_config_cache = "/job/cache";
+    const env = cleanRoomEnv("/tmp/room", "https://r");
+    for (const [key, value] of Object.entries(env)) {
+      if (/^npm_config_/i.test(key)) {
+        assert.match(value, /^(\/tmp\/room|https:\/\/r)/, `${key} escaped the clean room: ${value}`);
+      }
+    }
+    assert.equal(env.NPM_CONFIG_USERCONFIG, "/tmp/room/cfg/user.npmrc");
+    assert.equal(env.npm_config_userconfig, "/tmp/room/cfg/user.npmrc");
+    assert.equal(env.NPM_CONFIG_REGISTRY, "https://r");
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
+
+test("REGRESSION: an inherited npm_config_* variable with no override is stripped, not passed through", async () => {
+  const saved = process.env.npm_config_legacy_peer_deps;
+  try {
+    // This one would silently make the probe install a tree npm would otherwise refuse, which is
+    // exactly the ERESOLVE that `@cosyte/synth` fails on.
+    process.env.npm_config_legacy_peer_deps = "true";
+    const env = cleanRoomEnv("/tmp/room", "https://r");
+    assert.equal(env.npm_config_legacy_peer_deps, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.npm_config_legacy_peer_deps;
+    else process.env.npm_config_legacy_peer_deps = saved;
+  }
+});
+
+test("REGRESSION: the stale-allowance remedy names the input that actually exists", async () => {
+  // It said `expected-unpublished-deps`; the input is `expect-unpublished-deps`. This is the one
+  // message rendered exactly when @cosyte/fhir publishes, so a caller following it would have
+  // written an undefined input into a workflow_call.
+  const summary = renderSummary({
+    ...classify(facts()),
+    package: "@cosyte/transform",
+    version: "0.0.5",
+    attemptsUsed: 1,
+    missingDependencies: [],
+    staleAllowance: ["@cosyte/fhir"],
+    trail: [],
+  });
+  assert.match(summary, /`expect-unpublished-deps`/);
+  assert.doesNotMatch(summary, /expected-unpublished-deps/);
+});
+
+test("REGRESSION: a pass does not claim entry points loaded when none were declared", async () => {
+  const none = classify(facts({ entryPointsProbed: [] }));
+  assert.equal(none.verdict, "pass");
+  assert.match(none.reason, /declares no entry point and no bin/);
+  const some = classify(facts({ entryPointsProbed: ["esm", "cjs"] }));
+  assert.match(some.reason, /esm, cjs/);
+});
+
+test("REGRESSION: a killed install is a retryable failure, never a verdict on its own", async () => {
+  // The command timeout exists because this holds a protected `release` environment. A kill must
+  // look like any other install failure to the ladder.
+  const h = harness({
+    manifest: HL7_0_0_7,
+    installResults: [
+      { ok: false, code: -1, output: "timed out after 300000ms and was killed" },
+      { ok: true, code: 0, output: "added 1 package" },
+    ],
+  });
+  const r = await runCheck({ name: "@cosyte/hl7", version: "0.0.7", attempts: 4, delayMs: 1, ...h.opts });
+  assert.equal(r.verdict, "pass");
+});
+
+test("REGRESSION: every verdict the classifier can produce has its own annotation branch", async () => {
+  // The dominant defect class in this org is a branch nothing ever takes. An unhandled verdict would
+  // fall through to the generic "did not complete" line and misreport itself.
+  const produced = new Set([
+    classify(facts({ specifierFindings: findNonRegistrySpecifiers(CLI_0_0_1) })).verdict,
+    classify(facts({ ownServed: false, installAttempted: false, installOk: false })).verdict,
+    classify(facts({ installOk: false, missingDependencies: ["@cosyte/fhir"], declaredAllowance: ["@cosyte/fhir"] })).verdict,
+    classify(facts({ installOk: false, unknownDependencies: ["@cosyte/fhir"] })).verdict,
+    classify(facts({ installOk: false, missingDependencies: [] })).verdict,
+    classify(facts()).verdict,
+  ]);
+  assert.deepEqual(
+    [...produced].sort(),
+    ["blocked-peer", "inconclusive", "non-registry-specifier", "not-propagated", "pass", "uninstallable"],
+  );
+  for (const verdict of produced) {
+    if (verdict === "pass") continue;
+    const line = renderAnnotation({
+      verdict,
+      failing: verdict === "uninstallable" || verdict === "non-registry-specifier",
+      reason: "r",
+      package: "@cosyte/x",
+      version: "1.0.0",
+      attemptsUsed: 1,
+      missingDependencies: ["@cosyte/fhir"],
+      unknownDependencies: ["@cosyte/fhir"],
+    });
+    assert.doesNotMatch(line, /did not complete/, `${verdict} fell through to the catch-all`);
+  }
 });

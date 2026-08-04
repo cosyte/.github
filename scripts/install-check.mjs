@@ -44,12 +44,15 @@
 //      every missed dispatch. Nothing anywhere re-checks installability. That is the whole premise
 //      of this gate: `@cosyte/cli@0.0.1` was found by a human doing an unrelated README sweep days
 //      later, and `0.0.2` shipped carrying the identical defect in the meantime.
-//   3. "INVITES A RE-RUN OF A JOB THAT ALREADY PUBLISHED" is structurally absent here, twice over.
-//      By the time this runs the release step has created the `v<version>` tag on the remote, so a
-//      re-run's `release-notes.mjs prepare` classifies the commit `already-released`, sets
-//      `is-release=false`, and the publish command is withheld. And independently of that,
-//      `changeset publish` queries npm and skips a version already on the registry. A re-run cannot
-//      double-publish.
+//   3. "INVITES A RE-RUN OF A JOB THAT ALREADY PUBLISHED" does not carry the same cost here, and the
+//      load-bearing half is the SECOND one. `changeset publish` queries npm and skips a version
+//      already on the registry, so a re-run cannot double-publish, unconditionally. There is a
+//      second mechanism, that the release step has by then pushed the `v<version>` tag so a re-run's
+//      `release-notes.mjs prepare` classifies the commit `already-released` and the publish command
+//      is withheld, and it is NOT unconditional: this step runs under `!cancelled()` precisely so it
+//      still reports when the release step FAILED, and in that case the tag may never have been
+//      pushed. An earlier draft of this comment claimed the property held "twice over". It holds
+//      once, always, and twice in the ordinary case.
 //
 // THE STICKY-ISSUE ROUTE WAS THE PREFERRED DESIGN AND IS NOT AVAILABLE. Opening an issue needs
 // `issues: write`, and a called workflow's token can only be equal to or more restrictive than the
@@ -71,12 +74,21 @@
 //   non-registry-specifier   the manifest THE REGISTRY SERVES carries a specifier that cannot
 //                            resolve from the registry. Deterministic, offline, no retry, and NOT
 //                            excusable by any allowance.
-//   uninstallable            a clean anonymous install of the published version failed, and the
-//                            failure is not explained by the declared allowance, after the retry
-//                            budget is exhausted.
+//   uninstallable            a clean anonymous install of the published version failed, the retry
+//                            budget is exhausted, the registry ANSWERED for every dependency the
+//                            package declares, and the failure is still not explained by the
+//                            declared allowance.
 //
 // Every other outcome warns and exits 0: not propagated yet, explained by a declared allowance, a
 // network fault, an npm crash, a malformed response, or an unexpected throw anywhere in this file.
+//
+// The clause about the registry having ANSWERED is the one that took a refutation to get right, and
+// it is the difference between a gate and a flake. There is no safe boolean for "does this
+// dependency exist" when the registry returns a 503: reading it as PRESENT eliminates the
+// explanation for the install failure and the verdict silently becomes "the defect is in this
+// package's own tree", which is a red; reading it as ABSENT invents an excuse. So the answer is
+// three-valued, and an unanswered dependency yields `inconclusive`, which reports and exits 0. A
+// failure this cannot EXPLAIN must not be a failure it CONDEMNS.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // EVENTUAL CONSISTENCY, AND WHY THE RETRY WRAPS THE WHOLE ATTEMPT.
@@ -88,18 +100,31 @@
 // and be just as unpropagated. Retrying only on our own name would then read a propagating sibling
 // as a permanently missing dependency and red a correct release.
 //
-// So the retry wraps the entire attempt (serve check, then install), and the verdict is taken only
-// once the budget is spent. What distinguishes the two failures constraint 2 demands is not a
-// message, it is WHICH ORACLE IS STILL FAILING AT THE END:
+// So the retry wraps the entire attempt (serve check, then install), and every failure the declared
+// allowance has not ALREADY SETTLED spends the whole budget before a verdict is taken. What
+// distinguishes the outcomes is not a message, it is WHICH ORACLE IS STILL FAILING AT THE END:
 //
 //   our own package@version still not served    -> not-propagated  (warn)
+//   a dependency name the registry will not
+//     answer for at all                         -> inconclusive    (warn)
 //   served, but a dependency NAME still 404s    -> blocked-peer if declared (warn), else fail
 //   served, all dependency names present,
 //     install still fails                       -> uninstallable   (fail)
 //
+// ONLY a failure the allowance fully explains skips the retry, because the allowance is a statement
+// that the absence is known and standing rather than transient, so re-asking cannot change it. An
+// earlier version had this backwards: it retried ONLY when an absent dependency was undeclared,
+// which meant an install failure with NOTHING missing returned on attempt 1 with the budget
+// untouched. "Nothing missing" is vacuously true for the six packages that declare no consumer
+// dependencies at all, so for them every install failure went straight to a red, ordinary
+// propagation lag included.
+//
 // The oracles are plain registry HTTP, not `npm view`: a packument GET, a version-manifest GET, and
 // a HEAD on `dist.tarball`. That is three fewer npm-version behaviours to depend on, and it answers
-// "has the registry actually served this yet" rather than "did a CLI succeed".
+// "has the registry actually served this yet" rather than "did a CLI succeed". ALL THREE are asked,
+// and the packument is not redundant with the version document: they are separate objects with
+// independent propagation, and the packument is the one npm resolves a version from. Believing the
+// version document alone left a real window in which a correct release was declared uninstallable.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // CLEAN MEANS ANONYMOUS, NOT MERELY EMPTY.
@@ -215,7 +240,8 @@ export function parseAllowance(raw) {
 //
 // Probed ONLY where the manifest itself declares the condition, because a false red here is
 // expensive. An ESM-only package legitimately cannot be `require`d, and this must not call that a
-// defect. A package declaring neither condition is skipped and says so.
+// defect. A package declaring neither condition has no entry point probed at all, and the reporting
+// says so rather than claiming its entry points loaded.
 /** @param {Record<string, any>} manifest */
 export function entryPointProbes(manifest) {
   const root = manifest?.exports?.["."] ?? manifest?.exports;
@@ -250,8 +276,10 @@ export function binTargets(manifest) {
 //   installOk: boolean,
 //   installAttempted: boolean,
 //   missingDependencies: string[],
+//   unknownDependencies: string[],
 //   declaredAllowance: string[],
 //   entryFailures: string[],
+//   entryPointsProbed: string[],
 // }} facts
 export function classify(facts) {
   const {
@@ -260,8 +288,10 @@ export function classify(facts) {
     installOk,
     installAttempted,
     missingDependencies,
+    unknownDependencies = [],
     declaredAllowance,
     entryFailures,
+    entryPointsProbed = [],
   } = facts;
 
   // Deterministic and never excusable. Evaluated FIRST and independently of the install, which is
@@ -290,6 +320,20 @@ export function classify(facts) {
   }
 
   if (installAttempted && !installOk) {
+    // The registry did not answer for at least one dependency, so the failure cannot be EXPLAINED.
+    // A failure this cannot explain must not be a failure it condemns: without this, a transient 5xx
+    // on a dependency packument is indistinguishable from that dependency being fine, and the
+    // verdict silently becomes "the defect is in this package's own tree".
+    if (unknownDependencies.length > 0) {
+      return {
+        verdict: "inconclusive",
+        failing: false,
+        reason:
+          `A clean anonymous install failed, but the registry gave no usable answer for ` +
+          `${unknownDependencies.join(", ")}, so the failure cannot be attributed. Reporting rather ` +
+          `than failing: a registry fault must never red a release that may be perfectly correct.`,
+      };
+    }
     const undeclared = missingDependencies.filter((n) => !declaredAllowance.includes(n));
     if (missingDependencies.length > 0 && undeclared.length === 0) {
       return {
@@ -326,7 +370,12 @@ export function classify(facts) {
   return {
     verdict: "pass",
     failing: false,
-    reason: "Installed from the registry into a clean anonymous directory, and its entry points load.",
+    reason:
+      entryPointsProbed.length > 0
+        ? `Installed from the registry into a clean anonymous directory, and everything it declares ` +
+          `loads (${entryPointsProbed.join(", ")}).`
+        : `Installed from the registry into a clean anonymous directory. It declares no entry point ` +
+          `and no bin, so nothing beyond the install itself was asserted.`,
   };
 }
 
@@ -343,21 +392,37 @@ const encodeName = (name) => name.replace("/", "%2f");
 
 /** @returns {Promise<{status: number, body: any}>} */
 async function getJson(url, fetchImpl) {
-  const res = await fetchImpl(url, {
-    headers: { accept: "application/vnd.npm.install-v1+json, application/json" },
-  });
-  if (res.status !== 200) return { status: res.status, body: null };
-  return { status: 200, body: await res.json() };
+  try {
+    const res = await fetchImpl(url, {
+      headers: { accept: "application/vnd.npm.install-v1+json, application/json" },
+    });
+    if (res.status !== 200) return { status: res.status, body: null };
+    return { status: 200, body: await res.json() };
+  } catch {
+    // A thrown fetch is a transport fault, not an answer. `0` is not a real HTTP status and is
+    // deliberately unmatched by every caller's 200/404 test, so it lands in "unknown".
+    return { status: 0, body: null };
+  }
 }
 
-/** Does the registry know this package name at all? */
-export async function packageExists(registry, name, fetchImpl) {
+// THREE-VALUED ON PURPOSE, AND THE THIRD VALUE IS THE WHOLE POINT.
+//
+// This used to return a boolean, reading anything that was not 200 or 404 as PRESENT, with a comment
+// claiming that stopped a flaky registry manufacturing a red. The refuter showed the comment asserted
+// the exact inverse of what the composition does, and reproduced it: a 503 on the `@cosyte/fhir`
+// packument made it "present", which emptied the absent set, which made `classify` conclude that the
+// failure lay in the package's OWN tree, which is `uninstallable` and exit 1. So a transient 5xx
+// turned the declared, expected `blocked-peer` warning on transform and synth into a red release.
+//
+// Neither boolean is safe, because both are a guess. "Present" manufactures a red by eliminating the
+// explanation; "absent" manufactures a false excuse. The honest answer is that the registry did not
+// say, and a failure this cannot EXPLAIN must not be a failure it CONDEMNS.
+/** @returns {Promise<"present" | "absent" | "unknown">} */
+export async function dependencyStatus(registry, name, fetchImpl) {
   const { status } = await getJson(`${registry}/${encodeName(name)}`, fetchImpl);
-  if (status === 200) return true;
-  if (status === 404) return false;
-  // Anything else (rate limit, 5xx, proxy error) is NOT evidence of absence. Treated as present so
-  // that a flaky registry can never manufacture an `uninstallable` verdict.
-  return true;
+  if (status === 200) return "present";
+  if (status === 404) return "absent";
+  return "unknown";
 }
 
 /** The version manifest the registry actually serves, or null if it does not serve one yet. */
@@ -367,6 +432,25 @@ export async function fetchVersionManifest(registry, name, version, fetchImpl) {
     fetchImpl,
   );
   return status === 200 ? body : null;
+}
+
+// THE PACKUMENT IS A SEPARATE OBJECT FROM THE VERSION DOCUMENT, AND IT IS THE ONE npm READS.
+//
+// `npm install pkg@version` resolves the version out of the PACKUMENT (`GET /pkg`). This gate's
+// propagation oracle originally asked only for the version document (`GET /pkg/version`) and a HEAD
+// on the tarball. Those are different registry and CDN objects with independent propagation, so
+// there is a real window in which the version document and the tarball are both live and the
+// packument still tops out at the previous version. In that window the oracle said "fully served",
+// the install failed to resolve, and a correct release went red. Reproduced by the refuter against
+// the real script. Asking the packument as well closes the window, because it is the object npm
+// itself consults.
+/** @returns {Promise<"yes" | "no" | "unknown">} */
+export async function packumentListsVersion(registry, name, version, fetchImpl) {
+  const { status, body } = await getJson(`${registry}/${encodeName(name)}`, fetchImpl);
+  if (status !== 200) return "unknown";
+  const versions = body?.versions;
+  if (!versions || typeof versions !== "object") return "unknown";
+  return Object.hasOwn(versions, version) ? "yes" : "no";
 }
 
 /** Is the tarball itself downloadable? A version manifest can be served before its bytes are. */
@@ -382,15 +466,35 @@ export async function tarballServed(url, fetchImpl) {
 
 // ── The clean-room install ──────────────────────────────────────────────────────────────────────
 
-function run(cmd, args, options) {
+// BOUNDED, because this holds a protected `release` environment while it runs. Without a timeout a
+// stalled `npm install` (a hung socket to the registry is the obvious way) inherits the six-hour job
+// default, and six hours of a held release environment is a far worse outcome than a missed check.
+// A kill is reported as an ordinary non-zero exit, which the retry ladder then treats as any other
+// install failure: retried, and never on its own a red.
+export const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
+
+function run(cmd, args, options = {}) {
+  const { timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      done({ code: -1, out, err: `${err}\ntimed out after ${timeoutMs}ms and was killed` });
+    }, timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve({ code: -1, out, err: `${err}\n${e.message}` }));
-    child.on("close", (code) => resolve({ code, out, err }));
+    child.on("error", (e) => done({ code: -1, out, err: `${err}\n${e.message}` }));
+    child.on("close", (code) => done({ code, out, err }));
   });
 }
 
@@ -412,20 +516,49 @@ export async function makeCleanRoom(parent) {
   return dir;
 }
 
+// EVERY INHERITED npm CONFIG VARIABLE IS STRIPPED, IN BOTH CASES, RATHER THAN OVERRIDDEN.
+//
+// This used to set only the lowercase `npm_config_userconfig`. `actions/setup-node` exports the
+// UPPERCASE `NPM_CONFIG_USERCONFIG` job-wide, pointing at the npmrc that holds
+// `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`, and the refuter measured that the uppercase
+// form WINS IN BOTH INSERTION ORDERS on npm 10.9.8. So the probe was loading the job's authenticated
+// npmrc, and the file's own claim that it installs "exactly what an anonymous outsider gets" was
+// false. It was benign only by accident of a second line, the blanking of `NODE_AUTH_TOKEN`, which
+// made the token interpolate empty.
+//
+// That accident is one edit away from arming: the comment at `release.yml`'s `setup-node` step
+// already instructs a future maintainer to set `NODE_AUTH_TOKEN` at JOB level if a `scope:` input is
+// ever added. Do that with the old code and the probe silently installs AUTHENTICATED, which would
+// mask exactly the failure this gate is meant to catch, with no error and no test failure.
+//
+// Stripping the whole `npm_config_*` namespace rather than overriding the two names known to matter
+// is the difference between defending against a list and defending against the mechanism. npm maps
+// every config key to an env var, so any inherited one is a way for the job's environment to reach
+// into a directory that is supposed to know nothing.
 export function cleanRoomEnv(dir, registry) {
-  return {
-    ...process.env,
-    npm_config_userconfig: path.join(dir, "cfg", "user.npmrc"),
-    npm_config_globalconfig: path.join(dir, "cfg", "global.npmrc"),
-    npm_config_cache: path.join(dir, ".npm-cache"),
-    npm_config_registry: registry,
-    // `setup-node` exports these job-wide on the publish step. They must not reach the probe: the
-    // whole point is to install as an anonymous outsider.
-    NODE_AUTH_TOKEN: "",
-    NPM_TOKEN: "",
-    npm_config__auth: "",
-    npm_config_userconfig_token: "",
+  /** @type {Record<string, string | undefined>} */
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^npm_config_/i.test(key)) continue;
+    env[key] = value;
+  }
+  const settings = {
+    userconfig: path.join(dir, "cfg", "user.npmrc"),
+    globalconfig: path.join(dir, "cfg", "global.npmrc"),
+    cache: path.join(dir, ".npm-cache"),
+    registry,
   };
+  for (const [key, value] of Object.entries(settings)) {
+    // Both cases, deliberately. Setting only one leaves the other free to be inherited, and the
+    // uppercase one is the form `setup-node` exports.
+    env[`npm_config_${key}`] = value;
+    env[`NPM_CONFIG_${key.toUpperCase()}`] = value;
+  }
+  // Not `npm_config_*` variables, so the strip above does not reach them, and both are read as
+  // credentials by an npmrc that interpolates them.
+  env.NODE_AUTH_TOKEN = "";
+  env.NPM_TOKEN = "";
+  return env;
 }
 
 /** Install `<name>@<version>` into a clean room. Resolves, never rejects. */
@@ -456,7 +589,10 @@ export async function probeEntryPoints({ dir, name }) {
   try {
     manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch (error) {
-    return [`npm reported success but ${name} is not readable in the install tree: ${error?.message}`];
+    return {
+      failures: [`npm reported success but ${name} is not readable in the install tree: ${error?.message}`],
+      probed: [],
+    };
   }
   const { esm, cjs } = entryPointProbes(manifest);
 
@@ -479,16 +615,17 @@ export async function probeEntryPoints({ dir, name }) {
   if (esm) {
     const probe = path.join(dir, "probe-entry.mjs");
     await writeFile(probe, `await import(${JSON.stringify(name)});\n`);
-    const r = await run(process.execPath, [probe], { cwd: dir });
+    const r = await run(process.execPath, [probe], { cwd: dir, timeoutMs: 60_000 });
     if (r.code !== 0) failures.push(`ESM entry point failed to load: ${firstLine(r.err)}`);
   }
   if (cjs) {
     const probe = path.join(dir, "probe-entry.cjs");
     await writeFile(probe, `require(${JSON.stringify(name)});\n`);
-    const r = await run(process.execPath, [probe], { cwd: dir });
+    const r = await run(process.execPath, [probe], { cwd: dir, timeoutMs: 60_000 });
     if (r.code !== 0) failures.push(`CJS entry point failed to load: ${firstLine(r.err)}`);
   }
-  return failures;
+  const probed = [...binTargets(manifest).map((t) => `bin:${t}`), ...(esm ? ["esm"] : []), ...(cjs ? ["cjs"] : [])];
+  return { failures, probed };
 }
 
 const firstLine = (s) => String(s || "").trim().split("\n").find((l) => l.trim()) || "(no output)";
@@ -528,7 +665,11 @@ export async function runCheck({
   /** @type {string[]} */
   let presentDependencies = [];
   /** @type {string[]} */
+  let unknownDependencies = [];
+  /** @type {string[]} */
   let entryFailures = [];
+  /** @type {string[]} */
+  let entryPointsProbed = [];
   /** @type {Record<string, any> | null} */
   let servedManifest = null;
 
@@ -537,6 +678,19 @@ export async function runCheck({
     if (!servedManifest) {
       trail.push(`attempt ${attempt}: registry does not serve ${name}@${version} yet`);
       log(`attempt ${attempt}/${attempts}: ${name}@${version} not served by the registry yet`);
+      if (attempt < attempts) await waiter(delayMs);
+      continue;
+    }
+    // The object npm ACTUALLY resolves from. See `packumentListsVersion`: the version document and
+    // the packument propagate independently, and believing the version document alone left a real
+    // window in which a correct release was declared uninstallable.
+    const listed = await packumentListsVersion(registry, name, version, fetchImpl);
+    if (listed !== "yes") {
+      trail.push(
+        `attempt ${attempt}: version document served but the packument does not list ${version} ` +
+          `yet (${listed})`,
+      );
+      log(`attempt ${attempt}/${attempts}: packument does not list ${name}@${version} yet`);
       if (attempt < attempts) await waiter(delayMs);
       continue;
     }
@@ -561,7 +715,9 @@ export async function runCheck({
         installAttempted,
         missingDependencies,
         presentDependencies,
+        unknownDependencies,
         entryFailures,
+        entryPointsProbed,
         allowance,
         trail,
         installOutput,
@@ -578,8 +734,13 @@ export async function runCheck({
       installOk = install.ok;
       installOutput = install.output;
       if (install.ok) {
-        entryFailures = await entryProber({ dir: room, name });
-        trail.push(`attempt ${attempt}: install succeeded`);
+        const probe = await entryProber({ dir: room, name });
+        entryFailures = probe.failures;
+        entryPointsProbed = probe.probed;
+        trail.push(
+          `attempt ${attempt}: install succeeded; entry points probed: ` +
+            `${probe.probed.length ? probe.probed.join(", ") : "none declared"}`,
+        );
         return finish({
           specifierFindings: [],
           ownServed,
@@ -587,7 +748,9 @@ export async function runCheck({
           installAttempted,
           missingDependencies: [],
           presentDependencies: consumerDependencyNames(servedManifest),
+          unknownDependencies: [],
           entryFailures,
+          entryPointsProbed,
           allowance,
           trail,
           installOutput,
@@ -603,28 +766,47 @@ export async function runCheck({
       const declaredNames = consumerDependencyNames(servedManifest);
       const missing = [];
       const present = [];
+      const unknown = [];
       for (const dep of declaredNames) {
         // eslint-disable-next-line no-await-in-loop
-        if (await packageExists(registry, dep, fetchImpl)) present.push(dep);
-        else missing.push(dep);
+        const status = await dependencyStatus(registry, dep, fetchImpl);
+        if (status === "present") present.push(dep);
+        else if (status === "absent") missing.push(dep);
+        else unknown.push(dep);
       }
       missingDependencies = missing;
       presentDependencies = present;
+      unknownDependencies = unknown;
       trail.push(
         `attempt ${attempt}: install failed (exit ${install.code}); ` +
-          `absent dependency names: ${missing.length ? missing.join(", ") : "none"}`,
+          `absent: ${missing.length ? missing.join(", ") : "none"}; ` +
+          `unanswered: ${unknown.length ? unknown.join(", ") : "none"}`,
       );
       log(
-        `attempt ${attempt}/${attempts}: install failed, absent dependency names: ` +
+        `attempt ${attempt}/${attempts}: install failed; absent dependency names: ` +
           `${missing.length ? missing.join(", ") : "none"}`,
       );
 
-      // A dependency that is missing but NOT declared in the allowance is the one case worth
-      // retrying: in a release wave a sibling published seconds ago may still be propagating, and
-      // reading that as a permanent absence would red a correct release. A failure explained by the
-      // allowance needs no retry, and neither does a failure with nothing missing at all.
-      const undeclaredMissing = missing.filter((n) => !allowance.includes(n));
-      if (undeclaredMissing.length > 0 && attempt < attempts) {
+      // RETRY ANY FAILURE THE ALLOWANCE HAS NOT ALREADY SETTLED, AND SPEND THE WHOLE BUDGET.
+      //
+      // This previously retried ONLY when a dependency name was both absent and undeclared, which
+      // meant an install failure with nothing missing returned `uninstallable` on attempt 1 with the
+      // budget untouched. That is the single most common shape in this org: six of the thirteen
+      // packages declare no consumer dependencies at all, so "nothing missing" is VACUOUSLY true for
+      // them and every install failure went straight to a red. The refuter reproduced a correct
+      // `@cosyte/hl7` release going red on ordinary packument lag, in one attempt, with the
+      // annotation telling the reader to cut a needless patch. It also contradicted this file's own
+      // comments in three places.
+      //
+      // The one failure that is genuinely settled and needs no retry is one the declared allowance
+      // fully explains: the allowance is a statement that the absence is known and standing, not
+      // transient, so re-asking cannot change the answer. Everything else gets the budget, because
+      // everything else might be propagation.
+      const explainedByAllowance =
+        unknown.length === 0 &&
+        missing.length > 0 &&
+        missing.every((n) => allowance.includes(n));
+      if (!explainedByAllowance && attempt < attempts) {
         await waiter(delayMs);
         continue;
       }
@@ -635,7 +817,9 @@ export async function runCheck({
         installAttempted,
         missingDependencies,
         presentDependencies,
+        unknownDependencies,
         entryFailures,
+        entryPointsProbed,
         allowance,
         trail,
         installOutput,
@@ -655,7 +839,9 @@ export async function runCheck({
     installAttempted,
     missingDependencies,
     presentDependencies,
+    unknownDependencies,
     entryFailures,
+    entryPointsProbed,
     allowance,
     trail,
     installOutput,
@@ -672,8 +858,10 @@ function finish(state) {
     installOk: state.installOk,
     installAttempted: state.installAttempted,
     missingDependencies: state.missingDependencies,
+    unknownDependencies: state.unknownDependencies ?? [],
     declaredAllowance: state.allowance,
     entryFailures: state.entryFailures,
+    entryPointsProbed: state.entryPointsProbed ?? [],
   });
   return {
     ...decision,
@@ -681,6 +869,7 @@ function finish(state) {
     version: state.version,
     allowance: state.allowance,
     missingDependencies: state.missingDependencies,
+    unknownDependencies: state.unknownDependencies ?? [],
     staleAllowance: staleAllowanceEntries(state.allowance, state.presentDependencies),
     entryFailures: state.entryFailures,
     attemptsUsed: state.attemptsUsed,
@@ -716,6 +905,17 @@ export function renderAnnotation(result) {
       `declared, expected state, so the run is not failed. It is still uninstallable for consumers.`
     );
   }
+  if (result.verdict === "inconclusive") {
+    return (
+      `::warning title=Install gate could not attribute a failure::${spec} did not install from the ` +
+      `registry, but the registry gave no usable answer for ` +
+      `${result.unknownDependencies.join(", ")}, so this may be a registry fault rather than a ` +
+      `defect. The run is NOT failed on an unattributed failure. Re-check by hand with: ` +
+      `npm install ${spec} in an empty directory.`
+    );
+  }
+  // Reached only if a verdict is added above without a branch here. Kept as a loud catch-all rather
+  // than removed: a silent unreported verdict is the failure mode this whole file is about.
   return `::warning title=Post-publish install gate did not complete::${spec}: ${result.reason}`;
 }
 
@@ -753,7 +953,7 @@ export function renderSummary(result) {
       "",
       `> **The declared allowance is stale.** ${result.staleAllowance.join(", ")} is now on the`,
       `> registry, so naming it as an expected-unpublished dependency no longer describes reality.`,
-      `> Drop it from \`expected-unpublished-deps\` in the caller, or from the default in`,
+      `> Drop it from \`expect-unpublished-deps\` in the caller, or from the default in`,
       `> \`cosyte/.github\`.`,
     );
   }
