@@ -535,6 +535,17 @@ export async function makeCleanRoom(parent) {
 // is the difference between defending against a list and defending against the mechanism. npm maps
 // every config key to an env var, so any inherited one is a way for the job's environment to reach
 // into a directory that is supposed to know nothing.
+//
+// THE RESIDUAL, STATED RATHER THAN LEFT TO BE DISCOVERED. The strip is indiscriminate, so it also
+// drops transport settings expressed as npm config: `npm_config_proxy`, `npm_config_https_proxy`,
+// `npm_config_cafile`, `npm_config_strict_ssl`. That is deliberate and it is safe HERE because every
+// caller runs `runs-on: ubuntu-latest`, a GitHub-hosted runner with no egress proxy and no private
+// CA, and because the standard `HTTPS_PROXY` / `NO_PROXY` / `NODE_EXTRA_CA_CERTS` variables are NOT
+// in the `npm_config_*` namespace and survive, which is how a proxy would normally be expressed
+// anyway. On a self-hosted runner that configures its proxy through npm config specifically, this
+// probe would fail to reach the registry. It would fail SAFE: an unreachable registry yields
+// `not-propagated` or `inconclusive`, both of which warn and exit 0. An allowlist of transport keys
+// was considered and rejected, because a list is the thing this is replacing.
 export function cleanRoomEnv(dir, registry) {
   /** @type {Record<string, string | undefined>} */
   const env = {};
