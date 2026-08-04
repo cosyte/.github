@@ -645,9 +645,39 @@ export async function installIntoCleanRoom({
   npmBin = "npm",
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 }) {
+  // `--ignore-scripts` IS A DELIBERATE TRADE, DECIDED 2026-08-04, AND IT COSTS SOMETHING. NAME IT.
+  //
+  // WHAT IT BUYS. This runs inside the release job, and from the `changesets/action` step onward the
+  // org-scoped `RELEASE_PR_TOKEN` is on disk in `~/.netrc` with `contents: write`,
+  // `pull-requests: write` and `id-token: write` in scope. Without this flag, a `postinstall` in any
+  // TRANSITIVE dependency of the package being probed would execute in that window, and those
+  // dependencies are range-resolved at probe time rather than lockfile-pinned. `release.yml`'s own
+  // "why not just hand the PAT to actions/checkout" section is careful about exactly this window, so
+  // opening it here would have contradicted the file it sits in.
+  //
+  // ▶ WHAT IT COSTS, STATED RATHER THAN ARGUED AWAY. A real consumer's `npm install` DOES run
+  // lifecycle scripts. This probe now does not, so it CANNOT catch a package whose `postinstall`,
+  // `install` or `preinstall` fails for a consumer: that package installs clean here and breaks for
+  // them. This gate exists precisely because a check that is not what a consumer does misses what
+  // consumers hit, and this is a bounded instance of that same gap, inside the gate itself.
+  //
+  // WHY THE TRADE IS TAKEN ANYWAY, and the condition under which it should be revisited: no
+  // published `@cosyte/*` package declares an install script today, so the gap is currently empty and
+  // the exposure is real. The moment one does, this stops matching a consumer and the trade should be
+  // re-decided against that CONCRETE case rather than this hypothetical. It is also the house
+  // posture: `npm`/`pnpm` already run with `ignore-scripts=true` by default in this org's tooling,
+  // and this job was the exception.
   const result = await run(
     npmBin,
-    ["install", `${name}@${version}`, "--no-audit", "--no-fund", "--loglevel", "error"],
+    [
+      "install",
+      `${name}@${version}`,
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--loglevel",
+      "error",
+    ],
     { cwd: dir, env: cleanRoomEnv(dir, registry), timeoutMs },
   );
   return { ok: result.code === 0, code: result.code, output: `${result.out}\n${result.err}`.trim() };

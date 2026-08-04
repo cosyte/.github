@@ -98,6 +98,16 @@ visible in the real `hl7` 0.0.3 publish (run `30354998951`, 2026-07-28): the `Ve
 and the interval inside `changesets/action` between "is being published" and "packages published
 successfully" took ~55s, which is not a 50 kB tarball upload.
 
+**The post-publish install gate runs in that same window, and deliberately does not widen it.** It
+performs an `npm install` of the just-published package, whose transitive dependencies are
+**range-resolved at probe time rather than lockfile-pinned**, which is a strictly wider class of
+third-party code than anything else in this job. It therefore passes **`--ignore-scripts`** (founder
+decision, 2026-08-04), so it adds no third-party lifecycle execution to the list above. **The cost is
+named at the call site rather than waved off:** a real consumer's install *does* run lifecycle scripts,
+so the probe cannot catch a package whose `postinstall` fails for a consumer. No published
+`@cosyte/*` package declares an install script today, so the gap is currently empty; the moment one
+does, the trade gets re-decided against that concrete case.
+
 On the publish arm the PAT buys nothing at all, since `createGithubReleases: false` leaves the
 action's octokit unused there. Narrowing it to the version-PR arm is not done: the only predicate
 available is `steps.notes.outputs.is-release`, which is not the action's own arm predicate, and a

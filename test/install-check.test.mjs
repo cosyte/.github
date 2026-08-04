@@ -34,6 +34,7 @@ import {
   numericOption,
   VERDICTS,
   cleanRoomEnv,
+  installIntoCleanRoom,
   runCheck,
 } from "../scripts/install-check.mjs";
 
@@ -1137,4 +1138,38 @@ test("release.yml wires the gate the way the script expects", async () => {
     .join("\n");
   assert.doesNotMatch(code, /issues:\s*write/);
   assert.match(code, /permissions:\s*\n\s+contents: write/);
+});
+
+// ── `--ignore-scripts` (founder decision, 2026-08-04) ───────────────────────────────────────────
+
+test("the probe install passes --ignore-scripts, and the flag is asserted not assumed", async () => {
+  // This runs in the release job, where the org-scoped RELEASE_PR_TOKEN is on disk in ~/.netrc with
+  // contents/pull-requests/id-token write in scope. Without the flag, a postinstall in any TRANSITIVE
+  // dependency of the probed package executes in that window, and those dependencies are
+  // range-resolved at probe time rather than lockfile-pinned.
+  //
+  // Driven through the REAL `installIntoCleanRoom` with `npmBin` pointed at a recorder, so this
+  // asserts the argv npm would actually receive rather than re-reading the source.
+  const { mkdtemp, writeFile, chmod, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const dir = await mkdtemp(join(tmpdir(), "ignore-scripts-test-"));
+  const recorder = join(dir, "fake-npm");
+  await writeFile(recorder, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${dir}/argv.txt"\n`);
+  await chmod(recorder, 0o755);
+
+  const result = await installIntoCleanRoom({
+    dir,
+    name: "@cosyte/hl7",
+    version: "0.0.7",
+    registry: "https://r",
+    npmBin: recorder,
+  });
+  assert.equal(result.ok, true, "the recorder should exit 0, proving the call was actually made");
+
+  const argv = (await readFile(join(dir, "argv.txt"), "utf8")).trim().split("\n");
+  assert.equal(argv[0], "install");
+  assert.equal(argv[1], "@cosyte/hl7@0.0.7");
+  assert.ok(argv.includes("--ignore-scripts"), `npm argv did not carry the flag: ${argv.join(" ")}`);
 });
