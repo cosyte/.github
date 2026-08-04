@@ -645,9 +645,81 @@ export async function installIntoCleanRoom({
   npmBin = "npm",
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 }) {
+  // `--ignore-scripts` IS A DELIBERATE TRADE, DECIDED 2026-08-04, AND IT COSTS SOMETHING. NAME IT.
+  //
+  // WHAT IT BUYS. This runs inside the release job, and from the `changesets/action` step onward the
+  // org-scoped `RELEASE_PR_TOKEN` is on disk in `~/.netrc` with `contents: write`,
+  // `pull-requests: write` and `id-token: write` in scope. Without this flag, a `postinstall` in any
+  // TRANSITIVE dependency of the package being probed would execute in that window, and those
+  // dependencies are range-resolved at probe time rather than lockfile-pinned. `release.yml`'s own
+  // "why not just hand the PAT to actions/checkout" section is careful about exactly this window, so
+  // opening it here would have contradicted the file it sits in.
+  //
+  // ▶ WHAT IT COSTS, STATED RATHER THAN ARGUED AWAY, AND IT CUTS BOTH WAYS. A real consumer's
+  // `npm install` DOES run lifecycle scripts. This probe now does not, which creates TWO residuals,
+  // and the second is the more dangerous one because this gate's whole history is of accidentally
+  // redding correct releases:
+  //
+  //   MISSED DETECTION. It cannot catch a package whose `preinstall`/`install`/`postinstall` fails
+  //   for a consumer: that package installs clean here and breaks for them. This gate exists because
+  //   a check that is not what a consumer does misses what consumers hit, and this is a bounded
+  //   instance of that same gap, inside the gate itself.
+  //
+  //   FALSE RED. `--ignore-scripts` is not only "skip a hook". `node-gyp rebuild` is npm's DEFAULT
+  //   `install` script for any package carrying a `binding.gyp`, so a native dependency is left
+  //   UNBUILT, and a `postinstall` that generates files the entry point imports is left unrun. The
+  //   install still exits 0, and then `probeEntryPoints` fails to load the package and the verdict
+  //   becomes `uninstallable`, which EXITS 1 on a release that is perfectly fine for consumers.
+  //
+  // TWO FURTHER EFFECTS ON THE TREE, because "what this flag changes" has to be the whole list:
+  //   - `optionalDependencies` are no longer PRUNED. npm normally drops an optional dependency whose
+  //     install fails; with the flag its script cannot fail, so it stays. The probe tree is a
+  //     SUPERSET of the consumer tree (`@cosyte/cli@0.0.3` declares eight optional dependencies).
+  //     Permissive in direction, so it cannot manufacture a red.
+  //   - `prepare` is suppressed for a TRANSITIVE git or hosted dependency, leaving it unbuilt. Same
+  //     false-red class as `node-gyp`, but NOT gated on `binding.gyp`, so the measurement below does
+  //     not cover it. A direct git specifier is already refused by `isRegistrySpecifier`; a
+  //     transitive one is not.
+  //   - `bin` linking is NOT affected, verified rather than assumed: after an `--ignore-scripts`
+  //     install of `cli@0.0.3` every `node_modules/.bin` entry exists. And the bin check above stats
+  //     the target inside the package, not the link.
+  //
+  // Both residuals are empty today and that is measured, not assumed: none of the twelve published
+  // `@cosyte` packages declares an install lifecycle script, and every installable tree was walked
+  // (seven at 1 package, `ccda` 2, `ncpdp` 9, and the widest in the org, `@cosyte/cli`, at 111) with
+  // zero `preinstall`/`install`/`postinstall` and zero `binding.gyp` anywhere. The false-red residual
+  // therefore has nothing to fire on. Five packages in `cli`'s tree DO declare `prepare`, which does
+  // not run for registry-tarball installs, so that is not a contradiction. IF A NATIVE DEPENDENCY
+  // EVER ENTERS ANY OF THESE TREES, THIS FLAG BECOMES A SOURCE OF RED RELEASES AND MUST BE
+  // RE-DECIDED FIRST.
+  //
+  // WHAT THIS FLAG DOES NOT DO IS CLOSE THE TOKEN WINDOW. It stops third-party LIFECYCLE code
+  // running here; `probeEntryPoints` still executes third-party MODULE-INIT code in-process, on a
+  // range-resolved graph, from a child spawned WITHOUT this scrubbed environment. Measured on
+  // `@cosyte/ncpdp@0.0.10`, whose only dependency is the range `fast-xml-parser: "^5.10.1"`: the ESM
+  // probe evaluates 8 third-party packages across 39 module files, the CJS probe 1, because ESM
+  // evaluates the static import graph eagerly and `require` is lazy. Narrowed is not closed.
+  // Recorded in the README's "what it does not narrow" inventory as an open residual inherited from
+  // the gate landing, NOT fixed here: scrubbing that child's environment is a code change to
+  // `probeEntryPoints` and belongs in its own slice.
+  //
+  // WHY THE TRADE IS TAKEN ANYWAY, and the condition under which it should be revisited: no
+  // published `@cosyte/*` package declares an install script today, so the gap is currently empty and
+  // the exposure is real. The moment one does, this stops matching a consumer and the trade should be
+  // re-decided against that CONCRETE case rather than this hypothetical. It is also the house
+  // posture: `npm`/`pnpm` already run with `ignore-scripts=true` by default in this org's tooling,
+  // and this job was the exception.
   const result = await run(
     npmBin,
-    ["install", `${name}@${version}`, "--no-audit", "--no-fund", "--loglevel", "error"],
+    [
+      "install",
+      `${name}@${version}`,
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--loglevel",
+      "error",
+    ],
     { cwd: dir, env: cleanRoomEnv(dir, registry), timeoutMs },
   );
   return { ok: result.code === 0, code: result.code, output: `${result.out}\n${result.err}`.trim() };

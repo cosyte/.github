@@ -98,6 +98,61 @@ visible in the real `hl7` 0.0.3 publish (run `30354998951`, 2026-07-28): the `Ve
 and the interval inside `changesets/action` between "is being published" and "packages published
 successfully" took ~55s, which is not a 50 kB tarball upload.
 
+**The post-publish install gate runs in that same window, and it DOES widen it. Narrowed is not
+closed.** It performs an `npm install` of the just-published package, whose transitive dependencies
+are **range-resolved at probe time rather than lockfile-pinned**, which is a strictly wider class of
+third-party code than anything else in this job. It passes **`--ignore-scripts`** (founder decision,
+2026-08-04), so it adds no third-party *lifecycle* execution to the list above.
+
+**But `--ignore-scripts` governs only the install, and the gate has a second half.**
+`probeEntryPoints` loads the package by name, which **executes the module-init code of everything on
+its import graph, in-process**. Measured against the live registry, probing `@cosyte/ncpdp@0.0.10`:
+the **ESM** probe executes **8 third-party packages across 39 module files** (`fast-xml-parser` plus
+its own `@nodable/entities`, `fast-xml-builder`, `is-unsafe`, `path-expression-matcher`, `strnum`,
+`xml-naming`, and `anynum` transitively); the **CJS** probe executes **1**, because ESM evaluates the
+whole static import graph eagerly while `require` is lazy. `@cosyte/ccda@0.0.10` executes
+`@xmldom/xmldom`. And `ncpdp` declares `fast-xml-parser: "^5.10.1"`, a **range**, so this is
+third-party code resolved at probe time by the very criterion this paragraph used one sentence
+earlier. And the probe child is spawned **without** a scrubbed environment, unlike
+the install directly above it, while `~/.netrc` holding the PAT survives to job end.
+
+So what the flag bought is a real narrowing, from *every package in the tree as a shell command* to
+*every package on the import graph as module-init code*. **It is not a closure, and this section is
+the one place in the repo whose stated job is to be exhaustive about what runs with the PAT in
+scope.** The entry-probe execution is inherited from the gate landing rather than introduced by the
+flag, and it is recorded here as an open residual rather than fixed in the same breath.
+
+**The cost is named rather than waved off, and it cuts both ways.** A real consumer's install *does*
+run lifecycle scripts, so (1) the probe **cannot catch** a package whose `postinstall` fails for a
+consumer, and (2) more dangerously, `--ignore-scripts` is not merely "skip a hook": `node-gyp rebuild`
+is npm's **default `install` script** for anything carrying a `binding.gyp`, so a native dependency is
+left **unbuilt** and a `postinstall` that generates files the entry point imports is left unrun. The
+install still exits 0, `probeEntryPoints` then fails to load the package, and the verdict becomes
+`uninstallable`, which **exits 1 on a release that is fine for consumers**. Given this gate's history
+of accidentally redding correct releases, that direction is the one to watch.
+
+**Two more effects on the install tree, since this passage claims to say what the flag changes.**
+`optionalDependencies` are no longer **pruned**: npm normally drops an optional dependency whose
+install fails, and with the flag its script cannot fail, so it stays. The probe tree is therefore a
+**superset** of the consumer tree (`@cosyte/cli@0.0.3` declares eight optional dependencies). And
+`prepare` is suppressed for a **transitive** git or hosted dependency, leaving it unbuilt: that is the
+same false-red class as `node-gyp` but is **not** gated on `binding.gyp`, so the measurement below
+does not cover it. A *direct* git specifier is already refused by `isRegistrySpecifier`; a transitive
+one is not. **`bin` linking is not affected** (verified: after an `--ignore-scripts` install of
+`cli@0.0.3`, every `node_modules/.bin` entry exists), and `probeEntryPoints` stats the bin target
+rather than the link in any case.
+
+**The residuals are empty today, measured rather than assumed:** none of the twelve published
+`@cosyte/*` packages declares an install lifecycle script, and every installable tree was walked
+(`hl7`/`mllp`/`x12`/`astm`/`dicom`/`terminology`/`deid` 1 package each, `ccda` 2, `ncpdp` 9, and the
+widest in the org, `@cosyte/cli` at **111**) with **zero** `preinstall`/`install`/`postinstall` and
+**zero** `binding.gyp` anywhere. One nuance for whoever re-runs this and thinks it contradicts:
+five packages in `cli`'s tree do declare `prepare` (`content-type`, `eventsource`,
+`express-rate-limit`, `ip-address`, `path-to-regexp`), and `prepare` does **not** run for
+registry-tarball installs, so the claim stands.
+**If a native dependency ever enters any of these trees, this flag becomes a source of red releases and
+must be re-decided first.**
+
 On the publish arm the PAT buys nothing at all, since `createGithubReleases: false` leaves the
 action's octokit unused there. Narrowing it to the version-PR arm is not done: the only predicate
 available is `steps.notes.outputs.is-release`, which is not the action's own arm predicate, and a

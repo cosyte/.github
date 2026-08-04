@@ -101,6 +101,20 @@ name: Release
 # ~55s, which is not a 50 kB tarball upload. The netrc also survives into the later `pack:docs` step
 # and to job end.
 #
+# THE POST-PUBLISH INSTALL GATE BELOW IS PART OF THIS INVENTORY, AND IT WIDENS THE WINDOW. It runs
+# inside this same job, and the tree it resolves is RANGE-RESOLVED at probe time rather than
+# lockfile-pinned, which is a strictly wider class of third-party code than anything above. It passes
+# `--ignore-scripts` (founder decision, 2026-08-04), so it adds no third-party LIFECYCLE execution
+# here. But that flag governs only the install: `probeEntryPoints` then loads the package by name,
+# which executes the module-init code of everything on its import graph, in-process, and that child
+# is spawned WITHOUT the scrubbed environment the install itself gets. Measured: probing
+# `@cosyte/ncpdp@0.0.10` executes eight third-party packages, one of them a `^` range.
+#
+# Narrowed is not closed. This inventory exists to be exhaustive about what runs with the PAT in
+# scope, and it was rewritten once already because an earlier draft understated exactly that. The
+# README carries the same paragraph; KEEP THE TWO IN STEP, because the last edit corrected one copy
+# and left this one silent.
+#
 # Note that on the publish arm the PAT buys nothing at all: with `createGithubReleases: false` the
 # action neither pushes nor opens a PR there, so its octokit goes unused. Narrowing it to the
 # version-PR arm is therefore tempting and is NOT done, because the only predicate available here,
