@@ -175,7 +175,7 @@ Two npm behaviours that each cost a measurement, recorded so they are not redisc
 - **`npm install` has no stable failure exit code.** `@cosyte/cli@0.0.1` exits **254** where
   `transform` and `synth` exit **1**. Only zero versus non-zero is load-bearing anywhere in the script.
 
-### The five verdicts
+### The verdicts
 
 | Verdict | Exit | When |
 |---|---|---|
@@ -249,10 +249,24 @@ attempts, one attempt holding several stalled fetches could run past the step's 
 without the guard ever getting a turn. Requests now carry `AbortSignal.timeout` (30s default), and the
 dependency sweep, whose length is set by the package rather than by this file (`@cosyte/cli` declares
 ten), checks the deadline on each iteration and calls anything it did not reach **unknown**, never
-present. Against a black-hole registry the gate now gives up in about two seconds with
-`deadline-exceeded`, exit 0.
+present.
 
-The layering: fetch 30s, install 180s, gate deadline 540s, step `timeout-minutes: 15`. A killed install is
+Against a black-hole registry (accepts, never answers) at the **shipped defaults**, the gate exits **0**
+with `not-propagated` after **345s**, which is `8 x (30s fetch + 15s wait) - 15s`. An earlier draft of
+this paragraph claimed "about two seconds", which was measured at non-default flags and was wrong by two
+orders of magnitude at the defaults it was printed next to. The safety property is the same either way,
+which is exactly why the number went unchecked: **state the flags with the measurement, or do not state
+the measurement.**
+
+The layering: fetch 30s, install 180s, gate deadline 540s, step `timeout-minutes: 15`.
+
+**Write the worst case down before you change any of those numbers.** The deadline admits an attempt
+while elapsed is at most 360s, and an admitted attempt then costs at most 3 fetches (90s) plus the
+install (180s) plus two entry probes (120s), so **750s against the 900s step bound**. That is a 150s
+margin, and **the entry probes run after the deadline check and are never re-checked against it**, so a
+third probe or any raised inner bound spends it. Reaching the step's `timeout-minutes` is a killed step,
+which is a red run on a publish that already happened: the outermost bound is a backstop that should
+never fire. A killed install is
 fed back into the retry ladder as an ordinary failure, never as a verdict, and the deadline yields
 `deadline-exceeded`, which asserts nothing about the package either way. The one thing the deadline
 does **not** launder is a `non-registry-specifier` finding: that lint is offline and complete however
@@ -296,6 +310,14 @@ them is what turns a gate into a flake. On a 503:
 
 So the answer is `present` / `absent` / `unknown`, and an unanswered dependency yields `inconclusive`,
 which reports and exits 0. **A failure the gate cannot EXPLAIN must not be a failure it CONDEMNS.**
+
+**One known residual, stated rather than left to be discovered.** `classify` tests `unknown` *before*
+`missing`, so a single unanswered dependency downgrades a verdict even when the gate already holds
+positive proof that a *different*, undeclared dependency is absent. That is a real loss of strength, and
+it is deliberately not fixed here: it is only reachable once the sweep has blown the 540s deadline, and a
+healthy full ladder measures 2 to 107 seconds. Dependencies already found absent are preserved rather
+than erased, and `non-registry-specifier` is unaffected, because attempt 1 is never deadline-checked so
+the offline lint always gets one bounded shot.
 
 ### The allowance is a dated exception, not a setting
 

@@ -302,7 +302,9 @@ export function binTargets(manifest) {
 // ── The verdict ─────────────────────────────────────────────────────────────────────────────────
 //
 // Pure, and the only place a verdict is decided. Everything above gathers facts; this turns facts
-// into one of five words. Kept free of I/O so the whole taxonomy is unit-testable without a network,
+// into exactly one of `VERDICTS` below. That list is exported and asserted against `classify`'s real
+// output in the tests, rather than restated as a number in prose: this comment said "five" while the
+// function produced seven, which is the stale-count class ADR 0023 exists about. Kept free of I/O so the whole taxonomy is unit-testable without a network,
 // which is also what proves the retry and allowance logic actually runs rather than merely existing.
 //
 // @param {{
@@ -317,6 +319,16 @@ export function binTargets(manifest) {
 //   entryFailures: string[],
 //   entryPointsProbed: string[],
 // }} facts
+export const VERDICTS = Object.freeze([
+  "pass",
+  "non-registry-specifier",
+  "uninstallable",
+  "blocked-peer",
+  "not-propagated",
+  "inconclusive",
+  "deadline-exceeded",
+]);
+
 export function classify(facts) {
   const {
     specifierFindings,
@@ -1078,6 +1090,22 @@ export function renderSummary(result) {
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────────────────────
 
+// F7: `Number("30s")` is NaN, and NaN is falsy, so a mistyped `--fetch-timeout-ms` silently returned
+// the RAW, UNBOUNDED fetch from `withFetchTimeout`, reinstating exactly the stall this gate was hardened
+// against. `release.yml` passes none of these flags so it was never a production path, but a numeric
+// option that fails open on a typo is the wrong shape for a file whose whole subject is unbounded waits.
+export function numericOption(raw, fallback, { min = 0 } = {}) {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < min) {
+    throw new Error(
+      `expected a number >= ${min} but got "${raw}". Refusing to fall back to a default, because a ` +
+        `mistyped bound silently becomes NO bound.`,
+    );
+  }
+  return value;
+}
+
 export function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -1113,10 +1141,10 @@ async function main(argv) {
     version,
     registry: args.registry || DEFAULT_REGISTRY,
     allowance,
-    attempts: Number(args.attempts || DEFAULT_ATTEMPTS),
-    delayMs: Number(args["delay-ms"] ?? DEFAULT_DELAY_MS),
-    deadlineMs: Number(args["deadline-ms"] || DEFAULT_DEADLINE_MS),
-    fetchTimeoutMs: Number(args["fetch-timeout-ms"] || DEFAULT_FETCH_TIMEOUT_MS),
+    attempts: numericOption(args.attempts, DEFAULT_ATTEMPTS, { min: 1 }),
+    delayMs: numericOption(args["delay-ms"], DEFAULT_DELAY_MS),
+    deadlineMs: numericOption(args["deadline-ms"], DEFAULT_DEADLINE_MS, { min: 1 }),
+    fetchTimeoutMs: numericOption(args["fetch-timeout-ms"], DEFAULT_FETCH_TIMEOUT_MS, { min: 1 }),
     tempParent: args["temp-parent"] || process.env.RUNNER_TEMP || tmpdir(),
     log: (m) => process.stdout.write(`${m}\n`),
   });

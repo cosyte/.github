@@ -31,6 +31,8 @@ import {
   renderSummary,
   parseArgs,
   withFetchTimeout,
+  numericOption,
+  VERDICTS,
   cleanRoomEnv,
   runCheck,
 } from "../scripts/install-check.mjs";
@@ -858,7 +860,7 @@ test("REGRESSION: a killed install is a retryable failure, never a verdict on it
   const h = harness({
     manifest: HL7_0_0_7,
     installResults: [
-      { ok: false, code: -1, output: "timed out after 300000ms and was killed" },
+      { ok: false, code: -1, output: "timed out after 180000ms and was killed" },
       { ok: true, code: 0, output: "added 1 package" },
     ],
   });
@@ -877,10 +879,13 @@ test("REGRESSION: every verdict the classifier can produce has its own annotatio
     classify(facts({ installOk: false, missingDependencies: [] })).verdict,
     classify(facts()).verdict,
   ]);
-  assert.deepEqual(
-    [...produced].sort(),
-    ["blocked-peer", "inconclusive", "non-registry-specifier", "not-propagated", "pass", "uninstallable"],
+  produced.add(
+    classify(facts({ installOk: false, deadlineExceeded: true })).verdict,
   );
+  // Asserted against the module's own exported list rather than a literal retyped here, so the two
+  // cannot drift. The previous version of this test enumerated six and omitted `deadline-exceeded`,
+  // which meant the test whose entire job is to catch an unhandled verdict could not catch one.
+  assert.deepEqual([...produced].sort(), [...VERDICTS].sort());
   for (const verdict of produced) {
     if (verdict === "pass") continue;
     const line = renderAnnotation({
@@ -1064,4 +1069,72 @@ test("the dependency sweep stops at the deadline and calls the rest unknown, not
   assert.equal(r.verdict, "inconclusive", "an unreached dependency must be unknown, never present");
   assert.equal(r.failing, false);
   assert.ok(r.unknownDependencies.length > 0);
+});
+
+test("a mistyped numeric bound is refused, never silently defaulted", () => {
+  // `Number("30s")` is NaN and NaN is falsy, so the old `Number(x || DEFAULT)` returned NaN, and
+  // `withFetchTimeout` treats a falsy timeout as "no timeout" and hands back the RAW unbounded fetch.
+  // A numeric option that fails open on a typo is the wrong shape in a file about unbounded waits.
+  assert.equal(numericOption(undefined, 42), 42);
+  assert.equal(numericOption("", 42), 42);
+  assert.equal(numericOption("7", 42), 7);
+  assert.equal(numericOption(0, 42, { min: 0 }), 0);
+  for (const bad of ["30s", "abc", "NaN", "Infinity", "-1"]) {
+    assert.throws(() => numericOption(bad, 42, { min: 1 }), /Refusing to fall back/, bad);
+  }
+});
+
+test("withFetchTimeout returning the raw fetch is only reachable via an explicit zero", () => {
+  // Documenting the one remaining way to get an unbounded fetch, so it is a choice and not a typo.
+  const raw = async () => ({ status: 200, json: async () => ({}), headers: new Map() });
+  assert.equal(withFetchTimeout(raw, 0), raw);
+  assert.notEqual(withFetchTimeout(raw, 1000), raw);
+});
+
+// ── The workflow wiring itself (F6) ─────────────────────────────────────────────────────────────
+//
+// `test/release-notes.test.mjs` already asserts `release.yml`'s wiring by reading the file, and this
+// slice's 76 new lines there had no assertions at all. That is the one part of this change with a
+// blast radius across all 13 callers, so it is the last part that should be untested.
+
+test("release.yml wires the gate the way the script expects", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const yml = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+  // The predicate. A strict superset of the sibling step's, which is observed running on real
+  // releases; `!cancelled()` so a failure in the release step does not skip the installability check.
+  assert.match(yml, /if: \$\{\{ !cancelled\(\) && steps\.changesets\.outputs\.published == 'true' \}\}/);
+
+  // The tooling path. A reusable workflow runs against the CALLER's checkout, so the script only
+  // exists under the tooling checkout; a bare `scripts/` path would be a caller-side file.
+  assert.match(yml, /node \.cosyte-release-tooling\/scripts\/install-check\.mjs/);
+
+  // The allowance must actually reach the script. Wired but not passed is the org's classic defect.
+  assert.match(yml, /expect-unpublished-deps:/);
+  assert.match(yml, /EXPECT_UNPUBLISHED_DEPS: \$\{\{ inputs\.expect-unpublished-deps \}\}/);
+  assert.match(yml, /--expect-unpublished-deps "\$EXPECT_UNPUBLISHED_DEPS"/);
+
+  // The outermost bound. Without it a stalled step holds a protected `release` environment.
+  assert.match(yml, /timeout-minutes: 15/);
+
+  // The input is OPTIONAL with a default, which is what keeps the other callers working unchanged.
+  assert.match(yml, /expect-unpublished-deps:[\s\S]{0,400}?default: "@cosyte\/fhir"/);
+
+  // The gate must stay AFTER the publish and release steps: it reports on what actually shipped.
+  assert.ok(
+    yml.indexOf("Publish the GitHub release + dispatch docs rebuild") <
+      yml.indexOf("The published package must be installable from the registry"),
+    "the install gate must run after the release step, not before it",
+  );
+
+  // It must not request a permission the callers do not grant. Every caller pins exactly
+  // contents/id-token/pull-requests, and a called workflow can only downgrade, so adding one here
+  // rejects all 13 at startup. Asserted against the YAML with comments stripped, because the step's
+  // own comment explains at length why `issues: write` is unavailable and would match otherwise.
+  const code = yml
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+  assert.doesNotMatch(code, /issues:\s*write/);
+  assert.match(code, /permissions:\s*\n\s+contents: write/);
 });
