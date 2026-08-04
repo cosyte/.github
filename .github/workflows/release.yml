@@ -108,7 +108,7 @@ name: Release
 # here. But that flag governs only the install: `probeEntryPoints` then loads the package by name,
 # which executes the module-init code of everything on its import graph, in-process, and that child
 # is spawned WITHOUT the scrubbed environment the install itself gets. Measured: probing
-# `@cosyte/ncpdp@0.0.10` executes eight third-party packages, one of them a `^` range.
+# `@cosyte/ncpdp@0.0.10` executes eight third-party packages, ALL EIGHT reached through `^` ranges.
 #
 # Narrowed is not closed. This inventory exists to be exhaustive about what runs with the PAT in
 # scope, and it was rewritten once already because an earlier draft understated exactly that. The
