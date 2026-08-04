@@ -111,9 +111,14 @@ the **ESM** probe executes **8 third-party packages across 39 module files** (`f
 its own `@nodable/entities`, `fast-xml-builder`, `is-unsafe`, `path-expression-matcher`, `strnum`,
 `xml-naming`, and `anynum` transitively); the **CJS** probe executes **1**, because ESM evaluates the
 whole static import graph eagerly while `require` is lazy. `@cosyte/ccda@0.0.10` executes
-`@xmldom/xmldom`. And `ncpdp` declares `fast-xml-parser: "^5.10.1"`, a **range**, so this is
-third-party code resolved at probe time by the very criterion this paragraph used one sentence
-earlier. And the probe child is spawned **without** a scrubbed environment, unlike
+`@xmldom/xmldom`.
+
+**All eight are reached through `^` ranges, not one of them.** `ncpdp` declares
+`fast-xml-parser: "^5.10.1"`; that package declares its six at `^`; and `strnum` reaches `anynum` at
+`^1.0.1`. So every one of them is third-party code **resolved at probe time**, which is the very
+criterion this section uses to call the gate's tree wider than anything else in the job. An earlier
+draft said "one of them a `^` range", which was literally true and misleading by implication, in the
+one passage whose whole subject is range-resolution. And the probe child is spawned **without** a scrubbed environment, unlike
 the install directly above it, while `~/.netrc` holding the PAT survives to job end.
 
 So what the flag bought is a real narrowing, from *every package in the tree as a shell command* to
