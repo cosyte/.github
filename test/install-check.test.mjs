@@ -883,3 +883,89 @@ test("REGRESSION: every verdict the classifier can produce has its own annotatio
     assert.doesNotMatch(line, /did not complete/, `${verdict} fell through to the catch-all`);
   }
 });
+
+// ── The gate's own deadline (pass 2) ───────────────────────────────────────────────────────────
+//
+// The refuter measured a SINGLE `npm install` taking 211s against a dependency packument returning
+// 503, because npm retries a 5xx internally. Eight attempts of that is roughly thirty minutes, which
+// blows past any sane `timeout-minutes`. A step timeout is a RED RUN, so without an internal clock a
+// slow registry would red a correct, permanent release through the very bound added to protect it.
+
+test("the gate stops itself before the step's timeout, and reports rather than condemning", async () => {
+  let clock = 0;
+  const h = harness({ manifest: HL7_0_0_7, installResults: [{ ok: false, code: 1, output: "slow" }] });
+  const r = await runCheck({
+    name: "@cosyte/hl7",
+    version: "0.0.7",
+    attempts: 8,
+    delayMs: 1,
+    deadlineMs: 500,
+    installTimeoutMs: 180,
+    now: () => (clock += 100),
+    ...h.opts,
+  });
+  assert.equal(r.verdict, "deadline-exceeded");
+  assert.equal(r.failing, false, "running slowly is not a defect in the published package");
+  assert.ok(h.installs.length < 8, "it must stop short of the attempt budget when time runs out");
+});
+
+test("an attempt is only STARTED if its whole install could finish inside the deadline", async () => {
+  // Checking only that the deadline has not yet passed would let a 180s install begin one second
+  // before it and overrun into the step timeout, which is the red being avoided.
+  let clock = 0;
+  const h = harness({ manifest: HL7_0_0_7, installResults: [{ ok: false, code: 1, output: "x" }] });
+  await runCheck({
+    name: "@cosyte/hl7",
+    version: "0.0.7",
+    attempts: 20,
+    delayMs: 1,
+    deadlineMs: 1000,
+    installTimeoutMs: 400,
+    now: () => (clock += 200),
+    ...h.opts,
+  });
+  // The fake clock advances 200 per `now()` call and `startedAt` consumes the first, so at the top
+  // of attempt k the elapsed time is (k-1)*200. The guard admits an attempt only while
+  // elapsed + installTimeoutMs <= deadlineMs, i.e. (k-1)*200 + 400 <= 1000, i.e. k <= 4. Attempt 4
+  // starts at 600 and its install could run to exactly 1000, which is inside the budget; attempt 5
+  // would start at 800 and could run to 1200, which is not.
+  assert.equal(h.installs.length, 4, "the guard must admit exactly the attempts that fit");
+  const worstCaseFinish = (h.installs.length - 1) * 200 + 400;
+  assert.ok(worstCaseFinish <= 1000, `worst case finish ${worstCaseFinish} overruns the deadline`);
+});
+
+test("a deterministic specifier finding still fails even if the clock ran out", async () => {
+  // The manifest lint is offline and complete however little time was left, so the deadline must not
+  // launder a permanently broken publish into a warning.
+  const r = classify({
+    specifierFindings: findNonRegistrySpecifiers(CLI_0_0_1),
+    ownServed: true,
+    installOk: false,
+    installAttempted: true,
+    missingDependencies: [],
+    unknownDependencies: [],
+    deadlineExceeded: true,
+    declaredAllowance: [],
+    entryFailures: [],
+  });
+  assert.equal(r.verdict, "non-registry-specifier");
+  assert.equal(r.failing, true);
+});
+
+test("the deadline verdict has its own annotation and never says the package is broken", async () => {
+  const r = classify({
+    specifierFindings: [],
+    ownServed: true,
+    installOk: false,
+    installAttempted: true,
+    missingDependencies: [],
+    unknownDependencies: [],
+    deadlineExceeded: true,
+    declaredAllowance: [],
+    entryFailures: [],
+  });
+  const line = renderAnnotation({ ...r, package: "@cosyte/hl7", version: "0.0.7", attemptsUsed: 2, missingDependencies: [], unknownDependencies: [] });
+  assert.match(line, /^::warning title=Install gate ran out of time::/);
+  assert.doesNotMatch(line, /not installable|did not complete/);
+  assert.match(line, /installability is UNKNOWN/);
+});

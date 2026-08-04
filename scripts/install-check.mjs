@@ -153,6 +153,19 @@ import { pathToFileURL } from "node:url";
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 export const DEFAULT_ATTEMPTS = 8;
 export const DEFAULT_DELAY_MS = 15_000;
+// THE GATE OWNS ITS OWN CLOCK, AND THAT IS NOT THE SAME AS THE STEP'S TIMEOUT.
+//
+// `timeout-minutes` on the workflow step is a FAILURE: GitHub kills the step and the run goes red.
+// This deadline is a WARNING: the gate stops, says it ran out of time, and exits 0. If the only
+// bound were the step's, then a slow or flaky registry would red a correct, permanent release
+// through the timeout, which is exactly the outcome the whole fail-open design exists to prevent.
+//
+// It is not hypothetical. Measured against a dependency packument returning 503: a SINGLE `npm
+// install` took 211 seconds, because npm retries a 5xx internally before giving up. At eight
+// attempts that ladder is roughly thirty minutes, which sails past any sane step timeout. So the
+// deadline is checked before each attempt, and an attempt is only STARTED if the whole of its
+// install could still finish inside it.
+export const DEFAULT_DEADLINE_MS = 540_000;
 
 // ── Specifier classification ────────────────────────────────────────────────────────────────────
 //
@@ -277,6 +290,7 @@ export function binTargets(manifest) {
 //   installAttempted: boolean,
 //   missingDependencies: string[],
 //   unknownDependencies: string[],
+//   deadlineExceeded: boolean,
 //   declaredAllowance: string[],
 //   entryFailures: string[],
 //   entryPointsProbed: string[],
@@ -289,6 +303,7 @@ export function classify(facts) {
     installAttempted,
     missingDependencies,
     unknownDependencies = [],
+    deadlineExceeded = false,
     declaredAllowance,
     entryFailures,
     entryPointsProbed = [],
@@ -306,6 +321,21 @@ export function classify(facts) {
         `The published manifest carries ${specifierFindings.length} specifier(s) that cannot resolve ` +
         `from the registry: ` +
         specifierFindings.map((f) => `${f.field}.${f.name}="${f.spec}"`).join(", "),
+    };
+  }
+
+  // Ran out of the gate's OWN clock. Whatever we saw is not a finished measurement, so it cannot be
+  // a condemnation. Placed after the specifier finding, which is deterministic and offline and stays
+  // valid however little time was left.
+  if (deadlineExceeded) {
+    return {
+      verdict: "deadline-exceeded",
+      failing: false,
+      reason:
+        "The gate ran out of its own time budget before it could settle a verdict, so nothing is " +
+        "asserted about this release either way. It stops itself rather than letting the workflow " +
+        "step time out, because a step timeout is a red run and running slowly is not a defect in " +
+        "the published package.",
     };
   }
 
@@ -471,7 +501,7 @@ export async function tarballServed(url, fetchImpl) {
 // default, and six hours of a held release environment is a far worse outcome than a missed check.
 // A kill is reported as an ordinary non-zero exit, which the retry ladder then treats as any other
 // install failure: retried, and never on its own a red.
-export const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
+export const DEFAULT_COMMAND_TIMEOUT_MS = 180_000;
 
 function run(cmd, args, options = {}) {
   const { timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
@@ -573,11 +603,18 @@ export function cleanRoomEnv(dir, registry) {
 }
 
 /** Install `<name>@<version>` into a clean room. Resolves, never rejects. */
-export async function installIntoCleanRoom({ dir, name, version, registry, npmBin = "npm" }) {
+export async function installIntoCleanRoom({
+  dir,
+  name,
+  version,
+  registry,
+  npmBin = "npm",
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+}) {
   const result = await run(
     npmBin,
     ["install", `${name}@${version}`, "--no-audit", "--no-fund", "--loglevel", "error"],
-    { cwd: dir, env: cleanRoomEnv(dir, registry) },
+    { cwd: dir, env: cleanRoomEnv(dir, registry), timeoutMs },
   );
   return { ok: result.code === 0, code: result.code, output: `${result.out}\n${result.err}`.trim() };
 }
@@ -656,6 +693,9 @@ export async function runCheck({
   allowance = [],
   attempts = DEFAULT_ATTEMPTS,
   delayMs = DEFAULT_DELAY_MS,
+  deadlineMs = DEFAULT_DEADLINE_MS,
+  installTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  now = () => Date.now(),
   fetchImpl = globalThis.fetch,
   installer = installIntoCleanRoom,
   cleanRoomFactory = makeCleanRoom,
@@ -683,8 +723,23 @@ export async function runCheck({
   let entryPointsProbed = [];
   /** @type {Record<string, any> | null} */
   let servedManifest = null;
+  const startedAt = now();
+  let deadlineExceeded = false;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    // Only START an attempt whose install could still finish inside the deadline. Checking merely
+    // that the deadline has not passed would let a 180s install begin one second before it and
+    // overrun into the step's timeout, which is the red this exists to avoid.
+    if (attempt > 1 && now() - startedAt + installTimeoutMs > deadlineMs) {
+      deadlineExceeded = true;
+      trail.push(
+        `stopped after ${attempt - 1} attempt(s): the gate's own ${Math.round(deadlineMs / 1000)}s ` +
+          `deadline would not fit another install. Reporting rather than letting the step time out, ` +
+          `because a step timeout is a red run and this is not a defect in the package.`,
+      );
+      log(`deadline reached after ${attempt - 1} attempt(s); reporting without a verdict`);
+      break;
+    }
     servedManifest = await fetchVersionManifest(registry, name, version, fetchImpl);
     if (!servedManifest) {
       trail.push(`attempt ${attempt}: registry does not serve ${name}@${version} yet`);
@@ -729,6 +784,7 @@ export async function runCheck({
         unknownDependencies,
         entryFailures,
         entryPointsProbed,
+        deadlineExceeded,
         allowance,
         trail,
         installOutput,
@@ -740,7 +796,7 @@ export async function runCheck({
 
     const room = await cleanRoomFactory(tempParent);
     try {
-      const install = await installer({ dir: room, name, version, registry, npmBin });
+      const install = await installer({ dir: room, name, version, registry, npmBin, timeoutMs: installTimeoutMs });
       installAttempted = true;
       installOk = install.ok;
       installOutput = install.output;
@@ -762,6 +818,7 @@ export async function runCheck({
           unknownDependencies: [],
           entryFailures,
           entryPointsProbed,
+          deadlineExceeded,
           allowance,
           trail,
           installOutput,
@@ -831,6 +888,7 @@ export async function runCheck({
         unknownDependencies,
         entryFailures,
         entryPointsProbed,
+        deadlineExceeded,
         allowance,
         trail,
         installOutput,
@@ -853,6 +911,7 @@ export async function runCheck({
     unknownDependencies,
     entryFailures,
     entryPointsProbed,
+    deadlineExceeded,
     allowance,
     trail,
     installOutput,
@@ -870,6 +929,7 @@ function finish(state) {
     installAttempted: state.installAttempted,
     missingDependencies: state.missingDependencies,
     unknownDependencies: state.unknownDependencies ?? [],
+    deadlineExceeded: state.deadlineExceeded ?? false,
     declaredAllowance: state.allowance,
     entryFailures: state.entryFailures,
     entryPointsProbed: state.entryPointsProbed ?? [],
@@ -881,6 +941,7 @@ function finish(state) {
     allowance: state.allowance,
     missingDependencies: state.missingDependencies,
     unknownDependencies: state.unknownDependencies ?? [],
+    deadlineExceeded: state.deadlineExceeded ?? false,
     staleAllowance: staleAllowanceEntries(state.allowance, state.presentDependencies),
     entryFailures: state.entryFailures,
     attemptsUsed: state.attemptsUsed,
@@ -914,6 +975,14 @@ export function renderAnnotation(result) {
       `::warning title=Published package is uninstallable, as declared::${spec} cannot be installed ` +
       `because ${result.missingDependencies.join(", ")} is absent from the registry. That is the ` +
       `declared, expected state, so the run is not failed. It is still uninstallable for consumers.`
+    );
+  }
+  if (result.verdict === "deadline-exceeded") {
+    return (
+      `::warning title=Install gate ran out of time::${spec} could not be checked within the gate's ` +
+      `own time budget, so its installability is UNKNOWN and the run is not failed. This usually ` +
+      `means the registry was slow or erroring. Re-check by hand with: npm install ${spec} in an ` +
+      `empty directory.`
     );
   }
   if (result.verdict === "inconclusive") {
@@ -1000,7 +1069,8 @@ async function main(argv) {
     process.stderr.write(
       "usage: install-check.mjs --package <name> --version <version>\n" +
         "                        [--expect-unpublished-deps \"@scope/a,@scope/b\"]\n" +
-        "                        [--registry URL] [--attempts N] [--delay-ms N] [--summary FILE]\n",
+        "                        [--registry URL] [--attempts N] [--delay-ms N] [--deadline-ms N]\n" +
+        "                        [--summary FILE] [--json FILE]\n",
     );
     return 2;
   }
@@ -1012,6 +1082,7 @@ async function main(argv) {
     allowance,
     attempts: Number(args.attempts || DEFAULT_ATTEMPTS),
     delayMs: Number(args["delay-ms"] ?? DEFAULT_DELAY_MS),
+    deadlineMs: Number(args["deadline-ms"] || DEFAULT_DEADLINE_MS),
     tempParent: args["temp-parent"] || process.env.RUNNER_TEMP || tmpdir(),
     log: (m) => process.stdout.write(`${m}\n`),
   });

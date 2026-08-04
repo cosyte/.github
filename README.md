@@ -185,6 +185,7 @@ Two npm behaviours that each cost a measurement, recorded so they are not redisc
 | `blocked-peer` | 0 | uninstallable, and **fully** explained by dependencies declared in `expect-unpublished-deps` |
 | `not-propagated` | 0 | the registry never served the version within the budget |
 | `inconclusive` | 0 | the install failed and the registry gave **no usable answer** for a dependency, so the failure cannot be attributed |
+| `deadline-exceeded` | 0 | the gate ran out of its own time budget before settling a verdict, so nothing is asserted either way |
 
 The specifier lint is evaluated **first and independently of the install**, and that ordering is the
 point rather than a detail. `@cosyte/cli@0.0.1` has both `file:` specifiers **and** a genuinely blocked
@@ -228,10 +229,24 @@ correct release. It exits non-zero only on a **positive determination**. A netwo
 limit, a malformed response, an npm crash, a timed-out install, and any unexpected throw anywhere in
 the script all warn and exit 0.
 
-The step is bounded at `timeout-minutes: 15` and each `npm install` at five minutes, because the job
-holds a **protected `release` environment** while it runs and a stalled registry socket must not hold it
-for the six-hour job default. A killed install is fed back into the retry ladder as an ordinary
-failure, never as a verdict.
+### The gate owns its own clock, and that is not the step's timeout
+
+`timeout-minutes` on the step is a **failure**: GitHub kills the step and the run goes red. The gate's
+own deadline is a **warning**: it stops, says it ran out of time, and exits 0. If the step's timeout
+were the only bound, a slow or erroring registry would red a correct, permanent release *through the
+very bound added to protect it*.
+
+That is not hypothetical. Measured against a dependency packument returning 503, a **single**
+`npm install` took **211 seconds**, because npm retries a 5xx internally before giving up; eight
+attempts of that is roughly thirty minutes. So the gate carries `--deadline-ms` (default 540s), and an
+attempt is only **started** if its whole install could still finish inside it. Checking merely that the
+deadline had not yet passed would let a 180s install begin one second before it and overrun.
+
+The layering: install timeout 180s, gate deadline 540s, step `timeout-minutes: 15`. A killed install is
+fed back into the retry ladder as an ordinary failure, never as a verdict, and the deadline yields
+`deadline-exceeded`, which asserts nothing about the package either way. The one thing the deadline
+does **not** launder is a `non-registry-specifier` finding: that lint is offline and complete however
+little time was left, so a permanently broken publish still fails.
 
 ### The retry wraps the whole attempt, not just our own name
 
