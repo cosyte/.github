@@ -255,14 +255,32 @@ export function consumerDependencyNames(manifest) {
   return [...names].sort();
 }
 
-/** Parse a comma/whitespace separated allowance into a normalized, de-duplicated list. */
+// ONE GRAMMAR, TWO GATES, AND ONLY ONE KIND IS STRIPPED. The pre-publish layers in
+// `prepublish-check.mjs` read the SAME `expect-unpublished-deps` string, and they need to tell a
+// package that is absent because npm is refusing it (`@cosyte/fhir`, FHIR-NPM-NAME, expected to
+// clear) from one that is absent BY DESIGN (`@cosyte/assets`, `@cosyte/docs`, both `private: true`,
+// never going to clear). So an entry may carry a `=<kind>` tag.
+//
+// ▶ ONLY `=blocked` IS STRIPPED, AND THE ASYMMETRY IS THE WHOLE POINT. Stripping every tag was
+// written first and was WRONG IN THE DANGEROUS DIRECTION: it promoted every kind to `blocked` in the
+// gate that runs on real publishes. Measured against this file's own `classify` with identical
+// facts, `@cosyte/assets=private` gave `uninstallable`/failing before and `blocked-peer`/passing
+// after — so the edit that was supposed to change nothing here quietly taught this gate to excuse
+// the one kind that is DEFINED as "must not excuse a package that publishes". This gate only ever
+// observes packages that published.
+//
+// An unrecognised or `private` tag is therefore left ATTACHED, and an attached tag matches no
+// dependency name, so it excuses nothing — which is byte-for-byte what this function did before
+// tags existed. `prepublish-check.mjs` refuses an unknown kind outright; here it simply does not
+// excuse, because a pre-publish gate may fail closed on a typo and this one may not.
+/** Parse a comma/whitespace separated allowance into a normalized, de-duplicated list of NAMES. */
 export function parseAllowance(raw) {
   if (!raw) return [];
   return [
     ...new Set(
       String(raw)
         .split(/[\s,]+/)
-        .map((s) => s.trim())
+        .map((s) => s.trim().replace(/=blocked$/, "").trim())
         .filter(Boolean),
     ),
   ].sort();
@@ -537,6 +555,10 @@ export async function tarballServed(url, fetchImpl) {
 // install failure: retried, and never on its own a red.
 export const DEFAULT_COMMAND_TIMEOUT_MS = 180_000;
 
+// Exported as `runCommand` for `prepublish-check.mjs`, which runs `npm pack` and a clean-room
+// install of the resulting tarball. It is the same bounded spawn with the same kill semantics, and
+// sharing it is deliberate: a second copy of a process runner is a second place for a timeout or a
+// kill signal to drift, and this repo has already paid for one silently divergent copy.
 function run(cmd, args, options = {}) {
   const { timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
   return new Promise((resolve) => {
@@ -561,6 +583,8 @@ function run(cmd, args, options = {}) {
     child.on("close", (code) => done({ code, out, err }));
   });
 }
+
+export { run as runCommand };
 
 /**
  * Build a directory that resolves nothing it is not told to. See the header for what each piece is

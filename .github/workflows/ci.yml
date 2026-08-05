@@ -8,6 +8,12 @@ name: CI
 #       with: { run-phi-scan: true }      # byte/PHI parsers
 # Universal gates: typecheck . lint(--max-warnings=0) . format:check . [PHI scan] . test .
 # coverage(gating) . build . attw . dual ESM/CJS smoke . actionlint. Actions are pinned to SHAs.
+#
+# Plus the two PRE-PUBLISH layers, in their own `prepublish` job below. Everything in `verify` reads
+# the working tree, where the monorepo's own resolution is in scope and every sibling is a directory
+# on disk; `release.yml`'s install gate asks the consumer's question but only AFTER the publish is
+# permanent. These two ask it BEFORE, which is the only place it can prevent anything. See
+# `scripts/prepublish-check.mjs` and the README's "The two pre-publish layers".
 
 on:
   workflow_call:
@@ -28,6 +34,43 @@ on:
         description: "Lint the repo's workflow files with actionlint."
         type: boolean
         default: true
+      # LAYER 1. Offline, no npm, no network, no install: the consumer-facing dependency fields must
+      # carry only specifiers a registry can resolve. ON BY DEFAULT, and that is a measurement rather
+      # than a preference. Run against all thirteen callers on 2026-08-05 it produced ZERO findings,
+      # `transform` and `synth` included, because the `file:vendor/*.tgz` specifiers that survive in
+      # seven repos are all in `devDependencies`, which no consumer installs and which this
+      # deliberately does not read. So turning it on reds nobody today and catches the exact defect
+      # that put `@cosyte/cli@0.0.1` and `0.0.2` on the registry permanently uninstallable.
+      run-prepublish-manifest-lint:
+        description: "Refuse a dependency specifier a registry cannot resolve (offline)."
+        type: boolean
+        default: true
+      # LAYER 2. `npm pack` the tree, install THAT TARBALL into a clean anonymous directory, and load
+      # what it declares. OFF BY DEFAULT, and that is deliberate rather than timid: it costs a full
+      # install per run, it touches the network on every pull request, and turning it on for all
+      # thirteen repos at once is a policy call with a real blast radius, not a build. The mechanism
+      # is here and proven; flipping this default is a separate, deliberate act.
+      run-prepublish-install:
+        description: "Pack the tree and install the tarball into a clean directory."
+        type: boolean
+        default: false
+      # THE DECLARED ALLOWANCE, and the same input `release.yml` takes, in the same grammar. A repo
+      # names its known-unpublished consumer dependencies and the gate asserts EXACTLY that set: a
+      # named absence is the expected state and warns, an absence nobody named still fails. Without
+      # it layer 2 reds `transform` and `synth` for `@cosyte/fhir` (FHIR-NPM-NAME), which nobody can
+      # fix from those repos, and a permanently red gate is one people learn to ignore — the same
+      # failure as a step that never runs.
+      #
+      # THE `=blocked` TAG IS LOAD-BEARING, AND IT IS THE ONLY KIND THAT EXCUSES ANYTHING.
+      # `@cosyte/assets` and `@cosyte/docs` are `E404` exactly like `@cosyte/fhir` is, and they are
+      # `private: true` by design. A deliberate absence and an unexplained block must not share
+      # words, so `=private` names the first and excuses nothing, in either gate: a package that
+      # publishes must not depend on one that never will. Untagged is accepted and read as `blocked`,
+      # which is the spelling `release.yml` shipped with, and is reported so it can be tightened.
+      expect-unpublished-deps:
+        description: "Known-absent consumer deps, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
+        type: string
+        default: "@cosyte/fhir=blocked"
 
 permissions:
   contents: read
@@ -63,6 +106,62 @@ jobs:
           test -f dist/index.mjs && test -f dist/index.cjs && test -f dist/index.d.ts
           node -e "import('file://' + process.cwd() + '/dist/index.mjs').then(() => console.log('esm ok'))"
           node -e "require('./dist/index.cjs'); console.log('cjs ok')"
+
+  # THE TWO PRE-PUBLISH LAYERS, IN THEIR OWN JOB RATHER THAN AS STEPS IN `verify`, AND THE REASON IS
+  # NOT TIDINESS. This needs a checkout of `cosyte/.github` for the script, `actions/checkout`
+  # refuses a path outside `GITHUB_WORKSPACE`, and a second tree inside the caller's workspace is
+  # visible to `pnpm lint`, `pnpm format:check` and `pnpm phi-scan` — `ccda`'s PHI scanner walks from
+  # the REPO ROOT. Putting it in `verify` would have this gate seeding files inside another gate's
+  # scan roots, which is the enumerate-then-read hazard that has already cost this org a blocked
+  # publish. Its own job has its own workspace and touches none of them.
+  prepublish:
+    if: ${{ inputs.run-prepublish-manifest-lint || inputs.run-prepublish-install }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # `github.job_workflow_sha` rather than `main`: the script must be the one that belongs to the
+      # version of this workflow the caller resolved, even though every caller pins `@main`.
+      - name: Check out the shared CI tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ github.job_workflow_sha }}
+          path: .cosyte-ci-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # FIRST, AND BEFORE ANY INSTALL. It reads one JSON file, needs no network and no dependencies,
+      # and a finding here is deterministic and never excusable, so there is nothing to be gained by
+      # spending an install before saying so.
+      - name: Every dependency specifier must resolve from a registry
+        if: ${{ inputs.run-prepublish-manifest-lint }}
+        env:
+          EXPECT_UNPUBLISHED_DEPS: ${{ inputs.expect-unpublished-deps }}
+        shell: bash
+        run: |
+          node .cosyte-ci-tooling/scripts/prepublish-check.mjs manifest \
+            --repo . --expect-unpublished-deps "$EXPECT_UNPUBLISHED_DEPS"
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        if: ${{ inputs.run-prepublish-install }}
+      - if: ${{ inputs.run-prepublish-install }}
+        run: pnpm install --frozen-lockfile
+      # The tarball has to contain a real build or the probe measures nothing. `prepublish-check.mjs`
+      # distinguishes "the tree was never built" from "the manifest's `files` drops something", so a
+      # mistake in THIS ordering does not get reported as a packaging defect in the caller.
+      - if: ${{ inputs.run-prepublish-install }}
+        run: pnpm build
+      # The outer bound. The script's own inner bounds are smaller (30s per registry fetch, 180s per
+      # npm invocation), so reaching this one is a bug rather than a slow registry.
+      - name: The packed tarball must install into a clean directory
+        if: ${{ inputs.run-prepublish-install }}
+        timeout-minutes: 15
+        env:
+          EXPECT_UNPUBLISHED_DEPS: ${{ inputs.expect-unpublished-deps }}
+        shell: bash
+        run: |
+          node .cosyte-ci-tooling/scripts/prepublish-check.mjs pack \
+            --repo . --expect-unpublished-deps "$EXPECT_UNPUBLISHED_DEPS"
 
   actionlint:
     if: ${{ inputs.run-actionlint }}
