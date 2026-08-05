@@ -46,14 +46,22 @@ on:
         type: boolean
         default: true
       # LAYER 2. `npm pack` the tree, install THAT TARBALL into a clean anonymous directory, and load
-      # what it declares. OFF BY DEFAULT, and that is deliberate rather than timid: it costs a full
-      # install per run, it touches the network on every pull request, and turning it on for all
-      # thirteen repos at once is a policy call with a real blast radius, not a build. The mechanism
-      # is here and proven; flipping this default is a separate, deliberate act.
+      # what it declares. ON BY DEFAULT since 2026-08-05, by founder call. That was always the shape
+      # of the remaining question: the mechanism was finished and measured, and what was left was a
+      # policy call with a real blast radius rather than a build. As of that date no caller passes
+      # this input, so the default is the whole story and the flip turned layer 2 on for all thirteen
+      # at once. Measured the same day against the live registry with the default allowance below:
+      # 11 `pass`, 2 `blocked-peer` (`transform` and `synth`, on `@cosyte/fhir`), 0 red — and both
+      # `blocked-peer` results exit 0, so the flip reds nobody. Read those as a dated measurement,
+      # not a standing guarantee; the registry is not ours and the answer can change under us.
+      # It costs a full install per run and touches the network on every pull request. That price is
+      # now accepted rather than overlooked, because this is the only place a consumer's install
+      # question can be asked while the answer can still prevent a permanent publish (ADR 0001).
+      # A caller that cannot pay it opts out with `run-prepublish-install: false`.
       run-prepublish-install:
         description: "Pack the tree and install the tarball into a clean directory."
         type: boolean
-        default: false
+        default: true
       # THE DECLARED ALLOWANCE, and the same input `release.yml` takes, in the same grammar. A repo
       # names its known-unpublished consumer dependencies and the gate asserts EXACTLY that set: a
       # named absence is the expected state and warns, an absence nobody named still fails. Without

@@ -260,7 +260,7 @@ npm in [`test/prepublish-check.test.mjs`](test/prepublish-check.test.mjs).
 | Layer | Input | Default | What it does |
 |---|---|---|---|
 | **1 — manifest** | `run-prepublish-manifest-lint` | **on** | Offline, no npm, no network. `dependencies` / `peerDependencies` / `optionalDependencies` must carry only specifiers a registry can resolve |
-| **2 — pack** | `run-prepublish-install` | **off** | `npm pack` the tree, install **that tarball** into a clean anonymous directory, load what it declares |
+| **2 — pack** | `run-prepublish-install` | **on** | `npm pack` the tree, install **that tarball** into a clean anonymous directory, load what it declares |
 
 **Layer 1 is on by default because it was measured, not because it feels safe.** Run against all
 thirteen callers on 2026-08-05 it produced **zero findings**, `transform` and `synth` included. The
@@ -270,12 +270,25 @@ have refused `@cosyte/cli@0.0.1`: that tree carried those specifiers in `depende
 `optionalDependencies` at the moment it published, and every other gate read that same tree and passed
 it.
 
-**Layer 2 is off by default because turning it on for thirteen repos is a policy call, not a build.**
-The mechanism is finished and measured; the flip is one word. Run against all thirteen callers on
-2026-08-05 with the default allowance, against the live registry: **11 `pass`, 2 `blocked-peer`
-(`transform`, `synth`), 0 red.** Both `blocked-peer` results warn and exit 0. To turn it on, a caller
-adds `run-prepublish-install: true` — and `transform` and `synth` need **nothing else**, because the
-default allowance already names their blocker.
+**Layer 2 was off by default until 2026-08-05, because turning it on for thirteen repos is a policy
+call, not a build.** The mechanism shipped finished and measured, and the flip was held for the call
+rather than for more work. It was made on 2026-08-05 and **layer 2 is now on by default.**
+
+The measurement that flip rests on, stated as the dated measurement it is: run against all thirteen
+callers on **2026-08-05**, with the default allowance, against the live registry — **11 `pass`, 2
+`blocked-peer` (`transform`, `synth`), 0 red.** Both `blocked-peer` results warn and exit 0, so the
+flip reds nobody that day. It is not a standing guarantee: the registry is not ours, and a package
+that resolves today can stop resolving tomorrow. Re-measure before quoting it forward.
+
+**Nothing to adopt.** As of the flip no caller passes `run-prepublish-install`, and none passes
+`expect-unpublished-deps` either, so every caller picks up layer 2 and the default allowance from
+here with no change on its side. `transform` and `synth` included: `@cosyte/fhir` is the only
+registry-absent dependency **name** either of them carries, and the default allowance already names
+it. That is the whole of what the allowance has to cover for them, which is not the same claim as
+nothing else being wrong with them — see `blocked-peer` below.
+
+A caller that cannot pay the cost — layer 2 is a full install per run and touches the network on
+every pull request — opts **out**:
 
 ```yaml
 jobs:
@@ -283,8 +296,11 @@ jobs:
     uses: cosyte/.github/.github/workflows/ci.yml@main
     with:
       run-phi-scan: true
-      run-prepublish-install: true # opt in to layer 2
+      run-prepublish-install: false # opt out of layer 2
 ```
+
+Read what `blocked-peer` does and does not establish before treating those two as explained: it is
+**less than "fully explained"**, and the gap is set out under [The verdicts](#the-verdicts) below.
 
 ### The declared allowance, and why its entries carry a kind
 
