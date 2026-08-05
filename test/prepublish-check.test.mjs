@@ -825,10 +825,19 @@ test("ci.yml wires both layers the way the script expects", async () => {
   );
 
   // The defaults are the policy, so they are pinned rather than described: layer 1 on (measured zero
-  // findings across all thirteen callers), layer 2 off (turning it on for thirteen repos at once is
-  // a policy call, not a build).
-  assert.match(yml, /run-prepublish-manifest-lint:[\s\S]{0,400}?default: true/);
-  assert.match(yml, /run-prepublish-install:[\s\S]{0,400}?default: false/);
+  // findings across all thirteen callers on 2026-08-05), and layer 2 on as well since 2026-08-05 —
+  // the policy call the finished mechanism was waiting on, measured 11 `pass` / 2 `blocked-peer` /
+  // 0 red across the same thirteen that day.
+  //
+  // ANCHORED AT THE DECLARATION rather than anywhere the input's name appears. The layer-2 comment
+  // block spells `run-prepublish-install: false` when it tells a caller how to opt out, so an
+  // unanchored search can start on that comment and scan forward into the real declaration. It would
+  // still read the right value here, but only by accident: it is a decoy that lets the assertion pass
+  // while pointing somewhere it was never meant to point. What separates the two is NOT the indent —
+  // the comment lines in that block are indented six spaces as well — it is that the six spaces must
+  // be followed immediately by the input's name, and a comment carries `#` in that position.
+  assert.match(yml, /^ {6}run-prepublish-manifest-lint:[\s\S]{0,400}?default: true$/m);
+  assert.match(yml, /^ {6}run-prepublish-install:[\s\S]{0,400}?default: true$/m);
 
   // And the default allowance must parse, in the grammar this script owns.
   const declaredDefault = yml.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
