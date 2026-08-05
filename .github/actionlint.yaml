@@ -1,12 +1,15 @@
 # actionlint configuration.
 #
 # `github.job_workflow_sha` is a real context property: for a job that uses a reusable workflow it
-# holds the commit SHA of the reusable workflow file. release.yml uses it to check out this repo's
-# scripts/ at exactly the commit of the workflow calling them, so the two can never drift.
-# actionlint 1.7.12 does not carry it in its `github` context property list yet, so it reports a
-# false positive. The ignore is scoped to that one message so every other expression error in the
-# file still fails the build.
+# holds the commit SHA of the reusable workflow file. release.yml and ci.yml both use it to check out
+# this repo's scripts/ at exactly the commit of the workflow calling them, so the two can never
+# drift. actionlint 1.7.12 does not carry it in its `github` context property list yet, so it reports
+# a false positive. The ignore is scoped to that one message, per file, so every other expression
+# error in either file still fails the build.
 paths:
   .github/workflows/release.yml:
+    ignore:
+      - 'property "job_workflow_sha" is not defined in object type'
+  .github/workflows/ci.yml:
     ignore:
       - 'property "job_workflow_sha" is not defined in object type'

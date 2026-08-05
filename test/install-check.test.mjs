@@ -1122,7 +1122,13 @@ test("release.yml wires the gate the way the script expects", async () => {
   assert.match(yml, /timeout-minutes: 15/);
 
   // The input is OPTIONAL with a default, which is what keeps the other callers working unchanged.
-  assert.match(yml, /expect-unpublished-deps:[\s\S]{0,400}?default: "@cosyte\/fhir"/);
+  // ONE GRAMMAR, TWO GATES: the default carries `ci.yml`'s `=<kind>` tag, and what this gate must
+  // prove is that the tag changes NOTHING here. Asserted by running the literal from the workflow
+  // through this gate's own parser rather than by restating the expected string, so a future edit to
+  // either the default or the parser has to keep them in step.
+  const declaredDefault = yml.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
+  assert.equal(declaredDefault, "@cosyte/fhir=blocked");
+  assert.deepEqual(parseAllowance(declaredDefault), ["@cosyte/fhir"]);
 
   // The gate must stay AFTER the publish and release steps: it reports on what actually shipped.
   assert.ok(
