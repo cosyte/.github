@@ -34,6 +34,9 @@ import {
   numericOption,
   VERDICTS,
   cleanRoomEnv,
+  probeChildEnv,
+  PROBE_ENV_PASSTHROUGH,
+  probeEntryPoints,
   installIntoCleanRoom,
   runCheck,
 } from "../scripts/install-check.mjs";
@@ -1172,4 +1175,203 @@ test("the probe install passes --ignore-scripts, and the flag is asserted not as
   assert.equal(argv[0], "install");
   assert.equal(argv[1], "@cosyte/hl7@0.0.7");
   assert.ok(argv.includes("--ignore-scripts"), `npm argv did not carry the flag: ${argv.join(" ")}`);
+});
+
+// ── The entry probe's environment ───────────────────────────────────────────────────────────────
+//
+// `--ignore-scripts` closed the lifecycle half of what runs in the release job's credential window.
+// The entry probe is the other half: it evaluates the module-init code of the whole import graph,
+// and until `probeChildEnv` existed it did so with `process.env` inherited whole. The values below
+// are sentinels, never real credentials, and nothing here prints one.
+
+// THE FIRST TWO GROUPS ARE DIFFERENT CLAIMS AND THE DIFFERENCE IS WORTH KEEPING. Only the first is
+// in the probe child's inherited environment on a real release run today: `release.yml` declares no
+// job-level and no workflow-level `env`, so the token variables are step-scoped to
+// `changesets/action` and do not persist, while the OIDC pair is present in every step because the
+// workflow requests `id-token: write` for npm provenance. The second group is one line of YAML from
+// being job-wide (that same file instructs a maintainer to set `NODE_AUTH_TOKEN` at JOB level if a
+// `scope:` input is ever added), which is what this guard is for. The last entry is the point of the
+// whole fixture: a name no list in this repo has ever seen, which a deny-list would miss and an
+// allow-list excludes for free.
+const SENTINEL = "sentinel-not-a-real-credential";
+const POISONED_JOB_ENV = {
+  // Actually in this `run:` step's environment today, because the workflow requests
+  // `id-token: write` for npm provenance.
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: SENTINEL,
+  ACTIONS_ID_TOKEN_REQUEST_URL: "https://pipelines.example/_apis/distributedtask/hubs/actions",
+  // NOT in a `run:` step: the runner exposes it to action processes only, which is why
+  // `crazy-max/ghaction-github-runtime` exists at all. Kept in the fixture because the scrub should
+  // hold for it anyway if a future step ever does export it.
+  ACTIONS_RUNTIME_TOKEN: SENTINEL,
+  // Step-scoped today, job-wide after one edit.
+  NODE_AUTH_TOKEN: SENTINEL,
+  NPM_TOKEN: SENTINEL,
+  GITHUB_TOKEN: SENTINEL,
+  RELEASE_PR_TOKEN: SENTINEL,
+  DOCS_REPO_DISPATCH_TOKEN: SENTINEL,
+  // Not credentials, and dropped anyway: the first two point at the job's authenticated npmrc, the
+  // third names the caller's checkout, and the last can `--require` an arbitrary file into the child.
+  npm_config_userconfig: "/home/runner/work/_temp/.npmrc",
+  NPM_CONFIG_USERCONFIG: "/home/runner/work/_temp/.npmrc",
+  GITHUB_WORKSPACE: "/home/runner/work/hl7/hl7",
+  NODE_OPTIONS: "--require /tmp/anything.js",
+  // The negative control.
+  A_SECRET_ADDED_TO_A_CALLER_AFTER_THIS_TEST_WAS_WRITTEN: SENTINEL,
+};
+
+test("the probe child's env is built from an allow-list, so an unlisted secret is excluded by construction", () => {
+  const env = probeChildEnv("/tmp/room", { ...POISONED_JOB_ENV, PATH: "/usr/bin", TZ: "UTC" });
+  for (const key of Object.keys(POISONED_JOB_ENV)) {
+    assert.ok(!(key in env), `${key} reached the probe child`);
+  }
+  // Not merely blanked. A blanked variable is still a variable, and `cleanRoomEnv` blanks two
+  // deliberately because npm INTERPOLATES them; nothing interpolates here, so absence is available
+  // and is stronger.
+  assert.equal(env.NODE_AUTH_TOKEN, undefined);
+  // The allow-list half, which is what keeps this from being an empty env that changes behaviour.
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.TZ, "UTC");
+});
+
+test("an allow-listed variable the job does not set is absent, not the string undefined", () => {
+  const env = probeChildEnv("/tmp/room", { PATH: "/usr/bin" });
+  // `spawn` stringifies an undefined value, which would hand the child `NO_PROXY=undefined`: a set
+  // variable with a nonsense value rather than an unset one.
+  assert.ok(!("NO_PROXY" in env));
+  assert.ok(!Object.values(env).includes(undefined));
+});
+
+test("HOME and USERPROFILE are moved inside the clean room, which is what takes ~/.netrc off the child's path", () => {
+  const env = probeChildEnv("/tmp/room", { HOME: "/home/runner" });
+  assert.equal(env.HOME, "/tmp/room/probe-home");
+  assert.equal(env.USERPROFILE, "/tmp/room/probe-home");
+  // HOME is not passed through, it is overridden. If it were on the list the override would still
+  // win, but the list is where a future edit would put it back by accident.
+  assert.ok(!PROBE_ENV_PASSTHROUGH.includes("HOME"));
+});
+
+test("REGRESSION: a real probe child sees none of the job's credentials, on BOTH arms", async () => {
+  // The only test here that spawns anything. Still no network and no npm: it is `process.execPath`
+  // loading a fixture package off disk, which is exactly the code path a published package's
+  // module-init code arrives through.
+  //
+  // BOTH ARMS, because there are two spawns and every `@cosyte/*` package is dual ESM/CJS, so both
+  // run on every real release. An earlier version of this fixture was `import`-only, and reverting
+  // the CJS spawn's `env` argument alone left the suite green.
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const room = await mkdtemp(join(tmpdir(), "cosyte-probe-env-"));
+  const pkgDir = join(room, "node_modules", "@cosyte", "probe-fixture");
+  await mkdir(pkgDir, { recursive: true });
+  await writeFile(
+    join(pkgDir, "package.json"),
+    JSON.stringify({
+      name: "@cosyte/probe-fixture",
+      version: "0.0.0",
+      type: "module",
+      exports: { ".": { import: "./index.mjs", require: "./index.cjs" } },
+    }),
+  );
+  // Module-init code. It records the NAMES it can see plus where `~` resolves to, never the values,
+  // because a test artifact that dumps an environment is the failure mode this is about.
+  const record = (file) =>
+    `require("node:fs").writeFileSync(${JSON.stringify(file)}, JSON.stringify({\n` +
+    "  keys: Object.keys(process.env).sort(),\n" +
+    "  home: process.env.HOME,\n" +
+    '  homedir: require("node:os").homedir(),\n' +
+    "}));\n";
+  const seenEsm = join(room, "seen-esm.json");
+  const seenCjs = join(room, "seen-cjs.json");
+  await writeFile(
+    join(pkgDir, "index.mjs"),
+    'import { createRequire } from "node:module";\n' +
+      "const require = createRequire(import.meta.url);\n" +
+      record(seenEsm),
+  );
+  await writeFile(join(pkgDir, "index.cjs"), record(seenCjs));
+
+  const saved = new Map(Object.entries(POISONED_JOB_ENV).map(([k]) => [k, process.env[k]]));
+  try {
+    Object.assign(process.env, POISONED_JOB_ENV);
+    // THE NEGATIVE CONTROL. Without this the test would pass just as happily against a child that
+    // was never spawned or a parent that never held the sentinels.
+    assert.equal(process.env.RELEASE_PR_TOKEN, SENTINEL, "the parent must hold the sentinels");
+
+    const result = await probeEntryPoints({ dir: room, name: "@cosyte/probe-fixture" });
+    assert.deepEqual(result.failures, [], "the fixture must actually load, or nothing was observed");
+    assert.deepEqual(result.probed, ["esm", "cjs"], "both spawns must have run, or one is untested");
+
+    for (const [arm, file] of [["ESM", seenEsm], ["CJS", seenCjs]]) {
+      const observed = JSON.parse(await readFile(file, "utf8"));
+      for (const key of Object.keys(POISONED_JOB_ENV)) {
+        assert.ok(
+          !observed.keys.includes(key),
+          `${key} was visible to third-party module-init code on the ${arm} arm`,
+        );
+      }
+      assert.equal(observed.home, join(room, "probe-home"), `${arm}: HOME`);
+      // Through node's own API, not just the raw variable: `os.homedir()` is what a module calls.
+      assert.equal(observed.homedir, join(room, "probe-home"), `${arm}: os.homedir()`);
+    }
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(room, { recursive: true, force: true });
+  }
+});
+
+// THE WHOLE SECURITY PROPERTY OF THE REMOVAL STEP IS ITS POSITION, so the position is what is
+// pinned. `actionlint` is this repo's only required status context and it has no opinion about step
+// order, so a future edit that moves this step to the end of the job, or drops it, would otherwise
+// ship green. Anchored structurally on the steps array, the way the version-PR wiring is anchored in
+// `test/release-notes.test.mjs`, rather than on text adjacency.
+test("release.yml drops the release credentials between the publish and everything that follows", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const yml = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const steps = yml.slice(yml.indexOf("\n    steps:")).split(/\n      - (?=\S)/);
+  const at = (needle) => steps.findIndex((s) => s.startsWith(`name: ${needle}`) || s.includes(`\n        id: ${needle}`));
+
+  const drop = at("Drop the release credentials from disk");
+  const changesets = at("changesets");
+  const ghRelease = at("Publish the GitHub release + dispatch docs rebuild");
+  const installGate = at("The published package must be installable from the registry");
+  assert.ok(changesets > 0, "the changesets step must be findable, or this test proves nothing");
+  assert.ok(drop > 0, "release.yml must drop the release credentials from disk");
+
+  // AFTER the action, because the action's own `git push` is the credential's only consumer, and
+  // BEFORE both steps that run code this org did not write: the caller's `pack:docs`, and the entry
+  // probe's third-party module-init. Adjacent to the action, not merely somewhere after it.
+  assert.equal(drop, changesets + 1, "the drop must be the step immediately after changesets/action");
+  assert.ok(drop < ghRelease, "the drop must precede the caller's pack:docs command");
+  assert.ok(drop < installGate, "the drop must precede the post-publish install gate");
+
+  // `always()`, so a failed or skipped release step cannot leave the credentials on disk: the
+  // install gate below runs under `!cancelled()` and would otherwise still run with them present.
+  assert.match(steps[drop], /^\s*if: \$\{\{ always\(\) \}\}$/m);
+  // Both files. The npmrc holds the raw NPM_TOKEN in plaintext on the publish arm, which is the only
+  // arm the entry probe runs on at all.
+  assert.match(steps[drop], /"\$HOME\/\.netrc"/);
+  assert.match(steps[drop], /"\$HOME\/\.npmrc"/);
+  // It must not be able to red a release that already published, and `exit 1` is not the only way
+  // to do that: `shell: bash` runs under `-eo pipefail`, so an unguarded failing `rm` would exit the
+  // step before the warn branch that exists to prevent exactly this.
+  assert.doesNotMatch(steps[drop], /^\s*exit 1$/m);
+  assert.match(steps[drop], /rm -f "\$f" \|\| true/);
+
+  // WHICH FILES TO REMOVE WAS READ OUT OF `changesets/action` AT THIS SHA, so a bump to the action
+  // can invalidate the step silently: it would still exit 0, still print "Removed", and still leave
+  // a credential wherever the new version puts it. Nothing else in this repo notices where that
+  // action writes. This assertion is the notice. It is not a required status context, so it does not
+  // block the bump; it makes the bump say out loud that someone re-read src/index.ts.
+  assert.match(
+    yml,
+    /uses: changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/,
+    "changesets/action moved off the sha the credential-removal step was derived against. Re-read " +
+      "its src/index.ts for where it writes the netrc and the npmrc, update the step and this pin " +
+      "together, and do not simply update this line.",
+  );
 });
