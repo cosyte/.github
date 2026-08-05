@@ -647,16 +647,26 @@ export async function installIntoCleanRoom({
 }) {
   // `--ignore-scripts` IS A DELIBERATE TRADE, DECIDED 2026-08-04, AND IT COSTS SOMETHING.
   //
-  // WHY: this runs inside the release job, where the org-scoped `RELEASE_PR_TOKEN` is on disk in
-  // `~/.netrc` with contents/pull-requests/id-token write in scope. Without the flag a `postinstall`
-  // in any TRANSITIVE dependency of the probed package executed in that window, on a tree that is
-  // range-resolved at probe time rather than lockfile-pinned.
+  // WHY: this runs inside the release job. When the flag was added, `changesets/action` had left the
+  // org-scoped `RELEASE_PR_TOKEN` on disk in `~/.netrc` and the raw `NPM_TOKEN` in `~/.npmrc`, both
+  // for the rest of the job, so a `postinstall` in any TRANSITIVE dependency of the probed package
+  // executed with them readable, on a tree that is range-resolved at probe time rather than
+  // lockfile-pinned. `release.yml` now deletes both immediately after that action, before this step,
+  // and THE FLAG IS STILL RIGHT: the job's own `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (`id-token: write`,
+  // for npm provenance) is in this step's environment, `cleanRoomEnv` below copies all of
+  // `process.env` except the `npm_config_*` namespace, and a lifecycle script is a shell command
+  // with the whole environment rather than a module evaluation. That variable is not impossible to
+  // remove, and the sentence used to say so: a step-level `env:` entry in `release.yml` overrides
+  // the runner's value and this gate needs neither it nor its URL. Not done here, because it is a
+  // second behaviour change to the shared workflow in one slice, and it is stated so the next
+  // person can take it rather than rediscover it.
   //
   // ▶ IT NARROWS THE WINDOW, IT DOES NOT CLOSE IT. The flag governs only the install;
-  // `probeEntryPoints` below still executes third-party MODULE-INIT code in-process, from a child
-  // spawned WITHOUT this scrubbed environment. Measured on `@cosyte/ncpdp@0.0.10`: the ESM arm
-  // evaluates 8 third-party packages across 39 module files, ALL EIGHT reached through `^` ranges;
-  // the CJS arm 1, because ESM evaluates the static import graph eagerly and `require` is lazy.
+  // `probeEntryPoints` below still executes third-party MODULE-INIT code. Measured on
+  // `@cosyte/ncpdp@0.0.10`: the ESM arm evaluates 8 third-party packages across 39 module files,
+  // ALL EIGHT reached through `^` ranges; the CJS arm 1, because ESM evaluates the static import
+  // graph eagerly and `require` is lazy. What that code can REACH while it runs is a separate
+  // question from whether it runs at all, and it is owned by `probeChildEnv` below, not here.
   //
   // ▶ IT HAS TWO RESIDUALS AND THE SECOND IS THE DANGEROUS ONE. It cannot catch a package whose
   // install hooks fail for a consumer (missed detection); and because `node-gyp rebuild` is npm's
@@ -687,6 +697,99 @@ export async function installIntoCleanRoom({
   return { ok: result.code === 0, code: result.code, output: `${result.out}\n${result.err}`.trim() };
 }
 
+// ── The entry probe's environment ───────────────────────────────────────────────────────────────
+
+// Passed through to the probe child BY NAME. Not one of them is a credential, and each is something
+// a consumer's own shell would ordinarily carry: the locale and TZ a module may format with, the
+// TLS and proxy settings a module-init network call would need on a runner that has them (a
+// GitHub-hosted one does not), and the Windows variables node's own crypto and dns paths read. PATH
+// is here because a missing PATH is a behaviour change with no credential bought; `process.execPath`
+// is absolute, so the spawn itself never needed it.
+//
+// NOT here, deliberately: `NODE_OPTIONS`, which can `--require` an arbitrary file into the child and
+// is not something an anonymous consumer has set for us; and `GITHUB_*`, which names the run, the
+// repo and the workspace path.
+export const PROBE_ENV_PASSTHROUGH = Object.freeze([
+  "PATH",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "ComSpec",
+  "PATHEXT",
+]);
+
+// THE PROBE CHILD RUNS THIRD-PARTY CODE, SO ITS ENVIRONMENT IS BUILT FROM NOTHING RATHER THAN
+// INHERITED. This is the single code owner of that exposure; the full inventory of what runs with a
+// credential in scope is the README, under "What it does not narrow".
+//
+// `probeEntryPoints` loads the published package BY NAME, which evaluates the module-init code of
+// its whole import graph, in a tree range-resolved at probe time rather than lockfile-pinned. Before
+// this function the child simply inherited `process.env`, and the gap was written down in three
+// places and closed in none, which is how it stayed open through two edits.
+//
+// ▶ WHAT WAS ACTUALLY IN THAT INHERITED ENVIRONMENT, DERIVED FROM `release.yml` RATHER THAN NAMED
+// FROM MEMORY, BECAUSE THE FIRST DRAFT OF THIS COMMENT NAMED THREE VARIABLES THAT WERE NOT THERE.
+// Not `NODE_AUTH_TOKEN`, `NPM_TOKEN` or `RELEASE_PR_TOKEN`: that workflow declares no job-level and
+// no workflow-level `env`, all three are set on the `changesets/action` step alone, step `env` does
+// not persist to later steps, and setup-node v7 stopped exporting the dummy `NODE_AUTH_TOKEN`
+// job-wide. What IS in every step of that job is `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and
+// `ACTIONS_ID_TOKEN_REQUEST_URL`, present because the workflow requests `id-token: write` for npm
+// provenance, and they exchange for a signed OIDC token naming the repo. Two more reasons this is a
+// guard rather than hygiene, and both are one line of YAML away: `release.yml`'s own setup-node
+// comment instructs a future maintainer to set `NODE_AUTH_TOKEN` at JOB level if a `scope:` input
+// is ever added, which arms exactly this; and a caller's secret becomes job-wide the moment someone
+// hoists an `env:` block to make it available to two steps.
+//
+// ▶ AN ALLOW-LIST, WHICH IS NOT A CONTRADICTION OF `cleanRoomEnv` ABOVE REJECTING ONE. There the
+// thing defended against has a NAMESPACE, `npm_config_*`, so denying the namespace defends against
+// the mechanism and an allow-list of transport keys would have been a weaker spelling of it. A
+// secret has no namespace: `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `RELEASE_PR_TOKEN` and
+// `DOCS_REPO_DISPATCH_TOKEN` share no prefix, and the next secret a caller adds shares nothing with
+// those either. A deny-list of names would not cover it and would report green while not covering
+// it. The child needs nothing from the job to evaluate `await import(name)`, so it gets nothing but
+// the list above, and a secret added later is excluded by construction rather than by memory.
+//
+// ▶ HOME IS MOVED INSIDE THE CLEAN ROOM, which takes `~/.netrc` and `~/.npmrc` off the child's `~`
+// path. `os.homedir()` reads HOME first on POSIX and USERPROFILE on Windows, so both are set.
+// `release.yml` also deletes both of those files immediately after `changesets/action`, before this
+// step runs; the two measures are independent and neither is load-bearing on the other.
+//
+// ▶ THE RESIDUAL, STATED RATHER THAN LEFT TO BE FOUND. This narrows what third-party code is HANDED.
+// It is not a sandbox and does not pretend to be one: an absolute path is still an absolute path,
+// `os.userInfo().homedir` reads the passwd entry and ignores HOME, and the caller's checkout is
+// still on disk. What covers a file at a known absolute path is deleting it, which is why the
+// credential removal in `release.yml` is the other half of this rather than a duplicate of it, and
+// what neither covers is `ACTIONS_ID_TOKEN_REQUEST_TOKEN` reaching anything else in the job.
+export function probeChildEnv(dir, source = process.env) {
+  /** @type {Record<string, string>} */
+  const env = {};
+  for (const key of PROBE_ENV_PASSTHROUGH) {
+    const value = source[key];
+    // Skipped rather than set to undefined: spawn stringifies an `undefined` value to "undefined",
+    // which is a set variable with a nonsense value, not an absent one.
+    if (typeof value === "string") env[key] = value;
+  }
+  const home = path.join(dir, "probe-home");
+  env.HOME = home;
+  env.USERPROFILE = home;
+  return env;
+}
+
 /**
  * Load the package by NAME from the clean room, exactly as a consumer would. Returns the list of
  * failures, empty when everything the manifest declares actually loads.
@@ -696,7 +799,7 @@ export async function installIntoCleanRoom({
  * disk. Owning that read also keeps every filesystem touch inside this function, which is what makes
  * the whole entry-point stage substitutable in the tests.
  */
-export async function probeEntryPoints({ dir, name }) {
+export async function probeEntryPoints({ dir, name, env = probeChildEnv(dir) }) {
   /** @type {string[]} */
   const failures = [];
   const manifestPath = path.join(dir, "node_modules", ...name.split("/"), "package.json");
@@ -726,18 +829,24 @@ export async function probeEntryPoints({ dir, name }) {
     }
   }
 
+  // The child's `~`. Created whether or not either probe runs, so that HOME never names a directory
+  // that does not exist: a module init that writes to `~` would then fail for a reason that is this
+  // gate's doing and would be reported as the package being uninstallable.
+  await mkdir(path.join(dir, "probe-home"), { recursive: true });
+
   // Resolved by NAME from inside the clean room, which is what a consumer does. Loading the files by
-  // path would resolve an `exports` map that does not point at them.
+  // path would resolve an `exports` map that does not point at them. `env` is `probeChildEnv`'s, not
+  // this process's: see the block above it for why that is an allow-list.
   if (esm) {
     const probe = path.join(dir, "probe-entry.mjs");
     await writeFile(probe, `await import(${JSON.stringify(name)});\n`);
-    const r = await run(process.execPath, [probe], { cwd: dir, timeoutMs: 60_000 });
+    const r = await run(process.execPath, [probe], { cwd: dir, env, timeoutMs: 60_000 });
     if (r.code !== 0) failures.push(`ESM entry point failed to load: ${firstLine(r.err)}`);
   }
   if (cjs) {
     const probe = path.join(dir, "probe-entry.cjs");
     await writeFile(probe, `require(${JSON.stringify(name)});\n`);
-    const r = await run(process.execPath, [probe], { cwd: dir, timeoutMs: 60_000 });
+    const r = await run(process.execPath, [probe], { cwd: dir, env, timeoutMs: 60_000 });
     if (r.code !== 0) failures.push(`CJS entry point failed to load: ${firstLine(r.err)}`);
   }
   const probed = [...binTargets(manifest).map((t) => `bin:${t}`), ...(esm ? ["esm"] : []), ...(cjs ? ["cjs"] : [])];

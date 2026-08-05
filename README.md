@@ -85,10 +85,21 @@ the netrc route buys is specific and worth naming exactly: the PAT is **absent d
 caller sets `ignore-scripts`), and absent during the `Verify` ladder after it. That is the window
 that matters most, because it is the only one whose contents this org does not write.
 
-**What it does not narrow**, measured rather than assumed, because an earlier draft of this section
+### What it does not narrow
+
+**▶ THIS SECTION IS THE OWNER OF THAT INVENTORY. There is deliberately no second copy.** It stood in
+three places at once (here, the `release.yml` header, and a comment in `scripts/install-check.mjs`),
+owned by none of them, and a correction landed in one copy while the other two stayed confidently
+wrong. Both of those now carry a pointer to this section and state only what is enforced at their own
+site. **A documented exposure with no owner is how this one got understated twice.** Put the next
+residual here.
+
+Measured rather than assumed, because an earlier draft of this section
 claimed the PAT arrived "after all third-party code has run" and that is **false**. From the
-`changesets/action` step onward the token is on disk in `~/.netrc` (written unconditionally, before
-the arm switch) and injected as `GITHUB_TOKEN` into the environment of `pnpm run version` and
+`changesets/action` step onward, **and until the removal step described below, which since 2026-08-05
+is the very next step**, the token is on disk in `~/.netrc` (written unconditionally, before
+the arm switch) **and the raw `NPM_TOKEN` is in `~/.npmrc` in plaintext** on the publish arm, and it is
+injected as `GITHUB_TOKEN` into the environment of `pnpm run version` and
 `pnpm run release`. Neither caller *script* reads it, but the process subtree does not stop there:
 `release` is `changeset publish`, which spawns `pnpm publish` (every caller declares
 `packageManager: pnpm@10`) without `--ignore-scripts`, which runs each caller's `prepublishOnly`
@@ -98,11 +109,14 @@ visible in the real `hl7` 0.0.3 publish (run `30354998951`, 2026-07-28): the `Ve
 and the interval inside `changesets/action` between "is being published" and "packages published
 successfully" took ~55s, which is not a 50 kB tarball upload.
 
-**The post-publish install gate runs in that same window, and it DOES widen it. Narrowed is not
-closed.** It performs an `npm install` of the just-published package, whose transitive dependencies
-are **range-resolved at probe time rather than lockfile-pinned**, which is a strictly wider class of
-third-party code than anything else in this job. It passes **`--ignore-scripts`** (founder decision,
-2026-08-04), so it adds no third-party *lifecycle* execution to the list above.
+**The post-publish install gate used to run in that same window, and it runs the WIDEST CLASS OF CODE
+in this job.** It performs an `npm install` of the just-published package, whose transitive
+dependencies are **range-resolved at probe time rather than lockfile-pinned**, where everything above
+runs out of a lockfile the caller committed. It passes **`--ignore-scripts`** (founder decision,
+2026-08-04), so it adds no third-party *lifecycle* execution to the list above. Since 2026-08-05 it no
+longer runs in the credential window either: both files above are deleted from disk before it (see
+below), and its entry probe's child gets an environment built from nothing. **What it still runs is
+unchanged, and that is the part worth keeping in view.**
 
 **But `--ignore-scripts` governs only the install, and the gate has a second half.**
 `probeEntryPoints` loads the package by name, which **executes the module-init code of everything on
@@ -118,14 +132,62 @@ whole static import graph eagerly while `require` is lazy. `@cosyte/ccda@0.0.10`
 `^1.0.1`. So every one of them is third-party code **resolved at probe time**, which is the very
 criterion this section uses to call the gate's tree wider than anything else in the job. An earlier
 draft said "one of them a `^` range", which was literally true and misleading by implication, in the
-one passage whose whole subject is range-resolution. And the probe child is spawned **without** a scrubbed environment, unlike
-the install directly above it, while `~/.netrc` holding the PAT survives to job end.
+one passage whose whole subject is range-resolution.
 
 So what the flag bought is a real narrowing, from *every package in the tree as a shell command* to
-*every package on the import graph as module-init code*. **It is not a closure, and this section is
-the one place in the repo whose stated job is to be exhaustive about what runs with the PAT in
-scope.** The entry-probe execution is inherited from the gate landing rather than introduced by the
-flag, and it is recorded here as an open residual rather than fixed in the same breath.
+*every package on the import graph as module-init code*. **It is not a closure.** What that
+module-init code can *reach* while it runs is a separate question from whether it runs at all, and
+that half was closed on **2026-08-05**, in two independent pieces:
+
+- **The probe child's environment is built from nothing.** `probeChildEnv` in
+  `scripts/install-check.mjs` hands it an **allow-list** (`PATH`, `TMPDIR`, locale, `TZ`, the TLS and
+  proxy variables, the Windows ones node's own crypto and dns paths read) and nothing else, so the
+  whole `npm_config_*` namespace, `NODE_OPTIONS`, `GITHUB_*` and every credential-shaped variable are
+  absent rather than blanked. **An allow-list here is not a
+  contradiction of the deny-list under [Clean means anonymous, not merely empty](#clean-means-anonymous-not-merely-empty)**,
+  where the thing defended against has a
+  namespace (`npm_config_*`) and denying the namespace defends against the mechanism. A secret has no
+  namespace, so a list of known token names would not cover the next secret a caller adds. `HOME` and
+  `USERPROFILE` are moved into the clean room, which takes `~/.netrc` and `~/.npmrc` off the child's
+  `~` path, and `os.homedir()` follows both. **A test proves it through the real spawn**, on both the
+  ESM and CJS arms, with a sentinel named `A_SECRET_ADDED_TO_A_CALLER_AFTER_THIS_TEST_WAS_WRITTEN` as
+  the negative control: the scrub has to hold for a variable no list in this repo has ever seen.
+
+  **Which variable was actually reachable is worth stating exactly, because the first draft of this
+  bullet named three that were not.** `NODE_AUTH_TOKEN`, `NPM_TOKEN` and `RELEASE_PR_TOKEN` are set on
+  the `changesets/action` **step**, `release.yml` declares no job-level or workflow-level `env`, and
+  step `env` does not persist, so none of the three was ever in the probe child's inherited
+  environment. What **is** in every step is `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and its URL, present
+  because the workflow requests `id-token: write` for npm provenance, and those exchange for a signed
+  OIDC token naming the repo. The other two reasons this is a guard rather than hygiene are each one
+  line of YAML away: the `setup-node` comment in `release.yml` tells a future maintainer to set
+  `NODE_AUTH_TOKEN` at **job** level if a `scope:` input is ever added, and a caller's secret becomes
+  job-wide the moment someone hoists an `env:` block to share it between two steps.
+- **Both credential files are deleted from disk** by the `Drop the release credentials from disk`
+  step, placed immediately after `changesets/action` rather than at the end of the job: `~/.netrc`,
+  and `~/.npmrc`, which the action writes with the **raw `NPM_TOKEN` in plaintext** on the publish
+  arm, which is the same arm that sets `published == 'true'` and therefore the only arm on which the
+  entry probe runs at all. Neither has a consumer past that step: the netrc's only reader is the
+  action's own `git push`, and the publish authenticated through the `RUNNER_TEMP` npmrc `setup-node`
+  points `NPM_CONFIG_USERCONFIG` at, which outranks `~/.npmrc`. It **warns rather than fails** if a
+  removal does not take, on the same axis the docs dispatch turns on: npm has published permanently by
+  then, and a red run neither removes the credential nor makes the artifact less correct.
+
+**Neither half reaches inside the `changesets/action` step itself, and that is now the widest window
+in this job.** The verify ladder that `prepublishOnly` re-runs there, and any lifecycle script in the
+caller's own lockfile-pinned tree, still execute with the token in the environment and both files on
+disk. That is unchanged and is not something this repo can fix from here: the action writes them
+itself, before its arm switch.
+
+**What no environment scrub can do, stated so it is not mistaken for isolation.** It narrows what
+third-party code is *handed*. An absolute path is still an absolute path, `os.userInfo().homedir`
+reads the passwd entry and ignores `HOME`, and the caller's checkout is still on disk. What covers a
+file at a known absolute path is deleting it, which is why the removal step is the other half of this
+rather than a duplicate of it. **What neither covers**, and it is the one credential that is genuinely
+in the probe's job environment: `ACTIONS_ID_TOKEN_REQUEST_TOKEN` is still reachable by every other
+step in the job, because `id-token: write` is what npm provenance needs. And the removal step is a
+best effort with a `::warning` branch, so "everything past it runs with these gone" is the expected
+case, not a guarantee the log will not contradict.
 
 **The cost is named rather than waved off, and it cuts both ways.** A real consumer's install *does*
 run lifecycle scripts, so (1) the probe **cannot catch** a package whose `postinstall` fails for a
@@ -227,6 +289,11 @@ away from arming: the `setup-node` comment in `release.yml` already tells a futu
 `NODE_AUTH_TOKEN` at job level if a `scope:` input is ever added. Stripping the namespace rather than
 overriding the two names known to matter is the difference between defending against a list and
 defending against the mechanism.
+
+**That environment is the *install* child's, and only its.** The entry probe's child gets a different
+and stricter one, `probeChildEnv`, because with `--ignore-scripts` the install runs npm and nothing
+else while the probe runs third-party module-init code. Why that one is an allow-list where this one
+is a namespace deny is in [What it does not narrow](#what-it-does-not-narrow), which owns it.
 
 Two npm behaviours that each cost a measurement, recorded so they are not rediscovered:
 

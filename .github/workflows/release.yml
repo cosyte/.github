@@ -86,34 +86,30 @@ name: Release
 # during the `Verify` ladder that follows it. That is the window this narrows, and it is the one that
 # matters most, because it is the only window whose contents this org does not write.
 #
-# WHAT IT DOES NOT NARROW, measured rather than assumed, because an earlier draft of this comment
-# claimed the PAT arrived "after all third-party code has run" and that is FALSE. From the
-# `changesets/action` step onward the token is on disk in `~/.netrc` (src/index.ts:49-52, written
-# unconditionally, before the arm switch) AND injected as `GITHUB_TOKEN` into the environment of
-# `pnpm run version` and `pnpm run release` (src/run.ts:94, :294). Neither caller SCRIPT reads it,
-# but the process subtree beneath them does not stop there: `release` is `changeset publish`, which
-# spawns `pnpm publish` (every caller declares `packageManager: pnpm@10`) without `--ignore-scripts`,
-# which runs each caller's `prepublishOnly`, which is `clean && typecheck && lint && test && build &&
-# attw`, plus `gen:all` in dicom. So the entire verify ladder runs a SECOND
-# time inside that step, with the PAT in the environment. It is visible in the timings of the real
-# hl7 0.0.3 publish (run 30354998951, 2026-07-28): the `Verify` step took ~53s, and the interval
-# inside `changesets/action` between "is being published" and "packages published successfully" took
-# ~55s, which is not a 50 kB tarball upload. The netrc also survives into the later `pack:docs` step
-# and to job end.
+# WHAT IT DOES NOT NARROW IS NOT RESTATED HERE, AND THAT IS THE POINT. The inventory of what runs
+# while this credential is reachable stood in THREE copies (this comment, the README, and a comment
+# in `scripts/install-check.mjs`) and was owned by none of them, so a correction landed in one copy
+# and left the others confidently wrong. An earlier draft of THIS comment claimed the PAT arrived
+# "after all third-party code has run", which is false. It has ONE owner now: the README, under
+# "What it does not narrow". Read it there and put the next residual there.
 #
-# THE POST-PUBLISH INSTALL GATE BELOW IS PART OF THIS INVENTORY, AND IT WIDENS THE WINDOW. It runs
-# inside this same job, and the tree it resolves is RANGE-RESOLVED at probe time rather than
-# lockfile-pinned, which is a strictly wider class of third-party code than anything above. It passes
-# `--ignore-scripts` (founder decision, 2026-08-04), so it adds no third-party LIFECYCLE execution
-# here. But that flag governs only the install: `probeEntryPoints` then loads the package by name,
-# which executes the module-init code of everything on its import graph, in-process, and that child
-# is spawned WITHOUT the scrubbed environment the install itself gets. Measured: probing
-# `@cosyte/ncpdp@0.0.10` executes eight third-party packages, ALL EIGHT reached through `^` ranges.
-#
-# Narrowed is not closed. This inventory exists to be exhaustive about what runs with the PAT in
-# scope, and it was rewritten once already because an earlier draft understated exactly that. The
-# README carries the same paragraph; KEEP THE TWO IN STEP, because the last edit corrected one copy
-# and left this one silent.
+# The facts a maintainer needs AT THIS SITE, because this file is where they are enforced:
+#   - The window OPENS at `changesets/action`, which writes the token to `~/.netrc` unconditionally
+#     (src/index.ts:49-52) before its arm switch, and injects it as `GITHUB_TOKEN` into `pnpm run
+#     version` and `pnpm run release` (src/run.ts:94, :294). `release` is `changeset publish`, which
+#     spawns `pnpm publish` (every caller declares `packageManager: pnpm@10`) WITHOUT
+#     `--ignore-scripts`, so each caller's `prepublishOnly` verify ladder runs a SECOND time inside
+#     that step with the token in the environment. Visible in the real hl7 0.0.3 publish (run
+#     30354998951, 2026-07-28): ~55s inside the action between "is being published" and "packages
+#     published successfully", which is not a 50 kB tarball upload.
+#   - It CLOSES at the `Drop the release credentials from disk` step below, which is why that step
+#     sits immediately after the action rather than at the end of the job. Past it, `~/.netrc` and
+#     the `~/.npmrc` the action writes with the raw NPM_TOKEN are expected to be gone, the caller's
+#     `pack:docs` and the post-publish install gate included; that step warns rather than fails if a
+#     removal does not take, so read its log rather than assuming. The gate's entry probe
+#     additionally gets an environment built from nothing (`probeChildEnv`).
+#   - NEITHER OF THOSE REACHES INSIDE THE `changesets/action` STEP ITSELF. That window is real, it
+#     is the widest one in this job, and nothing here has narrowed it.
 #
 # Note that on the publish arm the PAT buys nothing at all: with `createGithubReleases: false` the
 # action neither pushes nor opens a PR there, so its octokit goes unused. Narrowing it to the
@@ -415,6 +411,63 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
+      # DELETE THE RELEASE CREDENTIALS FROM DISK AS SOON AS THEIR LAST CONSUMER HAS FINISHED.
+      #
+      # WHICH TWO FILES, AND THE LINE NUMBERS BELOW, ARE READ OUT OF `changesets/action` AT THE SHA
+      # PINNED ABOVE. A bump can move them, and this step would still exit 0 and still print
+      # "Removed" while leaving the new location untouched. `test/install-check.test.mjs` pins that
+      # sha for this reason: when it reds on a bump, re-read `src/index.ts` rather than the pin.
+      #
+      # `changesets/action` writes BOTH of these itself, in the step above, and removed neither.
+      # They survived to job end, readable by every step below, the post-publish install gate
+      # included, whose entry probe evaluates third-party module-init code from a range-resolved
+      # tree. TWO files, not one, and the second is the one an earlier draft of this step missed:
+      #
+      #   ~/.netrc   the git credential: `RELEASE_PR_TOKEN`, or the `GITHUB_TOKEN` fallback. Written
+      #              unconditionally (src/index.ts:49-52), before the action's arm switch.
+      #   ~/.npmrc   `//registry.npmjs.org/:_authToken=` with the RAW `NPM_TOKEN` in plaintext
+      #              (src/index.ts:79-107), written on the PUBLISH arm, which is exactly the arm
+      #              that sets `published == 'true'` and is therefore the only one on which the
+      #              entry probe below ever runs.
+      #
+      # NEITHER HAS A CONSUMER FROM HERE. The netrc's only reader is the `git push` the action makes
+      # inside its own step. The `~/.npmrc` is not even what authenticated the publish: `setup-node`
+      # exports `NPM_CONFIG_USERCONFIG` job-wide pointing at its own file under `RUNNER_TEMP`, and a
+      # userconfig set that way outranks `~/.npmrc`. Everything below authenticates some other way:
+      # `gh` with `GH_TOKEN`, `actions/upload-artifact` with the runtime token, and the install gate
+      # deliberately anonymously, with its own userconfig and its own cache. No step below pushes
+      # over git or publishes to npm. IF YOU ADD ONE THAT DOES, it fails loudly rather than quietly
+      # reaching for a token, and the fix is to put it above this step, not to delete this step.
+      #
+      # WHAT THIS DOES NOT REMOVE, so the log is not read as a clean-runner claim: the `RUNNER_TEMP`
+      # npmrc `setup-node` wrote, which holds the literal unexpanded `${NODE_AUTH_TOKEN}` and no
+      # secret (setup-node v7 stopped exporting that variable job-wide); and the caller's checkout,
+      # which is a public repo. `rm` is safe on a hosted runner specifically because `runs-on` is
+      # pinned to `ubuntu-latest` in this file, so there is no persistent user npmrc to destroy.
+      #
+      # IT WARNS RATHER THAN FAILS, on the same axis the dispatch step below turns on: by this point
+      # npm has published permanently, redding the run would not remove the credentials, and it would
+      # skip the GitHub release and the docs artifacts for a package that really did ship. `always()`
+      # rather than `!cancelled()` so a cancelled run is scrubbed too; it is two `rm`s and cannot hang.
+      - name: Drop the release credentials from disk
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          left=""
+          for f in "$HOME/.netrc" "$HOME/.npmrc"; do
+            [ -e "$f" ] || continue
+            # `|| true` IS LOAD-BEARING, not defensive noise. GitHub runs `shell: bash` as
+            # `bash --noprofile --norc -eo pipefail`, so a bare failing `rm` exits the step at
+            # once and the warn branch below, which is the whole reason this step does not fail,
+            # never runs. Measured: an `.npmrc` that is a directory, and an unwritable `$HOME`,
+            # both exit 1 without it. Neither is reachable on a hosted runner today.
+            rm -f "$f" || true
+            if [ -e "$f" ]; then left="$left $f"; else echo "Removed $f."; fi
+          done
+          if [ -n "$left" ]; then
+            echo "::warning title=Release credential still on disk::Could not remove:$left. A credential changesets/action wrote stays readable for the rest of this job, the post-publish install probe included."
+          fi
+
       - name: Publish the GitHub release + dispatch docs rebuild
         if: ${{ steps.changesets.outputs.published == 'true' }}
         env:
