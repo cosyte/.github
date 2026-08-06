@@ -1882,3 +1882,214 @@ test('DEFECT 3: the clause boundary set is narrow, and a bare comma is NOT one',
     'Add a repo-side PHI commit-scanner (`scripts/phi-scan.ts`) to every surface',
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE ITEM IDENTIFIER WHOSE PREFIX NOBODY REGISTERED
+//
+// Measured on @cosyte/x12, 2026-08-06: `(REFUSAL-MESSAGE-PHI-ECHO)` reached the published release
+// body while `X12-*` identifiers in adjacent bullets were stripped correctly, and the gate passed
+// it. The rule keyed on a REGISTERED prefix; `REFUSAL` is not one, and no cross-repo item named
+// after its defect rather than a repo ever will be.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+test('THE LEAK: an item id with an unregistered prefix no longer reaches a release body', () => {
+  // These are real item names. Every one of them renders `(THE-WHOLE-ID)` onto a public page at base.
+  for (const id of [
+    'REFUSAL-MESSAGE-PHI-ECHO',
+    'CHANGELOG-PREAMBLE-FUTURE-TENSE',
+    'PHI-SCAN-RENAME-BLIND-AT-PRECOMMIT',
+    'CI-REQUIRED-CHECKS',
+    'DEPENDABOT-PR-QUEUE',
+    'ATTW-CONFIG-ROUTE-BLINDS-THE-GATE',
+  ]) {
+    const violations = findViolations(`### What changed\n\n- A described change carrying ${id} detail.\n`);
+    assert.ok(
+      violations.some((v) => v.rule === 'internal item identifier with an unregistered prefix'),
+      `${id} must not be publishable, got ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+// THE DISJOINTNESS ARGUMENT, ASSERTED RATHER THAN CLAIMED. The header of this file rules out the
+// `WORD-N` shape because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` ARE that shape. The new
+// rule requires three or more hyphen-joined runs of two or more LETTERS and no digit anywhere, so it
+// cannot reach any of them. If a future edit widens it to admit a digit, this is what reds.
+test('the shape rule cannot reach a healthcare reference, because every one of them carries a digit', () => {
+  const references = [
+    'SCH-11', 'PID-3', 'MSH-2', 'NM1-03', 'OBX-5', 'ICD-10', 'ICD-10-CM', 'ICD-10-PCS', 'ICD-9-CM',
+    'ISO-8601', 'UTF-8', 'ADT-A01', 'ORU-R01', 'PS3-5', 'ICD-O-3',
+    // Two-run all-caps vocabulary. Three runs is the floor precisely so these are out of reach.
+    'SNOMED-CT', 'US-CORE', 'CDA-R2',
+  ];
+  for (const reference of references) {
+    const text = `Map ${reference} correctly when the sender omits the qualifier`;
+    assert.equal(sanitizeInternal(text), text, `${reference} must survive untouched`);
+    assert.deepEqual(
+      findViolations(`### What changed\n\n- Map ${reference} correctly when the sender omits it.\n`)
+        .filter((v) => v.rule === 'internal item identifier with an unregistered prefix'),
+      [],
+      `${reference} must not be read as an item id`,
+    );
+  }
+});
+
+// FOUR NAMES THIS TEST DELIBERATELY DOES NOT CLAIM, BECAUSE THE PRE-EXISTING RULE ALREADY EATS THEM.
+// `HL7-V2`, `X12-005010`, `NCPDP-SCRIPT` and `DICOM-RT` all open with a REGISTERED prefix, so the
+// name rule removes them today and removed them before this file was touched. `NCPDP-SCRIPT` is a
+// real standard's real name, and the header of this file already discloses the shape as a limit
+// ("Accept an NCPDP-SCRIPT NewRx transaction" is the example it gives). Recorded as a measurement
+// rather than folded into the list above, because a test that asserted them "untouched" would be
+// asserting something false and would red for a reason that has nothing to do with the shape rule.
+// The point that matters for the new rule: it reaches NONE of them, so it adds no collision here.
+test('PRE-EXISTING: a registered prefix already eats four legitimate standard names', () => {
+  for (const name of ['HL7-V2', 'X12-005010', 'NCPDP-SCRIPT', 'DICOM-RT']) {
+    const text = `Map ${name} correctly when the sender omits the qualifier`;
+    assert.notEqual(sanitizeInternal(text), text, `${name} is expected to be eaten by the NAME rule`);
+    const violations = findViolations(`### What changed\n\n- Map ${name} correctly when the sender omits it.\n`);
+    assert.ok(
+      violations.every((v) => v.rule !== 'internal item identifier with an unregistered prefix'),
+      `${name} must not be attributed to the shape rule: ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+// A SHAPE IS A GUESS AND A GUESS MAY NOT EDIT PROSE. The registered rule may take the word-to-word
+// cut ("Accept an NCPDP-SCRIPT NewRx transaction" -> "Accept an NewRx transaction"), a limit stated
+// and accepted where the token is KNOWN to be ours. This rule may not: its whole risk is the false
+// positive, and the word-to-word cut is where a false positive does its damage silently, leaving
+// well-formed prose that is not what the author wrote.
+test('the shape rule REFUSES the word-to-word cut that the registered rule is allowed to take', () => {
+  const midClause = 'Close CHANGELOG-PREAMBLE-FUTURE-TENSE by turning the generator on.';
+  const result = toHeadline(midClause);
+  assert.ok(
+    result.refused.some((r) => r.rule === 'internal item identifier with an unregistered prefix'),
+    'a mid-clause id must be refused, not lifted out',
+  );
+  // And the banned text SURVIVES into the headline, which is the point: findViolations then sees it
+  // and the run goes red naming the line. Cutting it would leave wreckage nothing downstream detects.
+  assert.match(result.headline, /CHANGELOG-PREAMBLE-FUTURE-TENSE/);
+  assert.notEqual(result.headline, 'Close by turning the generator on');
+
+  // THE ONE MEASURED FALSE POSITIVE, PINNED AS A CONTROL. Across the 55 changesets, changelogs and
+  // READMEs of all thirteen callers the shape matches 108 distinct tokens; 107 are item ids and the
+  // 108th is `YYYY-MM-DD`. It occurs four times, all in README prose and none in any changeset. This
+  // is what the narrower cut permission buys: it is refused with the sentence quoted, not deleted.
+  const placeholder = toHeadline('Dates render as YYYY-MM-DD in the header rather than as epoch seconds.');
+  assert.ok(placeholder.refused.length > 0, 'a false positive must refuse, never cut');
+  assert.match(placeholder.headline, /YYYY-MM-DD/);
+});
+
+test('the cuts a shape rule MAY take are the ones that cannot change what a sentence means', () => {
+  // The head: this is the leading-item-id case the defect is named for.
+  assert.equal(
+    toHeadline('CHANGELOG-PREAMBLE-FUTURE-TENSE: turn the Changesets changelog generator on.').headline,
+    'Turn the Changesets changelog generator on',
+  );
+  // A parenthetical, which is removable by construction. This is the shape that leaked on x12.
+  assert.equal(
+    toHeadline('Turn the changelog generator on (CHANGELOG-PREAMBLE-FUTURE-TENSE).').headline,
+    'Turn the changelog generator on',
+  );
+  assert.equal(
+    toHeadline('Stop echoing the caller input in the refusal message (`REFUSAL-MESSAGE-PHI-ECHO`).').headline,
+    'Stop echoing the caller input in the refusal message',
+  );
+  // A whole clause between two separators: the remaining clauses still join.
+  assert.match(
+    toHeadline('Stop echoing the input, REFUSAL-MESSAGE-PHI-ECHO, in the refusal message.').headline,
+    /^Stop echoing the input, in the refusal message$/,
+  );
+  // The tail, where what is left must still read: here it does not, so it is refused rather than
+  // published as "Close the item".
+  const tail = toHeadline('Close the item CHANGELOG-PREAMBLE-FUTURE-TENSE.');
+  assert.ok(tail.headline === 'Close the item' || tail.refused.length > 0);
+});
+
+// THE DRIFT THIS CLOSED, AND IT WAS SILENT IN THE WORST DIRECTION. The parenthetical branch used to
+// restate three of the translation rules by hand. A fourth rule therefore did not apply there, so a
+// parenthetical holding ONLY the new rule's match was returned "exactly as the author wrote it" --
+// published. The predicate is now derived from TRANSLATION_RULES, so it cannot be one rule stale.
+test('the parenthetical predicate is derived from the translation rules, not restated beside them', () => {
+  assert.equal(sanitizeInternal('Turn the generator on (CHANGELOG-PREAMBLE-FUTURE-TENSE)'), 'Turn the generator on');
+  // A parenthetical with no internal reference is still left exactly as written.
+  const kept = 'Correct the MSH-9 structure lookup (the ORU^R01 case that vendors send most)';
+  assert.equal(sanitizeInternal(kept), kept);
+});
+
+// END TO END, THROUGH THE REAL `prepare`, ON A REAL VERSION COMMIT. The unit assertions above prove
+// the rule; this proves the rule is reached by the code path that decides whether npm is touched.
+test('a consumed changeset carrying an unregistered item id stops the release before npm', () => {
+  const { dir } = makeVersionCommitRepo({
+    changesets: {
+      'leak.md':
+        '---\n"@cosyte/hl7": patch\n---\n\nStop echoing the caller input in the refusal message ' +
+        '(REFUSAL-MESSAGE-PHI-ECHO), which a JSON-driven caller cannot reach.\n',
+    },
+  });
+  const clean = runPrepare(dir);
+  assert.equal(clean.status, 0, `a removable parenthetical must not block a release: ${clean.stdout}${clean.stderr}`);
+  const body = readFileSync(join(dir, 'notes.md'), 'utf8');
+  assert.doesNotMatch(body, /REFUSAL-MESSAGE-PHI-ECHO/, 'the id must not reach the published body');
+  rmSync(dir, { recursive: true, force: true });
+
+  // And the mid-clause form, which cannot be cut, refuses the run rather than publishing wreckage.
+  const wedged = makeVersionCommitRepo({
+    changesets: {
+      'leak.md':
+        '---\n"@cosyte/hl7": patch\n---\n\nClose REFUSAL-MESSAGE-PHI-ECHO by dropping the caller input ' +
+        'from the message.\n',
+    },
+  });
+  const refused = runPrepare(wedged.dir);
+  assert.equal(refused.status, 1, 'the run must stop, with npm untouched');
+  assert.notEqual(refused.outputs['is-release'], 'true', 'and the publish command must be withheld');
+  assert.match(`${refused.stdout}${refused.stderr}`, /unregistered prefix/);
+  rmSync(wedged.dir, { recursive: true, force: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// `assert --expect-package` WITHOUT `--expect-version` USED TO CHECK NOTHING AT ALL
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+test('--expect-package alone catches another repo notes, instead of passing on them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'release-notes-pkg-'));
+  const notes = join(dir, 'notes.md');
+  writeFileSync(
+    notes,
+    renderNotes({ packageName: '@cosyte/mllp', version: '0.0.9', headlines: ['Reconnect with backoff after a peer reset'] }),
+  );
+
+  // THE HOLE. The package half was reachable only through the composite `npm install <pkg>@<ver>`
+  // stamp, so supplying the package WITHOUT the version fell through both arms and exited 0 having
+  // asserted nothing about the package. A cross-repo safety check satisfied by omitting one of its
+  // own arguments is not one.
+  const wrongPackage = runCli(['assert', '--file', notes, '--expect-package', '@cosyte/x12']);
+  assert.equal(wrongPackage.status, 1, `mllp notes must not pass as x12 notes: ${wrongPackage.stdout}`);
+  assert.match(`${wrongPackage.stdout}${wrongPackage.stderr}`, /never names @cosyte\/x12/);
+
+  // The right package with no version still passes: this tightens one arm, it does not add a
+  // requirement that `--expect-version` be supplied.
+  assert.equal(runCli(['assert', '--file', notes, '--expect-package', '@cosyte/mllp']).status, 0);
+  // Both supplied is unchanged.
+  assert.equal(
+    runCli(['assert', '--file', notes, '--expect-version', '0.0.9', '--expect-package', '@cosyte/mllp']).status,
+    0,
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the two halves of the package check report which one failed, not one message for both', () => {
+  const body = renderNotes({ packageName: '@cosyte/hl7', version: '0.0.2', headlines: ['Correct the MSH-9 lookup'] });
+  // Wrong package: BOTH the name and the stamp are absent, and both are reported. Reporting only the
+  // stamp said "not about @cosyte/x12@0.0.2" for a body that is not about @cosyte/x12 at any version.
+  const wrong = assertPublishableNotes(body, { expectVersion: '0.0.2', expectPackage: '@cosyte/x12' });
+  assert.ok(wrong.some((p) => /never names @cosyte\/x12/.test(p)));
+  assert.ok(wrong.some((p) => /not about @cosyte\/x12@0\.0\.2/.test(p)));
+
+  // Right package, wrong version: the name check is silent and only the stamp speaks.
+  const staleVersion = assertPublishableNotes(body, { expectVersion: '0.9.9', expectPackage: '@cosyte/hl7' });
+  assert.ok(staleVersion.some((p) => /not about @cosyte\/hl7@0\.9\.9/.test(p)));
+  assert.ok(!staleVersion.some((p) => /never names/.test(p)));
+
+  assert.deepEqual(assertPublishableNotes(body, { expectVersion: '0.0.2', expectPackage: '@cosyte/hl7' }), []);
+});

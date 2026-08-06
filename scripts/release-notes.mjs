@@ -40,12 +40,22 @@
 // one. Same reasoning: a truncation that produces well-formed prose is invisible to any gate.
 //
 // WHAT THE GATE DOES AND DOES NOT COVER, stated plainly because the distinction matters. The gate
-// enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so it cannot catch
-// an identifier from a programme prefix nobody has added to that list yet, and no rule could: the
-// only way to spot one from its shape alone is a `WORD-N` pattern, which is exactly what destroys
-// `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`. What the gate DOES buy is that a rule can
-// never be quietly bypassed downstream: it re-reads the finished bytes, so a change to the renderer,
-// the workflow, or the source of the text cannot ship banned content without tripping it.
+// enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so a programme
+// prefix nobody has added to that list is invisible to BOTH of them. What the gate DOES buy is that
+// a rule can never be quietly bypassed downstream: it re-reads the finished bytes, so a change to
+// the renderer, the workflow, or the source of the text cannot ship banned content without tripping
+// it.
+//
+// THIS PARAGRAPH USED TO END "and no rule could", AND THAT WAS FALSIFIED BY A LEAK ON A PUBLIC PAGE.
+// It reasoned that the only shape-based reading of an identifier is `WORD-N`, which is exactly what
+// destroys `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10`. That much is still true and is still
+// why this file keys on names. But it does not follow that NO shape can be read, and the class it
+// missed is the one that leaked: an item named after its defect rather than after a repo
+// (`REFUSAL-MESSAGE-PHI-ECHO`) is three or more hyphen-joined runs of LETTERS with no digit
+// anywhere, which is disjoint from every segment-field reference above. See UNREGISTERED_ID for the
+// rule, its measurement, and the narrower cut permission it is held to because it reads a shape
+// rather than a name. The maintenance instruction below still stands and is still the better path:
+// a registered prefix is translated, an unregistered one is at best refused.
 //
 // The gate reads the residue of a bad cut, not the grammar: doubled or orphaned clause punctuation,
 // a parenthetical emptied of its contents, a one-letter stump at the end of an entry, an entry
@@ -200,6 +210,42 @@ const INTERNAL_ID = new RegExp(
     String.raw`|\bP\d+ (?:safety|documentation)\b`,
 );
 
+// AN ITEM IDENTIFIER WHOSE PREFIX NOBODY REGISTERED ABOVE. MEASURED LEAKING ONTO A PUBLIC PAGE.
+//
+// @cosyte/x12 published `(REFUSAL-MESSAGE-PHI-ECHO)` into its release body while `X12-*` identifiers
+// in adjacent bullets were stripped correctly, and the gate passed it: the rule above keys on a
+// REGISTERED prefix, `REFUSAL` is not one, and no cross-repo item ever will be. The item ids that
+// name a defect rather than a repo -- `REFUSAL-MESSAGE-PHI-ECHO`,
+// `PHI-SCAN-RENAME-BLIND-AT-PRECOMMIT`, `CHANGELOG-PREAMBLE-FUTURE-TENSE` -- mint a fresh first word
+// every time one is filed. Registering them one at a time is a deny-list, and a deny-list buys
+// exactly one evasion per entry.
+//
+// SO THIS IS A SHAPE RULE, WHICH THE HEADER OF THIS FILE SAYS CANNOT BE DONE. Read that paragraph
+// again, because it is precise and this does not contradict it: the shape it rules out is `WORD-N`,
+// and it rules it out because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` ARE that shape and
+// are the reference material a consumer needs. This shape is a different one and shares no member
+// with it: THREE OR MORE HYPHEN-JOINED RUNS, EVERY RUN TWO OR MORE LETTERS, NO DIGIT ANYWHERE. A
+// digit is what every segment-field reference has and what no item id has, so the two sets are
+// disjoint by construction rather than by luck.
+//
+// MEASURED, NOT ARGUED. Across the 55 changesets, changelogs and READMEs of all thirteen callers
+// this shape matches 108 distinct tokens. 107 are item identifiers. The single one that is not is
+// `YYYY-MM-DD`, a date placeholder, and it occurs four times, all four in README prose and NONE in
+// any changeset. Over the 31 changesets pending across the thirteen repos on 2026-08-06 it fires
+// twice, and both are the defect: `ncpdp` and `fhir` each carry an item id that would render into a
+// release bullet.
+//
+// AND BECAUSE IT IS A GUESS RATHER THAN A NAME, IT MAY TAKE FEWER CUTS THAN THE RULE ABOVE. That
+// asymmetry is the whole safety argument, and it is enforced by `requireBoundary` where this rule is
+// listed. The registered rule KNOWS a token is ours, so it may take the word-to-word cut that
+// removes a modifier from inside a clause. This rule only knows a token LOOKS like ours, so it is
+// allowed the cuts that cannot change what a sentence means -- the head, the tail, a whole clause
+// between two separators, and a parenthetical, which is removable by construction -- and must REFUSE
+// the word-to-word cut, where a false positive would silently delete a word the author chose.
+// "Dates render as YYYY-MM-DD in the header" is therefore refused with the sentence named, not
+// published as "Dates render as in the header".
+const UNREGISTERED_ID = /\b[A-Z]{2,}(?:-[A-Z]{2,}){2,}\b/;
+
 const ORDINAL =
   String.raw`(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|` +
   String.raw`thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|` +
@@ -300,6 +346,7 @@ const MANGLED_PROSE = [
 /** Every banned-content rule, applied to a finished body. Order is the order they are reported. */
 const CONTENT_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
+  { name: 'internal item identifier with an unregistered prefix', pattern: UNREGISTERED_ID },
   { name: 'phase or slice language', pattern: PHASE_TALK },
   { name: 'ADR reference', pattern: ADR_REFERENCE },
   { name: 'internal jargon ("slice")', pattern: OUR_JARGON },
@@ -572,6 +619,35 @@ function separatorAfter(whole, end, edgeIsSeparator) {
 }
 
 /**
+ * The strictly smaller cut permission, for a rule that recognises a SHAPE rather than a NAME.
+ *
+ * `isSafeCut` accepts a span whose sides MATCH: separator on both, or plain word on both. The
+ * word-to-word case is the one it cannot reason about -- a boundary rule cannot tell a modifier from
+ * a grammatical argument, so "Accept an NCPDP-SCRIPT NewRx transaction" becomes "Accept an NewRx
+ * transaction". That limit is stated and accepted for the registered rule, because there the token
+ * is KNOWN to be internal bookkeeping and something has to give.
+ *
+ * A shape rule has not earned it. Its whole risk is the false positive, and the word-to-word cut is
+ * exactly where a false positive does its damage silently: it deletes a word the author chose and
+ * leaves well-formed prose behind, which is this file's worst failure mode. So a rule marked
+ * `requireBoundary` may take only the cuts whose result cannot be a sentence the author did not
+ * write -- the head, the tail, and a span with a clause separator on BOTH sides, which takes a whole
+ * clause and leaves the remaining ones joining correctly. Everything else it REFUSES, which surfaces
+ * as a named refusal with the sentence quoted, and a refusal is recoverable.
+ *
+ * A parenthetical's segments arrive with `edgeIsSeparator`, so a segment that is nothing but the
+ * identifier reads as separator-bounded on both sides and is taken. That is the case this rule
+ * exists for and it is the safest cut of the lot: a parenthetical is removable by construction.
+ */
+export function isBoundedCut(text, start, end, edgeIsSeparator = false) {
+  const whole = String(text);
+  const left = whole.slice(0, start).replace(/\s+$/, '');
+  const right = whole.slice(end).replace(/^\s+/, '');
+  if (!edgeIsSeparator && (left === '' || right === '')) return true;
+  return separatorBefore(whole, start, edgeIsSeparator) && separatorAfter(whole, end, edgeIsSeparator);
+}
+
+/**
  * The rules the translator removes, in the order it removes them.
  *
  * Exported so that a tool asking "was this text removed on purpose?" asks the translator rather
@@ -579,6 +655,11 @@ function separatorAfter(whole, end, edgeIsSeparator) {
  */
 export const TRANSLATION_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
+  // `requireBoundary` is the difference between a NAME and a GUESS, and this is the only rule that
+  // carries it. See UNREGISTERED_ID for the argument; the mechanism is in stripSpans. Listed AFTER
+  // the registered rule so a token both of them match (`TERMINOLOGY-ATTW-FORWARDING-UNPINNED` is
+  // one) is removed by the rule that knows its name, on the wider permission it has earned.
+  { name: 'internal item identifier with an unregistered prefix', pattern: UNREGISTERED_ID, requireBoundary: true },
   { name: 'phase or slice language', pattern: PHASE_TALK },
   { name: 'ADR reference', pattern: ADR_REFERENCE },
 ];
@@ -606,7 +687,13 @@ function stripSpans(text, rules, edgeIsSeparator = false) {
       if (!found) break;
       const start = found.index;
       let end = start + found[0].length;
-      if (!isSafeCut(out, start, end, edgeIsSeparator)) {
+      // Two permissions, and the narrower one applies only to the rule that asks for it. See
+      // isBoundedCut: a rule that recognises a shape may not take the word-to-word cut that a rule
+      // recognising a name may.
+      const permitted =
+        isSafeCut(out, start, end, edgeIsSeparator) &&
+        (!rule.requireBoundary || isBoundedCut(out, start, end, edgeIsSeparator));
+      if (!permitted) {
         refused.push({ rule: rule.name, match: found[0] });
         from = end;
         continue;
@@ -671,7 +758,11 @@ function stripInternal(segment) {
  */
 export function sanitizeInternalDetailed(text) {
   let t = String(text).replace(/\s*\(([^()]*)\)/g, (whole, inner) => {
-    if (!INTERNAL_ID.test(inner) && !PHASE_TALK.test(inner) && !ADR_REFERENCE.test(inner)) {
+    // Derived from TRANSLATION_RULES rather than restating the three patterns by hand. The restated
+    // list was already one rule out of date the moment a fourth was added, and the failure was
+    // silent in the worst direction: a parenthetical holding ONLY the new rule's match would be left
+    // exactly as the author wrote it and publish.
+    if (!TRANSLATION_RULES.some((rule) => rule.pattern.test(inner))) {
       return whole; // no internal reference: leave it exactly as the author wrote it
     }
     const kept = inner
@@ -1131,6 +1222,22 @@ export function assertPublishableNotes(body, { expectVersion, expectPackage } = 
 
   // The notes are derived from git; the version that reached npm is reported by Changesets. If the
   // two disagree, the body describes a different release than the one being tagged.
+  //
+  // THE PACKAGE IS CHECKED ON ITS OWN, AND THAT IS A FIX RATHER THAN A TIDY-UP. This used to be a
+  // single test for the composite string `npm install <package>@<version>`, which made the whole
+  // package half CONDITIONAL ON `expectVersion` BEING SUPPLIED: `assert --file <other repo's
+  // notes> --expect-package @cosyte/x12` with no `--expect-version` fell through both arms and
+  // exited 0, having checked nothing about the package at all. The two callers in `release.yml`
+  // happen to pass both, so the hole was never reachable there -- but `assert` is the entry point
+  // documented at the top of this file as knowing nothing about how its file was produced, and a
+  // cross-repo safety check that is satisfied by omitting one of its own arguments is not one.
+  //
+  // It is also the only arm that reads a body carrying no install line. The composite test cannot
+  // tell "these are a different package's notes" from "these notes have no `### Install` block",
+  // and reports the first when it means the second.
+  if (expectPackage && !text.includes(expectPackage)) {
+    problems.push(`the release body never names ${expectPackage}, so it is not this package's notes`);
+  }
   if (expectVersion && expectPackage) {
     const stamp = `npm install ${expectPackage}@${expectVersion}`;
     if (!text.includes(stamp)) {

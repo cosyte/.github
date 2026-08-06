@@ -40,11 +40,53 @@ forms will walk you through it.
    ```
 
    All of them must exit zero. CI runs the same checks on Node 22 and 24.
-3. Add a bullet under `## [Unreleased]` in the package's `CHANGELOG.md`, plus a
-   Changeset if the repo uses them.
+3. Record the change. **How you do that differs by repo, and the repo tells you which
+   kind it is** — see [Recording your change](#recording-your-change) below.
 4. Keep PRs focused — one logical change each. Large refactors start as an issue.
 5. Write a clear commit message. Imperative mood (`fix(parser): …`) is encouraged,
    not enforced.
+
+## Recording your change
+
+Every `@cosyte/*` package has a `CHANGELOG.md`, and it ships **inside the published
+tarball**, so what goes in it is part of the package. But the two kinds of repo want
+opposite things from you, and doing the wrong one is not harmless — so check which
+kind you are in before you write anything.
+
+**The check is one file.** Open `.changeset/config.json` and read its `"changelog"`
+key. Nothing else decides this: not the repo's age, not what the file looks like
+today, not what a sibling package does.
+
+**`"changelog": false` — the changelog is written by hand.** Add a bullet under
+`## [Unreleased]` in `CHANGELOG.md`, and add a changeset too if the repo has a
+`.changeset/` directory. This is the older arrangement and it is still correct here.
+
+**Anything else — the Changesets generator is on, and your changeset summary *is* the
+changelog entry.** Add the changeset and leave `CHANGELOG.md` alone. The release
+writes it: `changeset version` inserts a `## <version>` section from the changesets
+it consumes. Hand-editing the file fights that, and a hand-added `## [Unreleased]`
+heading is worse than untidy — generated releases are prepended above it, so it would
+sit below every future release claiming to be the unreleased one, permanently.
+
+Repos move from the first arrangement to the second one at a time, so **re-read the
+key rather than remembering the answer**.
+
+### Writing a changeset
+
+A changeset is a small markdown file in `.changeset/`; `pnpm changeset` will create
+one for you. Two things about it are worth knowing before you write, because both are
+enforced by the release pipeline rather than by review:
+
+- **Its opening sentence becomes a bullet in the public GitHub release notes**, and
+  that bullet is capped at 400 characters. The rest of the body can be as long as it
+  needs to be. The pipeline **refuses** an over-length opening sentence rather than
+  trimming it, because a mechanical cut publishes a fragment that reads like a whole
+  sentence. Write the first sentence for a reader of the package, and put the detail
+  in the paragraphs after it.
+- **Do not start a line at the left margin with a `#` heading.** In a repo with the
+  generator on, a changeset summary is indented into the generated release section by
+  two spaces, so a heading at column 0 renders as a heading *inside* that section, and
+  once published it is there for good. Use an inline code span instead.
 
 ## The toolchain, briefly
 
