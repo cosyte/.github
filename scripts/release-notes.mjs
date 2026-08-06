@@ -265,9 +265,20 @@ const INTERNAL_ID = new RegExp(
 //
 //   headlines it rewrites .............. 0, and 0 is structural rather than measured. It cannot
 //                                        rewrite one; it is not in TRANSLATION_RULES.
-//   releases it newly refuses .......... 8 of 634. Each costs one reworded changeset.
+//   blobs it newly refuses ............. 8 of 634. Those 8 are BLOBS, which is the unit git stores
+//                                        and not the unit anyone pays in: a changeset is re-blobbed
+//                                        every time it is edited. They are 4 distinct releases
+//                                        (`mllp`, `ncpdp`, `fhir`, `cli`).
 //   of the changesets pending today .... 1 (`fhir`), which carries two item ids in a trailing
 //                                        parenthetical and would put both on a public page.
+//
+// AND BE PRECISE ABOUT WHAT A REFUSAL COSTS, BECAUSE IT IS NOT ONE PRICE. While the changeset is
+// still PENDING it is one reworded sentence and nothing else. At RELEASE time it is not: `prepare`
+// runs on the version commit, so the "Version Packages" PR has already merged and consumed the
+// changeset, and the price is the RECOVERY procedure at the top of this file -- recover the text
+// from `<version-commit>^`, revert the version commit, reword, let Changesets open a fresh PR. That
+// is the same ordering trap the release-bullet cap has, it has been paid for real, and it is why the
+// pending-changeset lint filed in the README is the thing that actually closes this.
 //
 // A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect
 // them to say so clearly. That is the trade taken: a refusal a human resolves, over a rewrite nobody
@@ -1763,6 +1774,13 @@ function cmdPrepare(options) {
       [
         `Derived release notes for ${packageName}@${release.version} are not fit to publish:`,
         ...problems.map((p) => `  - ${p}`),
+        // RECOVERY belongs here and not only on the two collectHeadlines refusals. Every problem in
+        // this list is found on the VERSION COMMIT, by which point the "Version Packages" PR has
+        // merged and consumed the changeset, so an operator needs the revert procedure whichever
+        // rule spoke. It used to be attached rule by rule, which was fine while every content rule
+        // had a translation counterpart that refused earlier -- and stopped being fine the moment
+        // one did not.
+        RECOVERY,
       ].join('\n'),
     );
   }

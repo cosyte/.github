@@ -57,10 +57,12 @@ kind you are in before you write anything.
 `.changeset/config.json`. Nothing else decides this: not the repo's age, not what
 `CHANGELOG.md` looks like today, not what a sibling package does.
 
-**No `.changeset/` directory at all — the changelog is written by hand, and there is
-no changeset to add.** Add a bullet under `## [Unreleased]` in `CHANGELOG.md` and
-you are done. Several repos here are not published to npm and do not use Changesets;
-this is the arm for them, and it is the one to take when you cannot find the file.
+**No `.changeset/` directory at all — there is no changeset to add.** If the repo has
+a `CHANGELOG.md`, add a bullet under `## [Unreleased]` and you are done. **If it has
+neither, there is nothing to record beyond the pull request itself** — several repos
+here publish nothing to npm and have deliberately never kept a changelog, and adding
+one is a change in its own right, not part of your fix. This is the arm to take when
+you cannot find `.changeset/config.json`.
 
 **`.changeset/config.json` with `"changelog": false` — the changelog is written by
 hand, and a changeset is needed as well.** Add the `## [Unreleased]` bullet *and* run

@@ -10,8 +10,9 @@
 - [ ] Tests cover the change.
 - [ ] The change is recorded the way **this** repo records changes. Look for
       `.changeset/config.json`; its absence is an answer too:
-  - **no `.changeset/` directory** — add a `## [Unreleased]` entry to `CHANGELOG.md`. There is no
-    changeset to add. Take this arm when you cannot find the file.
+  - **no `.changeset/` directory** — there is no changeset to add. Add a `## [Unreleased]` entry to
+    `CHANGELOG.md` if the repo has one; if it has neither, there is nothing to record here. Take this
+    arm when you cannot find `.changeset/config.json`.
   - **`"changelog": false`** — add a `## [Unreleased]` entry **and** a changeset.
   - **anything else** — the Changesets generator is on, so **your changeset summary is the changelog
     entry**. Add the changeset and do **not** hand-edit `CHANGELOG.md`: the release writes that file,

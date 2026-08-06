@@ -2054,6 +2054,12 @@ test('a consumed changeset carrying an unregistered item id stops the release be
   assert.equal(refused.status, 1, 'the run must stop, with npm untouched');
   assert.notEqual(refused.outputs['is-release'], 'true', 'and the publish command must be withheld');
   assert.match(`${refused.stdout}${refused.stderr}`, /unregistered prefix/);
+  // AND IT MUST PRINT THE RECOVERY PROCEDURE. This is the first content rule in the file with no
+  // translation counterpart, so it is the first that can refuse through assertPublishableNotes
+  // rather than through collectHeadlines -- and only the collectHeadlines refusals carried RECOVERY.
+  // By the time this fires the Version PR has merged and consumed the changeset, so an operator who
+  // is told only the sentence has been told the cheap half of the problem.
+  assert.match(`${refused.stdout}${refused.stderr}`, /revert the version commit/);
   rmSync(dir, { recursive: true, force: true });
 
   // The control: the same sentence without the identifier releases cleanly, so the refusal is the

@@ -1225,8 +1225,17 @@ Measured over the same 634 blobs:
 | | |
 |---|---|
 | headlines it rewrites | **0**, and structurally so. It is not in `TRANSLATION_RULES` and cannot rewrite one |
-| releases it newly refuses | **8 of 634**, each costing one reworded changeset |
+| blobs it newly refuses | **8 of 634**, which are **4 distinct releases** (`mllp`, `ncpdp`, `fhir`, `cli`): a changeset is re-blobbed each time it is edited, so blobs are not the unit anyone pays in |
 | of the changesets pending today | **1** (`fhir`), which carries two identifiers in a trailing parenthetical and would put both on a public page |
+
+**And a refusal is not one price.** While the changeset is still **pending** it is one reworded
+sentence. At **release** time it is not: `prepare` runs on the version commit, so the "Version
+Packages" PR has already merged and consumed the changeset, and the price is the `RECOVERY` procedure
+(recover the text from `<version-commit>^`, revert the version commit, reword, let Changesets open a
+fresh PR). That is the same ordering trap the release-bullet cap has, it has been paid for real, and
+it is why the pending-changeset lint filed below is the thing that actually closes this. The refusal
+message now carries `RECOVERY`, which it did not when this rule first shipped: every other content
+rule had a translation counterpart that refused earlier, and this is the first that does not.
 
 A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect them
 to name the sentence. **Do not re-propose translating this** without an argument that answers the
