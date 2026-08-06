@@ -1241,6 +1241,15 @@ A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than n
 to name the sentence. **Do not re-propose translating this** without an argument that answers the
 seven inputs above by name.
 
+**`PRE-EXISTING`, recorded here because this change makes `RECOVERY` print more often and nobody
+should read it as new.** `RECOVERY`'s own text opens *"Nothing has been published"*, and that is a
+claim about the **`v<version>` tag proxy**, not about the registry. On a version that published but
+was never tagged, both that clause and the instruction to revert the version commit would be wrong
+under ADR 0001, which forbids moving a published version backwards. It is on `main` at
+`scripts/release-notes.mjs`'s `RECOVERY` constant and was already printed unconditionally from two
+other call sites before this change. **Not fixed here**: it is a claim about the tag-versus-registry
+proxy that the `already-released` verdict also rests on, and it wants its own item.
+
 **A pre-existing collision the measurement surfaced and does not fix:** `HL7-V2`, `X12-005010`,
 `NCPDP-SCRIPT` and `DICOM-RT` are already eaten by the **registered** rule, because each opens with a
 registered prefix, and `NCPDP-SCRIPT` is a real standard's real name. `PRE-EXISTING`, disclosed in a
