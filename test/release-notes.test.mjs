@@ -2083,6 +2083,54 @@ test('a consumed changeset carrying an unregistered item id stops the release be
   rmSync(wedged.dir, { recursive: true, force: true });
 });
 
+// WHAT THE NARROWED TRANSLATION DOES NOT REACH, AND WHY THAT IS SAFE RATHER THAN A HOLE.
+//
+// Both halves of `requireBoundary` make the TRANSLATOR narrower, and a narrower translator leaves
+// more text standing. That is only acceptable because the surviving text is then seen by the
+// DETECTOR: UNREGISTERED_ID is in CONTENT_RULES as well, `findViolations` re-reads the finished
+// bytes, and the run goes red naming the line. The whole design is "translate what can be removed
+// without changing meaning, REFUSE the rest" -- so every case the translator declines must end in a
+// refusal, never in a publish. This is the assertion that makes the narrowing safe, and it is the
+// one to run against any future attempt to widen or narrow either half.
+test('every shape the narrowed translation declines is REFUSED, never published', () => {
+  const declined = [
+    // A parenthetical whose segments are not comma-delimited, so none of them IS the identifier.
+    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO; see the note).',
+    // Emphasis around the identifier, which is not stripped before the whole-segment comparison.
+    'Refuse a clean sweep (**REFUSAL-MESSAGE-PHI-ECHO**).',
+    // Trailing punctuation inside the parenthetical.
+    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO.)',
+    // The word-to-word cut in running prose, which isBoundedCut forbids.
+    'Close REFUSAL-MESSAGE-PHI-ECHO by dropping the caller input from the message.',
+  ];
+  for (const text of declined) {
+    const { headline } = toHeadline(text);
+    assert.match(headline, /REFUSAL-MESSAGE-PHI-ECHO/, `${JSON.stringify(text)}: the id must SURVIVE translation`);
+    const violations = findViolations(`### What changed\n\n- ${headline}.\n`);
+    assert.ok(
+      violations.some((v) => v.rule === 'internal item identifier with an unregistered prefix'),
+      `${JSON.stringify(text)}: what translation declined must be refused by the gate`,
+    );
+  }
+
+  // And the shapes it DOES reach are removed rather than refused, so an ordinary trailing reference
+  // costs an author nothing.
+  for (const text of [
+    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO).',
+    'Refuse a clean sweep (`REFUSAL-MESSAGE-PHI-ECHO`).',
+    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO, and CI-REQUIRED-CHECKS).',
+    'REFUSAL-MESSAGE-PHI-ECHO: refuse a clean sweep.',
+  ]) {
+    const { headline } = toHeadline(text);
+    assert.doesNotMatch(headline, /REFUSAL-MESSAGE-PHI-ECHO|CI-REQUIRED-CHECKS/, JSON.stringify(text));
+    assert.deepEqual(
+      findViolations(`### What changed\n\n- ${headline}.\n`)
+        .filter((v) => v.rule === 'internal item identifier with an unregistered prefix'),
+      [],
+    );
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // `assert --expect-package` WITHOUT `--expect-version` USED TO CHECK NOTHING AT ALL
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

@@ -1235,6 +1235,19 @@ is left exactly as written. **The registered rules are unaffected**: they know a
 containing one still selects, and `(the NCPDP-SCRIPT NewRx path)` is dropped whole here today and
 was before any of this existed.
 
+#### What the narrowing does not reach, and why that is safe
+
+Both halves make the **translator** narrower, and a narrower translator leaves more text standing.
+That is only acceptable because `UNREGISTERED_ID` is in `CONTENT_RULES` as well, so the **detector**
+re-reads the finished bytes and the run goes red naming the line. The design is one sentence:
+**translate what can be removed without changing meaning, refuse the rest.**
+
+So `(REFUSAL-MESSAGE-PHI-ECHO; see the note)` (not comma-delimited),
+`(**REFUSAL-MESSAGE-PHI-ECHO**)` (emphasis is not stripped before the comparison),
+`(REFUSAL-MESSAGE-PHI-ECHO.)` and the word-to-word cut are all **declined by the translator and then
+refused by the gate.** None of them publishes. That is asserted as a property rather than left
+implied, and it is the test to run against any future attempt to widen or narrow either half.
+
 **Two things this deliberately does not do.** It does not register the new prefixes: that is the
 deny-list it replaces. And it does not fire at changeset time, only at release time, so a refusal
 lands **after** the "Version Packages" PR has merged and consumed the changeset, which is the
