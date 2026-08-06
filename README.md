@@ -1182,11 +1182,16 @@ no member with it:
 A digit is what every segment-field reference has and what no item identifier has, so the two sets
 are disjoint by construction rather than by luck.
 
-**Measured, not argued.** Across the 55 changesets, changelogs and READMEs of all thirteen callers
-the shape matches **108 distinct tokens. 107 are item identifiers.** The one that is not is
-`YYYY-MM-DD`, a date placeholder, occurring four times, all four in README prose and **none in any
-changeset**. Over the 31 changesets pending across the thirteen repos it fires **twice**, and both
-are the defect.
+**Measured, not argued, and the durable claim is the one with no number in it:** across the
+changesets, changelogs and READMEs of all thirteen callers, **the only match that is not an item
+identifier is `YYYY-MM-DD`**, a date placeholder, and it occurs **only in README prose**. Every
+match inside a changeset, which is the text that becomes a release bullet, is an item identifier.
+
+The counts behind it, dated because they move: on 2026-08-06, 57 files, 104 distinct tokens, 103 of
+them item identifiers, and over the 31 changesets pending at that moment the rule changes **exactly
+one** rendered headline. **Do not read a count here as current.** The corpus is thirteen live repos,
+and it moved twice during the measurement: a second changeset was reworded by its own repo
+mid-measurement, taking that figure from two to one.
 
 #### A shape is a guess, so it may take fewer cuts than a name
 
@@ -1211,6 +1216,24 @@ page that says something the author did not write.
 
 **`requireBoundary` costs 0 of the 31 pending changesets.** It is future safety, not a live trade,
 and that is the number to re-measure before anyone loosens it.
+
+#### The same principle has a second half, in the parenthetical
+
+A selected parenthetical is not cut, it is **dropped**: its segments are cleaned and one left with
+nothing survivable disappears whole. So the cut permission above does not reach it, and the first
+version of this rule had a real, silent widening. `Correct the header (a note, dates are YYYY-MM-DD,
+and the tz is UTC)` selected on the false positive, then lost the first segment to the 8-character
+floor, the second to a refused cut and the third to the leading-function-word filter, and published
+`Correct the header` with the author's whole aside gone.
+
+One principle covers both: **a rule that reads a shape may only remove text that is entirely the
+token it matched.** In running prose `isBoundedCut` enforces it; in a parenthetical it means some
+comma-delimited segment must **be** the match, not merely contain one. Backticks are stripped before
+comparing, because `` `ID` `` is no less entirely the identifier than `ID`. So
+`(`PHI-SCAN-WALK-ROOT-SCOPE`, `PHI-SCAN-OBSERVED-NOTHING-IS-GLOBAL`)` is dropped and the aside above
+is left exactly as written. **The registered rules are unaffected**: they know a token's name, so
+containing one still selects, and `(the NCPDP-SCRIPT NewRx path)` is dropped whole here today and
+was before any of this existed.
 
 **Two things this deliberately does not do.** It does not register the new prefixes: that is the
 deny-list it replaces. And it does not fire at changeset time, only at release time, so a refusal

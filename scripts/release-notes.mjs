@@ -228,12 +228,17 @@ const INTERNAL_ID = new RegExp(
 // digit is what every segment-field reference has and what no item id has, so the two sets are
 // disjoint by construction rather than by luck.
 //
-// MEASURED, NOT ARGUED. Across the 55 changesets, changelogs and READMEs of all thirteen callers
-// this shape matches 108 distinct tokens. 107 are item identifiers. The single one that is not is
-// `YYYY-MM-DD`, a date placeholder, and it occurs four times, all four in README prose and NONE in
-// any changeset. Over the 31 changesets pending across the thirteen repos on 2026-08-06 it fires
-// twice, and both are the defect: `ncpdp` and `fhir` each carry an item id that would render into a
-// release bullet.
+// MEASURED, NOT ARGUED. THE DURABLE CLAIM IS THE ONE WITHOUT A NUMBER IN IT: across the changesets,
+// changelogs and READMEs of all thirteen callers, the only match that is not an item identifier is
+// `YYYY-MM-DD`, a date placeholder, and it occurs ONLY in README prose. Every single match inside a
+// changeset -- the text that actually becomes a release bullet -- is an item identifier.
+//
+// The counts behind that, dated because they move: on 2026-08-06, 57 files, 104 distinct tokens,
+// 103 of them item identifiers; and over the 31 changesets pending at that moment the rule changes
+// exactly ONE rendered headline, `fhir`'s, by dropping the trailing parenthetical that would have
+// published two item ids. Do not read a count here as current. The corpus is thirteen live repos and
+// it moved twice while this was being measured: a second changeset was reworded by its own repo
+// mid-measurement, taking the figure from two to one.
 //
 // AND BECAUSE IT IS A GUESS RATHER THAN A NAME, IT MAY TAKE FEWER CUTS THAN THE RULE ABOVE. That
 // asymmetry is the whole safety argument, and it is enforced by `requireBoundary` where this rule is
@@ -750,6 +755,47 @@ function stripInternal(segment) {
 }
 
 /**
+ * Whether `inner`, the contents of one parenthetical, holds something the translator should act on.
+ *
+ * DERIVED FROM TRANSLATION_RULES, never restated beside them. The hand-restated list this replaces
+ * was already one rule out of date the moment a fourth rule was added, and it failed in the worst
+ * direction: a parenthetical holding ONLY the new rule's match was returned "exactly as the author
+ * wrote it" and published.
+ *
+ * `requireBoundary` APPLIES HERE TOO, AND THIS IS ITS SECOND HALF. The principle is one sentence: a
+ * rule that reads a SHAPE may only ever remove text that is ENTIRELY the token it matched. In
+ * running prose isBoundedCut enforces that. In a parenthetical the enforcement has to be different,
+ * because a selected parenthetical is not cut, it is DROPPED: its segments are cleaned and a
+ * parenthetical left with nothing survivable disappears whole. So for a shape rule, merely
+ * CONTAINING a match is not enough to select one. Some comma-delimited segment must BE the match.
+ *
+ * Without that, the widening is real and silent, and it is the exact failure the shape rule's
+ * measurement warns about. `Correct the header (a note, dates are YYYY-MM-DD, and the tz is UTC)`
+ * would select on `YYYY-MM-DD`, then lose the first segment to the 8-character floor, the second to
+ * a refused cut and the third to the leading-function-word filter, and publish `Correct the header`
+ * with the author's whole aside gone. Requiring a whole segment leaves it exactly as written.
+ *
+ * The registered rules are unchanged: they know a token's NAME, so containing one still selects, and
+ * `(the NCPDP-SCRIPT NewRx path)` is dropped whole here today and was before this rule existed.
+ */
+function selectsParenthetical(inner) {
+  return TRANSLATION_RULES.some((rule) => {
+    if (!rule.pattern.test(inner)) return false;
+    if (!rule.requireBoundary) return true;
+    return String(inner)
+      .split(',')
+      .some((segment) => {
+        // Backticks are stripped before comparing because a code span is how these are usually
+        // written, and `` `ID` `` is no less entirely the identifier than `ID` is.
+        const bare = segment.trim().replace(/^`+|`+$/g, '').trim();
+        if (bare === '') return false;
+        const found = new RegExp(rule.pattern.source, rule.pattern.flags).exec(bare);
+        return found !== null && found[0] === bare;
+      });
+  });
+}
+
+/**
  * Remove internal identifiers, phase language, and ADR references.
  *
  * Parentheticals are handled whole. A parenthetical that carried an identifier usually carried
@@ -758,11 +804,7 @@ function stripInternal(segment) {
  */
 export function sanitizeInternalDetailed(text) {
   let t = String(text).replace(/\s*\(([^()]*)\)/g, (whole, inner) => {
-    // Derived from TRANSLATION_RULES rather than restating the three patterns by hand. The restated
-    // list was already one rule out of date the moment a fourth was added, and the failure was
-    // silent in the worst direction: a parenthetical holding ONLY the new rule's match would be left
-    // exactly as the author wrote it and publish.
-    if (!TRANSLATION_RULES.some((rule) => rule.pattern.test(inner))) {
+    if (!selectsParenthetical(inner)) {
       return whole; // no internal reference: leave it exactly as the author wrote it
     }
     const kept = inner

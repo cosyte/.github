@@ -2016,6 +2016,42 @@ test('the parenthetical predicate is derived from the translation rules, not res
   assert.equal(sanitizeInternal(kept), kept);
 });
 
+// THE SECOND HALF OF `requireBoundary`, AND THE WIDENING IT CLOSES WAS REAL AND SILENT.
+//
+// A selected parenthetical is not CUT, it is DROPPED: its segments are cleaned and one left with
+// nothing survivable disappears whole. So isBoundedCut does not reach it, and the first version of
+// this rule let a shape false positive delete an author's entire aside. One principle covers both
+// halves: a rule that reads a shape may only remove text that IS the token it matched.
+test('a shape rule may not drop a parenthetical it merely appears INSIDE', () => {
+  // The measured false positive, buried in running prose inside a parenthetical. Every one of these
+  // published its aside verbatim before this rule existed and must still do so.
+  for (const text of [
+    'Correct the header (dates are formatted YYYY-MM-DD there)',
+    'Correct the header (a note, dates are YYYY-MM-DD, and the tz is UTC)',
+    'Correct the header (YYYY-MM-DD is the wire format, not the display one)',
+  ]) {
+    assert.equal(sanitizeInternal(text), text, `${JSON.stringify(text)} must be left as written`);
+  }
+
+  // And the case the rule exists for is still dropped: a segment that IS the identifier, with or
+  // without the code span it is usually written in.
+  assert.equal(sanitizeInternal('Correct the header (YYYY-MM-DD)'), 'Correct the header');
+  assert.equal(
+    sanitizeInternal('Refuse a clean sweep (`PHI-SCAN-WALK-ROOT-SCOPE`, `PHI-SCAN-OBSERVED-NOTHING-IS-GLOBAL`)'),
+    'Refuse a clean sweep',
+  );
+  assert.equal(
+    sanitizeInternal('Refuse a clean sweep (PHI-SCAN-WALK-ROOT-SCOPE)'),
+    'Refuse a clean sweep',
+  );
+
+  // THE REGISTERED RULES ARE UNAFFECTED, and this is what stops the narrowing from becoming a
+  // regression. They know a token's NAME, so CONTAINING one still selects the parenthetical. Both of
+  // these are dropped whole on the parent commit too.
+  assert.equal(sanitizeInternal('Correct the header (the X12-75 route that vendors hit)'), 'Correct the header');
+  assert.equal(sanitizeInternal('Correct the header (of the thirteenth slice)'), 'Correct the header');
+});
+
 // END TO END, THROUGH THE REAL `prepare`, ON A REAL VERSION COMMIT. The unit assertions above prove
 // the rule; this proves the rule is reached by the code path that decides whether npm is touched.
 test('a consumed changeset carrying an unregistered item id stops the release before npm', () => {
