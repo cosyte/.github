@@ -233,12 +233,28 @@ const INTERNAL_ID = new RegExp(
 // `YYYY-MM-DD`, a date placeholder, and it occurs ONLY in README prose. Every single match inside a
 // changeset -- the text that actually becomes a release bullet -- is an item identifier.
 //
-// The counts behind that, dated because they move: on 2026-08-06, 57 files, 104 distinct tokens,
-// 103 of them item identifiers; and over the 31 changesets pending at that moment the rule changes
-// exactly ONE rendered headline, `fhir`'s, by dropping the trailing parenthetical that would have
-// published two item ids. Do not read a count here as current. The corpus is thirteen live repos and
-// it moved twice while this was being measured: a second changeset was reworded by its own repo
-// mid-measurement, taking the figure from two to one.
+// AND THE CORPUS THAT SETTLES IT IS EVERY CHANGESET THESE REPOS HAVE EVER HAD, NOT THE ONES PENDING
+// TODAY. The pending set is ~30 files and moves hourly; the historical set is every blob ever
+// committed under `.changeset/*.md` across all thirteen repos, recovered from git. On 2026-08-06
+// that is 634 distinct blobs, and against them this rule:
+//
+//   changes 13 rendered headlines, every one of them the defect (a leading `ITEM-ID:` stripped or a
+//     trailing `(ITEM-ID)` parenthetical dropped);
+//   NEWLY REFUSES 2, which are two blob revisions of ONE `ncpdp` changeset, since reworded by that
+//     repo itself;
+//   and `requireBoundary` costs 0 of 634.
+//
+// That last figure is the one to re-derive before anyone loosens the boundary rule. It is future
+// safety with no measured present cost, over the whole history rather than over a snapshot.
+//
+// THE LIMIT THE HISTORICAL SWEEP EXPOSED, STATED RATHER THAN FIXED. collectHeadlines checks
+// `refused` BEFORE `isConsumerFacing`, so an identifier that cannot be cut refuses the run even in a
+// headline that would have been DROPPED as internal-only and could therefore never have published.
+// A registered identifier in the same position is word-to-word cuttable and slips through, so the
+// two rules are not symmetric here. Measured over the 634: ZERO instances, which is why this is a
+// disclosure and not a change. Do not "fix" it by reordering those checks -- the same ordering
+// governs the over-cap and dangling-tail refusals, and rearranging it is a behaviour change in the
+// file where a mistake stops thirteen repos publishing.
 //
 // AND BECAUSE IT IS A GUESS RATHER THAN A NAME, IT MAY TAKE FEWER CUTS THAN THE RULE ABOVE. That
 // asymmetry is the whole safety argument, and it is enforced by `requireBoundary` where this rule is

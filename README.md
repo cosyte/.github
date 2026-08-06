@@ -1187,11 +1187,30 @@ changesets, changelogs and READMEs of all thirteen callers, **the only match tha
 identifier is `YYYY-MM-DD`**, a date placeholder, and it occurs **only in README prose**. Every
 match inside a changeset, which is the text that becomes a release bullet, is an item identifier.
 
-The counts behind it, dated because they move: on 2026-08-06, 57 files, 104 distinct tokens, 103 of
-them item identifiers, and over the 31 changesets pending at that moment the rule changes **exactly
-one** rendered headline. **Do not read a count here as current.** The corpus is thirteen live repos,
-and it moved twice during the measurement: a second changeset was reworded by its own repo
-mid-measurement, taking that figure from two to one.
+**And the corpus that settles it is every changeset these repos have ever had, not the ones pending
+today.** The pending set is about thirty files and moves hourly. The historical set is **every blob
+ever committed under `.changeset/*.md` across all thirteen repos**, recovered from git: 634 distinct
+blobs on 2026-08-06. Against those, the rule
+
+- **changes 13 rendered headlines, and every one of them is the defect** (a leading `ITEM-ID:`
+  stripped, or a trailing `(ITEM-ID)` parenthetical dropped);
+- **newly refuses 2**, which are two blob revisions of **one** `ncpdp` changeset, since reworded by
+  that repo itself;
+- and **`requireBoundary` costs 0 of 634.**
+
+That last figure is the one to re-derive before anyone loosens the boundary rule: future safety with
+no measured present cost, over the whole history rather than over a snapshot.
+
+#### The limit the historical sweep exposed, stated rather than fixed
+
+`collectHeadlines` checks `refused` **before** `isConsumerFacing`. So an identifier that cannot be
+cut refuses the run even in a headline that would have been **dropped** as internal-only, and could
+therefore never have published. A registered identifier in the same position is word-to-word
+cuttable and slips through, so the two rules are **not symmetric** there.
+
+**Zero instances across the 634**, which is why this is a disclosure and not a change. Do not "fix"
+it by reordering those checks: the same ordering governs the over-cap and dangling-tail refusals, and
+rearranging it is a behaviour change in the file where a mistake stops thirteen repos publishing.
 
 #### A shape is a guess, so it may take fewer cuts than a name
 
