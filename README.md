@@ -1158,29 +1158,184 @@ there is no command that emits a replacement body. `sweep` exits 1 when anything
 it a check you can run; **nothing in this repo's workflows runs it**, on purpose, because a red build
 over a permanent published page is a nag, not a gate.
 
-### CHANGELOG promotion (specified, not implemented)
+### An item identifier whose prefix nobody registered
 
-Every caller's `CHANGELOG.md` currently has zero versioned sections: all content lives forever under
-`## [Unreleased]`, so nothing has ever been attributed to a version. Fixing that means editing the
-8 caller repos, so it is deliberately out of scope here, and **the release body does not depend on
-it**: the notes come from the changesets, which are what actually drove the release.
+`PROJECT_PREFIXES` is a list of names, and the rule above it strips an identifier only when its first
+word is on that list. That works for `X12-75` and `MLLP-10`, which are named after a repo. It does
+nothing for an item named after its **defect**: `REFUSAL-MESSAGE-PHI-ECHO`,
+`CHANGELOG-PREAMBLE-FUTURE-TENSE`, `PHI-SCAN-RENAME-BLIND-AT-PRECOMMIT`. Every cross-repo item of
+that kind mints a first word nobody has ever seen before, so registering them one at a time is a
+deny-list, and a deny-list buys exactly one evasion per entry.
 
-For each of `hl7`, `mllp`, `dicom`, `x12`, `ccda`, `ncpdp`, `astm`, `fhir`, extend the `version`
-script in `package.json`, which today reads:
+**Measured on `@cosyte/x12`, 2026-08-06: `(REFUSAL-MESSAGE-PHI-ECHO)` reached the published release
+body, while `X12-*` identifiers in adjacent bullets were stripped correctly, and the gate passed it
+by design.**
 
-```
-"version": "changeset version && node scripts/sync-version.mjs && prettier --write package.json src/index.ts"
-```
+`UNREGISTERED_ID` reads the shape instead:
 
-Insert a promotion step after `changeset version` (which has already written the new version into
-`package.json`) and before `prettier`. It should rename `## [Unreleased]` to
-`## [<new version>] - <YYYY-MM-DD>`, insert a fresh empty `## [Unreleased]` above it, and leave the
-file untouched when `[Unreleased]` holds no entries. Because it runs inside `changeset version`, the
-result lands in the "Version Packages" PR, where it is reviewable and shows what the release will
-contain before anyone approves the publish. That is the point: nothing currently surfaces what a
-release will contain.
+> three or more hyphen-joined runs, every run two or more **letters**, no digit anywhere.
 
-Doing it in the release job instead would mean pushing to `main` from CI after the publish, which is
-strictly worse: unreviewable, and it races the branch it is pushing to.
+That is not the `WORD-N` shape the header of `release-notes.mjs` rules out. `WORD-N` is ruled out
+because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` **are** that shape; a digit is what every
+segment-field reference has and what no item identifier has, so the two sets are disjoint.
+
+#### It is a DETECTOR ONLY, and that is the whole design
+
+It is in `CONTENT_RULES` and deliberately **not** in `TRANSLATION_RULES`, so it never cuts. The
+`(REFUSAL-MESSAGE-PHI-ECHO)` case is now a **hard red at `prepare`**, before npm, with the sentence
+quoted; the author rewrites the changeset. There is no position from which a false positive can edit
+anything.
+
+**This was the second thing tried, and the first one shipping would have been a serious defect.** A
+translating version was built. It cut only where a boundary rule said the sentence survived (head,
+tail, whole clause between separators, whole parenthetical) and refused the word-to-word cut. It
+measured **clean over every changeset these repos have ever had**: 634 blobs, 64 distinct shape
+matches, all 64 item identifiers, and the boundary restriction costing zero. It was refuted anyway,
+by constructed input, because **the permitted cuts are exactly where a false positive does its
+damage.** Run end to end through the real `prepare` on a real version commit, each of these published
+with **exit 0** and no violation reported:
+
+| changeset opening sentence | what the translating version published |
+|---|---|
+| `Map OBX to observation ONE-TO-ONE.` | `Map OBX to observation.` |
+| `The 837 writer is now ALL-OR-NOTHING.` | `The 837 writer is now.` |
+| `The reader is now correct END-TO-END.` | `The reader is now correct.` |
+| `Round-trip the dataset BYTE-FOR-BYTE.` | `Round-trip the dataset.` |
+| `YYYY-MM-DD is now the only accepted date form.` | `Is now the only accepted date form.` |
+| `Emit the birthDate (YYYY-MM-DD).` | `Emit the birthDate.` |
+| `Fix the header, YYYY-MM-DD, and the timezone handling.` | `Fix the header, and the timezone handling.` |
+
+The first is the sharpest: **the cardinality was the claim**, and the published bullet then asserts
+something else as fact on a permanent page. None of these is exotic. `YYYY-MM-DD` is the FHIR `date`
+primitive's own form, and ALL-CAPS emphasis is how this org's own markdown is written. **The corpus
+contained none of them**, which is the entire lesson, and the same one this repo learned when a
+general tail-cut rule was built, measured clean, and withdrawn anyway: *what a rule can reach is not
+bounded by what the corpus happens to contain.*
+
+**So the rule may read a shape but may not edit prose on one.** A **name** may be translated, because
+the gate knows the token is internal bookkeeping. A **shape** may only be refused, because the gate
+merely suspects it. Of the two failure modes only one is recoverable: a refusal costs one changeset
+edit before anything is published; a wrong cut is a permanent page saying something the author did
+not write, in well-formed prose no gate can see.
+
+#### What detect-only costs
+
+Measured over the same 634 blobs:
+
+| | |
+|---|---|
+| headlines it rewrites | **0**, and structurally so. It is not in `TRANSLATION_RULES` and cannot rewrite one |
+| blobs it newly refuses | **8 of 634**, which are **4 distinct releases** (`mllp`, `ncpdp`, `fhir`, `cli`): a changeset is re-blobbed each time it is edited, so blobs are not the unit anyone pays in |
+| of the changesets pending today | **1** (`fhir`), which carries two identifiers in a trailing parenthetical and would put both on a public page |
+
+**And a refusal is not one price.** While the changeset is still **pending** it is one reworded
+sentence. At **release** time it is not: `prepare` runs on the version commit, so the "Version
+Packages" PR has already merged and consumed the changeset, and the price is the `RECOVERY` procedure
+(recover the text from `<version-commit>^`, revert the version commit, reword, let Changesets open a
+fresh PR). That is the same ordering trap the release-bullet cap has, it has been paid for real, and
+it is why the pending-changeset lint filed below is the thing that actually closes this. The refusal
+message now carries `RECOVERY`, which it did not when this rule first shipped: every other content
+rule had a translation counterpart that refused earlier, and this is the first that does not.
+
+A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect them
+to name the sentence. **Do not re-propose translating this** without an argument that answers the
+seven inputs above by name.
+
+**`PRE-EXISTING`, recorded here because this change makes `RECOVERY` print more often and nobody
+should read it as new.** `RECOVERY`'s own text opens *"Nothing has been published"*, and that is a
+claim about the **`v<version>` tag proxy**, not about the registry. On a version that published but
+was never tagged, both that clause and the instruction to revert the version commit would be wrong
+under ADR 0001, which forbids moving a published version backwards. It is on `main` at
+`scripts/release-notes.mjs`'s `RECOVERY` constant and was already printed unconditionally from two
+other call sites before this change. **Not fixed here**: it is a claim about the tag-versus-registry
+proxy that the `already-released` verdict also rests on, and it wants its own item.
+
+**A pre-existing collision the measurement surfaced and does not fix:** `HL7-V2`, `X12-005010`,
+`NCPDP-SCRIPT` and `DICOM-RT` are already eaten by the **registered** rule, because each opens with a
+registered prefix, and `NCPDP-SCRIPT` is a real standard's real name. `PRE-EXISTING`, disclosed in a
+test rather than folded into the disjointness claim.
+
+**A silent drift closed alongside it.** `sanitizeInternalDetailed`'s parenthetical branch restated
+three of the translation rules by hand, so it was structurally one edit from being wrong, silently
+and in the worst direction. It is now derived from `TRANSLATION_RULES`.
+
+#### Not closed here, and filed rather than half-built
+
+A refusal lands **late**: `prepare` runs on the version commit, so it arrives after the "Version
+Packages" PR merged and consumed the changeset, which is the expensive recovery under RECOVERY.
+Closing that means a lint over the pending `.changeset/*.md` running in `ci.yml`, on the pull request
+that introduces the changeset, where the fix is free. That is a new job across thirteen repos and
+wants its own census and its own commit; it would also subsume the standing "assert every changeset
+against the cap before merging a Version PR" procedure.
+
+
+### The changelog must carry a section for the version being released
+
+`scripts/changelog-check.mjs`, run by `release.yml` on the publish arm, **before**
+`changesets/action`.
+
+**Changesets swallows a failed changelog write with `console.warn`.** `changeset version` does three
+things: bumps `package.json`, consumes the changesets, and writes the release section into
+`CHANGELOG.md`. Only the third is allowed to fail quietly. When the changelog generator throws (a
+declared Prettier config that cannot be resolved is the case that was reproduced) Changesets catches
+it, warns, and completes successfully. **The version is bumped, the changesets are gone, and no
+changelog is written at all.**
+
+The Version PR then looks ordinary and merges. The publish runs. `@cosyte/<pkg>@<version>` reaches
+the registry with a `CHANGELOG.md` inside its own tarball that does not mention `<version>`. Nothing
+above catches it: `format:check` reads valid markdown, and `release-notes.mjs` composes the release
+body from `.changeset/*.md` and **never opens `CHANGELOG.md`**. The run reports `success`. A
+published version is permanent (ADR 0001).
+
+**This is the only step in the pipeline that opens `CHANGELOG.md`**, and it asserts the one fact
+none of the others assert.
+
+**It runs before `changesets/action`**, which is what makes it a gate rather than a report: npm is
+untouched, so the cost of being wrong is a re-run. It takes the version from the notes gate rather
+than re-deriving it, so the two cannot disagree.
+
+#### It decides from the caller's own config, never from a list of repo names
+
+| `.changeset/config.json` | verdict | what it means |
+|---|---|---|
+| `"changelog": false` | `not-applicable`, exit 0 | the generator is off, `CHANGELOG.md` is hand-maintained, `changeset version` writes no version section **by design** |
+| anything else, key absent included | `pass` / `missing-section` | the generator is on, so `## <version>` must be there |
+| unreadable or unparseable | `unreadable-config`, exit 1 | fail closed |
+
+Repos move from off to on **one at a time**, so a list of names kept here would be wrong the day
+after it shipped, and wrong in the dangerous direction: a repo that has just turned the generator on
+is exactly the repo this gate should now be covering. An **absent** `changelog` key reads as **on**,
+because that is Changesets' own default; reading it as off would exempt precisely the repo that
+configured nothing.
+
+`not-applicable` is **not a claim that the changelog is correct.** It is a claim that this gate does
+not govern it, and it says so where it prints.
+
+#### The heading is compared as a whole line, at column 0
+
+Both halves are load-bearing and both come from a measured trap.
+
+**Whole**, because `## 0.0.1` is a **substring** of `## 0.0.10`. An `includes` or `indexOf` over the
+heading passes on a repo's first release and reds on its tenth, and four callers are already at or
+past `0.0.10`.
+
+**At column 0**, because a changeset summary can quote a version heading, and `getReleaseLine`
+indents every continuation line of a summary by two spaces. So nothing inside a release section
+starts at column 0, which makes column 0 a sound test for "the generator wrote this" and makes a
+trimmed comparison an unsound one. A gate satisfied by an author quoting the string it looks for is
+not a gate.
+
+#### Blast radius, measured 2026-08-06
+
+**Zero of thirteen callers go red.** Seven have the generator on (`hl7`, `mllp`, `ccda`, `ncpdp`,
+`transform`, `deid`, `synth`) and six off. Twelve are already tagged at their current version, so
+`is-release` is `false` and the step is skipped entirely; the thirteenth, `fhir`, is `is-release ==
+true` and has the generator **off**, so it reports `not-applicable` and exits 0. **That is a dated
+measurement, not a standing guarantee**: it is re-derived by running the script against each
+caller's tree at its `package.json` version.
+
+The residual worth naming: for a repo that has just turned the generator on, **the first release
+after the flip is the first one this gate governs**, and its version section is written by the very
+`changeset version` call this gate exists to check. That is the intended coverage, not a gap.
 
 See the meta-repo `documentation/conventions.md` for the engineering standard these enforce.

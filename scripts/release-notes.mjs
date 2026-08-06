@@ -40,12 +40,22 @@
 // one. Same reasoning: a truncation that produces well-formed prose is invisible to any gate.
 //
 // WHAT THE GATE DOES AND DOES NOT COVER, stated plainly because the distinction matters. The gate
-// enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so it cannot catch
-// an identifier from a programme prefix nobody has added to that list yet, and no rule could: the
-// only way to spot one from its shape alone is a `WORD-N` pattern, which is exactly what destroys
-// `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`. What the gate DOES buy is that a rule can
-// never be quietly bypassed downstream: it re-reads the finished bytes, so a change to the renderer,
-// the workflow, or the source of the text cannot ship banned content without tripping it.
+// enforces the KNOWN banned set. It shares PROJECT_PREFIXES with the translator, so a programme
+// prefix nobody has added to that list is invisible to BOTH of them. What the gate DOES buy is that
+// a rule can never be quietly bypassed downstream: it re-reads the finished bytes, so a change to
+// the renderer, the workflow, or the source of the text cannot ship banned content without tripping
+// it.
+//
+// THIS PARAGRAPH USED TO END "and no rule could", AND THAT WAS FALSIFIED BY A LEAK ON A PUBLIC PAGE.
+// It reasoned that the only shape-based reading of an identifier is `WORD-N`, which is exactly what
+// destroys `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10`. That much is still true and is still
+// why this file keys on names. But it does not follow that NO shape can be read, and the class it
+// missed is the one that leaked: an item named after its defect rather than after a repo
+// (`REFUSAL-MESSAGE-PHI-ECHO`) is three or more hyphen-joined runs of LETTERS with no digit
+// anywhere, which is disjoint from every segment-field reference above. See UNREGISTERED_ID for the
+// rule, its measurement, and the narrower cut permission it is held to because it reads a shape
+// rather than a name. The maintenance instruction below still stands and is still the better path:
+// a registered prefix is translated, an unregistered one is at best refused.
 //
 // The gate reads the residue of a bad cut, not the grammar: doubled or orphaned clause punctuation,
 // a parenthetical emptied of its contents, a one-letter stump at the end of an entry, an entry
@@ -200,6 +210,82 @@ const INTERNAL_ID = new RegExp(
     String.raw`|\bP\d+ (?:safety|documentation)\b`,
 );
 
+// AN ITEM IDENTIFIER WHOSE PREFIX NOBODY REGISTERED ABOVE. MEASURED LEAKING ONTO A PUBLIC PAGE.
+//
+// @cosyte/x12 published `(REFUSAL-MESSAGE-PHI-ECHO)` into its release body while `X12-*` identifiers
+// in adjacent bullets were stripped correctly, and the gate passed it: the rule above keys on a
+// REGISTERED prefix, `REFUSAL` is not one, and no cross-repo item ever will be. The item ids that
+// name a defect rather than a repo -- `REFUSAL-MESSAGE-PHI-ECHO`,
+// `PHI-SCAN-RENAME-BLIND-AT-PRECOMMIT`, `CHANGELOG-PREAMBLE-FUTURE-TENSE` -- mint a fresh first word
+// every time one is filed. Registering them one at a time is a deny-list, and a deny-list buys
+// exactly one evasion per entry.
+//
+// THIS IS A DETECTOR ONLY. IT IS IN CONTENT_RULES AND DELIBERATELY NOT IN TRANSLATION_RULES, SO IT
+// NEVER CUTS. That is the whole design, it is the second thing tried rather than the first, and the
+// first one shipping would have been a serious defect. Read the next paragraph before proposing
+// that it translate.
+//
+// A TRANSLATING VERSION WAS BUILT, MEASURED CLEAN OVER EVERY CHANGESET THESE REPOS HAVE EVER HAD,
+// AND REFUTED ANYWAY BY CONSTRUCTED INPUT. It cut only where a boundary rule said the sentence
+// survived -- head, tail, whole clause between separators, whole parenthetical -- and refused the
+// word-to-word cut. That sounded safe and was not, because those permitted cuts are exactly where a
+// FALSE POSITIVE does its damage. Measured end to end through the real `prepare`, on a real version
+// commit, each of these published with exit 0 and `findViolations` returning nothing:
+//
+//   "Map OBX to observation ONE-TO-ONE."          published "Map OBX to observation."
+//   "The 837 writer is now ALL-OR-NOTHING."       published "The 837 writer is now."
+//   "The reader is now correct END-TO-END."       published "The reader is now correct."
+//   "Round-trip the dataset BYTE-FOR-BYTE."       published "Round-trip the dataset."
+//   "Emit the birthDate (YYYY-MM-DD)."            published "Emit the birthDate."
+//
+// The first one is the sharpest: the cardinality WAS the sentence, and the published bullet then
+// asserts something the author never wrote. All five publish verbatim without this rule. None of
+// them is exotic -- `YYYY-MM-DD` is the FHIR `date` primitive's own form, and `END-TO-END`,
+// `OUT-OF-SCOPE` and `ALL-OR-NOTHING` are ordinary ALL-CAPS emphasis that this org's own markdown
+// uses today. The corpus contained none of them, which is precisely the trap: what a rule CAN reach
+// is not bounded by what the corpus happens to contain. A general rule was built, measured clean and
+// withdrawn once before in this same file for the same reason.
+//
+// SO THE RULE MAY READ A SHAPE BUT MAY NOT EDIT PROSE ON ONE. A name may be translated because the
+// gate KNOWS the token is internal bookkeeping. A shape can only be REFUSED, because the gate merely
+// suspects it, and of the two failure modes only one is recoverable: a refusal costs one changeset
+// edit before anything is published, while a wrong cut is a permanent page saying something the
+// author did not write, in well-formed prose no gate can see.
+//
+// THE SHAPE ITSELF, and why it is not the `WORD-N` shape the header of this file rules out. That
+// paragraph is precise and this does not contradict it: `WORD-N` is ruled out because `SCH-11`,
+// `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` ARE that shape. This one is THREE OR MORE HYPHEN-JOINED
+// RUNS, EVERY RUN TWO OR MORE LETTERS, NO DIGIT ANYWHERE. A digit is what every segment-field
+// reference has and what no item id has, so the two sets are disjoint by construction. Note this
+// buys much less than it looks like it does now that the rule only detects: a false positive costs
+// a refusal, not a corrupted code.
+//
+// WHAT DETECT-ONLY COSTS, MEASURED OVER EVERY CHANGESET BLOB EVER COMMITTED UNDER `.changeset/*.md`
+// ACROSS ALL THIRTEEN REPOS -- 634 distinct blobs, recovered from git, on 2026-08-06:
+//
+//   headlines it rewrites .............. 0, and 0 is structural rather than measured. It cannot
+//                                        rewrite one; it is not in TRANSLATION_RULES.
+//   blobs it newly refuses ............. 8 of 634. Those 8 are BLOBS, which is the unit git stores
+//                                        and not the unit anyone pays in: a changeset is re-blobbed
+//                                        every time it is edited. They are 4 distinct releases
+//                                        (`mllp`, `ncpdp`, `fhir`, `cli`).
+//   of the changesets pending today .... 1 (`fhir`), which carries two item ids in a trailing
+//                                        parenthetical and would put both on a public page.
+//
+// AND BE PRECISE ABOUT WHAT A REFUSAL COSTS, BECAUSE IT IS NOT ONE PRICE. While the changeset is
+// still PENDING it is one reworded sentence and nothing else. At RELEASE time it is not: `prepare`
+// runs on the version commit, so the "Version Packages" PR has already merged and consumed the
+// changeset, and the price is the RECOVERY procedure at the top of this file -- recover the text
+// from `<version-commit>^`, revert the version commit, reword, let Changesets open a fresh PR. That
+// is the same ordering trap the release-bullet cap has, it has been paid for real, and it is why the
+// pending-changeset lint filed in the README is the thing that actually closes this.
+//
+// A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect
+// them to say so clearly. That is the trade taken: a refusal a human resolves, over a rewrite nobody
+// can see. Do not re-propose translating this without an argument that answers the five inputs above
+// by name.
+const UNREGISTERED_ID = /\b[A-Z]{2,}(?:-[A-Z]{2,}){2,}\b/;
+
 const ORDINAL =
   String.raw`(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|` +
   String.raw`thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|` +
@@ -300,6 +386,7 @@ const MANGLED_PROSE = [
 /** Every banned-content rule, applied to a finished body. Order is the order they are reported. */
 const CONTENT_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
+  { name: 'internal item identifier with an unregistered prefix', pattern: UNREGISTERED_ID },
   { name: 'phase or slice language', pattern: PHASE_TALK },
   { name: 'ADR reference', pattern: ADR_REFERENCE },
   { name: 'internal jargon ("slice")', pattern: OUR_JARGON },
@@ -571,12 +658,15 @@ function separatorAfter(whole, end, edgeIsSeparator) {
   return CLAUSE_SEPARATOR.test(after[0]) && /^.(\s|$)/.test(after);
 }
 
+
 /**
  * The rules the translator removes, in the order it removes them.
  *
  * Exported so that a tool asking "was this text removed on purpose?" asks the translator rather
  * than restating its rules, which would drift the moment a new programme prefix is added above.
  */
+// UNREGISTERED_ID IS DELIBERATELY NOT IN THIS LIST. It is a DETECTOR ONLY, in CONTENT_RULES. See
+// the comment on UNREGISTERED_ID for the measurement that put it there and took it out of here.
 export const TRANSLATION_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
   { name: 'phase or slice language', pattern: PHASE_TALK },
@@ -663,6 +753,18 @@ function stripInternal(segment) {
 }
 
 /**
+ * Whether `inner`, the contents of one parenthetical, holds something the translator should act on.
+ *
+ * DERIVED FROM TRANSLATION_RULES, never restated beside them. The hand-restated list this replaces
+ * named three patterns, so it was structurally one edit away from being wrong, and it would have
+ * been wrong SILENTLY and in the worst direction: a parenthetical holding only an unlisted rule's
+ * match would be returned "exactly as the author wrote it" and published.
+ */
+function selectsParenthetical(inner) {
+  return TRANSLATION_RULES.some((rule) => rule.pattern.test(inner));
+}
+
+/**
  * Remove internal identifiers, phase language, and ADR references.
  *
  * Parentheticals are handled whole. A parenthetical that carried an identifier usually carried
@@ -671,7 +773,7 @@ function stripInternal(segment) {
  */
 export function sanitizeInternalDetailed(text) {
   let t = String(text).replace(/\s*\(([^()]*)\)/g, (whole, inner) => {
-    if (!INTERNAL_ID.test(inner) && !PHASE_TALK.test(inner) && !ADR_REFERENCE.test(inner)) {
+    if (!selectsParenthetical(inner)) {
       return whole; // no internal reference: leave it exactly as the author wrote it
     }
     const kept = inner
@@ -1131,6 +1233,22 @@ export function assertPublishableNotes(body, { expectVersion, expectPackage } = 
 
   // The notes are derived from git; the version that reached npm is reported by Changesets. If the
   // two disagree, the body describes a different release than the one being tagged.
+  //
+  // THE PACKAGE IS CHECKED ON ITS OWN, AND THAT IS A FIX RATHER THAN A TIDY-UP. This used to be a
+  // single test for the composite string `npm install <package>@<version>`, which made the whole
+  // package half CONDITIONAL ON `expectVersion` BEING SUPPLIED: `assert --file <other repo's
+  // notes> --expect-package @cosyte/x12` with no `--expect-version` fell through both arms and
+  // exited 0, having checked nothing about the package at all. The two callers in `release.yml`
+  // happen to pass both, so the hole was never reachable there -- but `assert` is the entry point
+  // documented at the top of this file as knowing nothing about how its file was produced, and a
+  // cross-repo safety check that is satisfied by omitting one of its own arguments is not one.
+  //
+  // It is also the only arm that reads a body carrying no install line. The composite test cannot
+  // tell "these are a different package's notes" from "these notes have no `### Install` block",
+  // and reports the first when it means the second.
+  if (expectPackage && !text.includes(expectPackage)) {
+    problems.push(`the release body never names ${expectPackage}, so it is not this package's notes`);
+  }
   if (expectVersion && expectPackage) {
     const stamp = `npm install ${expectPackage}@${expectVersion}`;
     if (!text.includes(stamp)) {
@@ -1656,6 +1774,13 @@ function cmdPrepare(options) {
       [
         `Derived release notes for ${packageName}@${release.version} are not fit to publish:`,
         ...problems.map((p) => `  - ${p}`),
+        // RECOVERY belongs here and not only on the two collectHeadlines refusals. Every problem in
+        // this list is found on the VERSION COMMIT, by which point the "Version Packages" PR has
+        // merged and consumed the changeset, so an operator needs the revert procedure whichever
+        // rule spoke. It used to be attached rule by rule, which was fine while every content rule
+        // had a translation counterpart that refused earlier -- and stopped being fine the moment
+        // one did not.
+        RECOVERY,
       ].join('\n'),
     );
   }

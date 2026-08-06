@@ -375,6 +375,38 @@ jobs:
           node .cosyte-release-tooling/scripts/release-notes.mjs assert \
             --file "$RUNNER_TEMP/release-notes.md" \
             --expect-version "$NOTES_VERSION" --expect-package "$PACKAGE_NAME"
+      # THE ONLY STEP IN THIS PIPELINE THAT OPENS `CHANGELOG.md`, AND IT IS HERE BECAUSE CHANGESETS
+      # SWALLOWS A FAILED CHANGELOG WRITE WITH `console.warn`.
+      #
+      # `changeset version` bumps `package.json`, consumes the changesets, and writes the release
+      # section into `CHANGELOG.md`. Only the third of those may fail quietly: when the changelog
+      # generator throws -- a declared Prettier config that cannot be resolved is the case that was
+      # reproduced -- Changesets catches it, warns, and completes. The version is bumped, the
+      # changesets are gone, and NO changelog is written at all. The Version PR then looks ordinary,
+      # merges, and this workflow publishes a tarball whose own `CHANGELOG.md` does not mention the
+      # version inside it. Nothing above notices: `format:check` reads valid markdown, and
+      # `release-notes.mjs` composes the release body from `.changeset/*.md` and never opens the
+      # changelog. The run reports success. A published version is permanent (ADR 0001).
+      #
+      # IT RUNS BEFORE `changesets/action`, which is what makes it a gate rather than a report: at
+      # this point npm is untouched and the cost of being wrong is a re-run. It reads the version
+      # from the notes gate above rather than re-deriving it, so the two cannot disagree.
+      #
+      # IT IS A NO-OP FOR A CALLER THAT HAND-MAINTAINS ITS CHANGELOG, decided from that caller's own
+      # `.changeset/config.json` rather than from a list of repo names kept here. Repos move onto the
+      # generator one at a time and a list would be stale in the direction that matters: a repo that
+      # has just turned it on is exactly the repo this gate should now cover. Census on 2026-08-06,
+      # over all thirteen callers: seven have the generator on, six off, and NONE goes red, because
+      # twelve are already tagged (the gate is skipped on `is-release != 'true'`) and the thirteenth,
+      # `fhir`, has the generator off and reports `not-applicable`. That is a dated measurement, not
+      # a standing guarantee.
+      - name: The changelog must carry a section for the version being released
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        env:
+          NOTES_VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          node .cosyte-release-tooling/scripts/changelog-check.mjs \
+            --repo . --version "$NOTES_VERSION"
       - name: Create release PR or publish
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
