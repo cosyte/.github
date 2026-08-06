@@ -39,6 +39,7 @@ import {
   sanitizeInternal,
   tidy,
   toHeadline,
+  TRANSLATION_RULES,
 } from '../scripts/release-notes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1958,98 +1959,85 @@ test('PRE-EXISTING: a registered prefix already eats four legitimate standard na
 // and accepted where the token is KNOWN to be ours. This rule may not: its whole risk is the false
 // positive, and the word-to-word cut is where a false positive does its damage silently, leaving
 // well-formed prose that is not what the author wrote.
-test('the shape rule REFUSES the word-to-word cut that the registered rule is allowed to take', () => {
-  const midClause = 'Close CHANGELOG-PREAMBLE-FUTURE-TENSE by turning the generator on.';
-  const result = toHeadline(midClause);
-  assert.ok(
-    result.refused.some((r) => r.rule === 'internal item identifier with an unregistered prefix'),
-    'a mid-clause id must be refused, not lifted out',
-  );
-  // And the banned text SURVIVES into the headline, which is the point: findViolations then sees it
-  // and the run goes red naming the line. Cutting it would leave wreckage nothing downstream detects.
-  assert.match(result.headline, /CHANGELOG-PREAMBLE-FUTURE-TENSE/);
-  assert.notEqual(result.headline, 'Close by turning the generator on');
-
-  // THE ONE MEASURED FALSE POSITIVE, PINNED AS A CONTROL. Across the 55 changesets, changelogs and
-  // READMEs of all thirteen callers the shape matches 108 distinct tokens; 107 are item ids and the
-  // 108th is `YYYY-MM-DD`. It occurs four times, all in README prose and none in any changeset. This
-  // is what the narrower cut permission buys: it is refused with the sentence quoted, not deleted.
-  const placeholder = toHeadline('Dates render as YYYY-MM-DD in the header rather than as epoch seconds.');
-  assert.ok(placeholder.refused.length > 0, 'a false positive must refuse, never cut');
-  assert.match(placeholder.headline, /YYYY-MM-DD/);
-});
-
-test('the cuts a shape rule MAY take are the ones that cannot change what a sentence means', () => {
-  // The head: this is the leading-item-id case the defect is named for.
-  assert.equal(
-    toHeadline('CHANGELOG-PREAMBLE-FUTURE-TENSE: turn the Changesets changelog generator on.').headline,
-    'Turn the Changesets changelog generator on',
-  );
-  // A parenthetical, which is removable by construction. This is the shape that leaked on x12.
-  assert.equal(
-    toHeadline('Turn the changelog generator on (CHANGELOG-PREAMBLE-FUTURE-TENSE).').headline,
-    'Turn the changelog generator on',
-  );
-  assert.equal(
-    toHeadline('Stop echoing the caller input in the refusal message (`REFUSAL-MESSAGE-PHI-ECHO`).').headline,
-    'Stop echoing the caller input in the refusal message',
-  );
-  // A whole clause between two separators: the remaining clauses still join.
-  assert.match(
-    toHeadline('Stop echoing the input, REFUSAL-MESSAGE-PHI-ECHO, in the refusal message.').headline,
-    /^Stop echoing the input, in the refusal message$/,
-  );
-  // The tail, where what is left must still read: here it does not, so it is refused rather than
-  // published as "Close the item".
-  const tail = toHeadline('Close the item CHANGELOG-PREAMBLE-FUTURE-TENSE.');
-  assert.ok(tail.headline === 'Close the item' || tail.refused.length > 0);
-});
-
-// THE DRIFT THIS CLOSED, AND IT WAS SILENT IN THE WORST DIRECTION. The parenthetical branch used to
-// restate three of the translation rules by hand. A fourth rule therefore did not apply there, so a
-// parenthetical holding ONLY the new rule's match was returned "exactly as the author wrote it" --
-// published. The predicate is now derived from TRANSLATION_RULES, so it cannot be one rule stale.
-test('the parenthetical predicate is derived from the translation rules, not restated beside them', () => {
-  assert.equal(sanitizeInternal('Turn the generator on (CHANGELOG-PREAMBLE-FUTURE-TENSE)'), 'Turn the generator on');
-  // A parenthetical with no internal reference is still left exactly as written.
-  const kept = 'Correct the MSH-9 structure lookup (the ORU^R01 case that vendors send most)';
-  assert.equal(sanitizeInternal(kept), kept);
-});
-
-// THE SECOND HALF OF `requireBoundary`, AND THE WIDENING IT CLOSES WAS REAL AND SILENT.
-//
-// A selected parenthetical is not CUT, it is DROPPED: its segments are cleaned and one left with
-// nothing survivable disappears whole. So isBoundedCut does not reach it, and the first version of
-// this rule let a shape false positive delete an author's entire aside. One principle covers both
-// halves: a rule that reads a shape may only remove text that IS the token it matched.
-test('a shape rule may not drop a parenthetical it merely appears INSIDE', () => {
-  // The measured false positive, buried in running prose inside a parenthetical. Every one of these
-  // published its aside verbatim before this rule existed and must still do so.
-  for (const text of [
-    'Correct the header (dates are formatted YYYY-MM-DD there)',
-    'Correct the header (a note, dates are YYYY-MM-DD, and the tz is UTC)',
-    'Correct the header (YYYY-MM-DD is the wire format, not the display one)',
-  ]) {
-    assert.equal(sanitizeInternal(text), text, `${JSON.stringify(text)} must be left as written`);
+test('THE RULE NEVER CUTS: it is a detector, so no false positive can edit prose', () => {
+  // THESE TEN INPUTS ARE THE REASON THIS RULE DOES NOT TRANSLATE, AND THEY ARE THE REGRESSION.
+  //
+  // A translating version of this rule was built and measured clean over every changeset these repos
+  // have ever had. It cut only where a boundary rule said the sentence survived -- head, tail, whole
+  // clause between separators, whole parenthetical -- and refused the word-to-word cut. It shipped
+  // nothing, because a refuter constructed these: every one of them PUBLISHED, with exit 0 and no
+  // violation reported, a sentence the author did not write.
+  //
+  // `Map OBX to observation ONE-TO-ONE.` becoming `Map OBX to observation.` is the sharpest: the
+  // cardinality WAS the claim, and the published bullet then asserts something else as fact. None of
+  // these is exotic. `YYYY-MM-DD` is the FHIR `date` primitive's own form, and ALL-CAPS emphasis is
+  // how this org's own markdown is written.
+  //
+  // The corpus contained none of them, which is the whole lesson: what a rule CAN reach is not
+  // bounded by what the corpus happens to contain.
+  const mustSurviveWhole = [
+    'Map OBX to observation ONE-TO-ONE',
+    'The 837 writer is now ALL-OR-NOTHING',
+    'The reader is now correct END-TO-END',
+    'Round-trip the dataset BYTE-FOR-BYTE',
+    'ALL-OR-NOTHING batch semantics for the 837 writer',
+    'YYYY-MM-DD is now the only accepted date form',
+    'Dates render as YYYY-MM-DD',
+    'Fix the header, YYYY-MM-DD, and the timezone handling',
+    'Emit the birthDate (YYYY-MM-DD)',
+    'Correct the header (dates, YYYY-MM-DD, and the tz is UTC)',
+  ];
+  for (const text of mustSurviveWhole) {
+    assert.equal(sanitizeInternal(text), text, `${JSON.stringify(text)} must not be edited`);
+    assert.deepEqual(toHeadline(text).refused, [], 'and translation must not even try');
   }
+});
 
-  // And the case the rule exists for is still dropped: a segment that IS the identifier, with or
-  // without the code span it is usually written in.
-  assert.equal(sanitizeInternal('Correct the header (YYYY-MM-DD)'), 'Correct the header');
-  assert.equal(
-    sanitizeInternal('Refuse a clean sweep (`PHI-SCAN-WALK-ROOT-SCOPE`, `PHI-SCAN-OBSERVED-NOTHING-IS-GLOBAL`)'),
-    'Refuse a clean sweep',
-  );
-  assert.equal(
-    sanitizeInternal('Refuse a clean sweep (PHI-SCAN-WALK-ROOT-SCOPE)'),
-    'Refuse a clean sweep',
-  );
+test('an item id with an unregistered prefix is REFUSED wherever it sits, never cut away', () => {
+  // Every position. The translating version took four of these five and refused one; this takes
+  // none of them and refuses all five, which is what makes a false positive cost a rewrite rather
+  // than a silent edit.
+  const positions = [
+    'REFUSAL-MESSAGE-PHI-ECHO: stop echoing the caller input in the refusal message',
+    'Stop echoing the caller input in the refusal message (REFUSAL-MESSAGE-PHI-ECHO)',
+    'Stop echoing the caller input in the refusal message (`REFUSAL-MESSAGE-PHI-ECHO`)',
+    'Stop echoing the input, REFUSAL-MESSAGE-PHI-ECHO, in the refusal message',
+    'Close REFUSAL-MESSAGE-PHI-ECHO by dropping the caller input from the message',
+  ];
+  for (const text of positions) {
+    const { headline } = toHeadline(text);
+    // The id SURVIVES translation, on purpose: that is what lets the gate below see it. Cutting it
+    // would leave well-formed wreckage nothing downstream can detect.
+    assert.match(headline, /REFUSAL-MESSAGE-PHI-ECHO/, `${JSON.stringify(text)}: must survive translation`);
+    assert.ok(
+      findViolations(`### What changed\n\n- ${headline}.\n`).some(
+        (v) => v.rule === 'internal item identifier with an unregistered prefix',
+      ),
+      `${JSON.stringify(text)}: must be refused by the gate`,
+    );
+  }
+});
 
-  // THE REGISTERED RULES ARE UNAFFECTED, and this is what stops the narrowing from becoming a
-  // regression. They know a token's NAME, so CONTAINING one still selects the parenthetical. Both of
-  // these are dropped whole on the parent commit too.
+// THE REGISTERED RULES ARE UNTOUCHED BY ANY OF THIS, which is what keeps a detect-only shape rule
+// from costing anything a repo already relies on. A name is still translated in every position.
+test('a REGISTERED prefix is still translated in every position, unchanged', () => {
   assert.equal(sanitizeInternal('Correct the header (the X12-75 route that vendors hit)'), 'Correct the header');
   assert.equal(sanitizeInternal('Correct the header (of the thirteenth slice)'), 'Correct the header');
+  assert.equal(sanitizeInternal('Correct the X12-75 route so vendors reach it'), 'Correct the route so vendors reach it');
+  assert.equal(toHeadline('X12-75: correct the header').headline, 'Correct the header');
+});
+
+test('the parenthetical predicate is derived from the translation rules, not restated beside them', () => {
+  // The restated list named three patterns, so it was one edit from being silently wrong. Derived,
+  // it cannot be. The behaviour is identical while UNREGISTERED_ID stays out of TRANSLATION_RULES,
+  // which is exactly why this is a refactor and not a change.
+  assert.deepEqual(
+    TRANSLATION_RULES.map((r) => r.name),
+    ['internal project identifier', 'phase or slice language', 'ADR reference'],
+    'UNREGISTERED_ID must NOT be here: it is a detector, and a shape may not edit prose',
+  );
+  const kept = 'Correct the MSH-9 structure lookup (the ORU^R01 case that vendors send most)';
+  assert.equal(sanitizeInternal(kept), kept);
 });
 
 // END TO END, THROUGH THE REAL `prepare`, ON A REAL VERSION COMMIT. The unit assertions above prove
@@ -2062,73 +2050,25 @@ test('a consumed changeset carrying an unregistered item id stops the release be
         '(REFUSAL-MESSAGE-PHI-ECHO), which a JSON-driven caller cannot reach.\n',
     },
   });
-  const clean = runPrepare(dir);
-  assert.equal(clean.status, 0, `a removable parenthetical must not block a release: ${clean.stdout}${clean.stderr}`);
-  const body = readFileSync(join(dir, 'notes.md'), 'utf8');
-  assert.doesNotMatch(body, /REFUSAL-MESSAGE-PHI-ECHO/, 'the id must not reach the published body');
-  rmSync(dir, { recursive: true, force: true });
-
-  // And the mid-clause form, which cannot be cut, refuses the run rather than publishing wreckage.
-  const wedged = makeVersionCommitRepo({
-    changesets: {
-      'leak.md':
-        '---\n"@cosyte/hl7": patch\n---\n\nClose REFUSAL-MESSAGE-PHI-ECHO by dropping the caller input ' +
-        'from the message.\n',
-    },
-  });
-  const refused = runPrepare(wedged.dir);
+  const refused = runPrepare(dir);
   assert.equal(refused.status, 1, 'the run must stop, with npm untouched');
   assert.notEqual(refused.outputs['is-release'], 'true', 'and the publish command must be withheld');
   assert.match(`${refused.stdout}${refused.stderr}`, /unregistered prefix/);
-  rmSync(wedged.dir, { recursive: true, force: true });
-});
+  rmSync(dir, { recursive: true, force: true });
 
-// WHAT THE NARROWED TRANSLATION DOES NOT REACH, AND WHY THAT IS SAFE RATHER THAN A HOLE.
-//
-// Both halves of `requireBoundary` make the TRANSLATOR narrower, and a narrower translator leaves
-// more text standing. That is only acceptable because the surviving text is then seen by the
-// DETECTOR: UNREGISTERED_ID is in CONTENT_RULES as well, `findViolations` re-reads the finished
-// bytes, and the run goes red naming the line. The whole design is "translate what can be removed
-// without changing meaning, REFUSE the rest" -- so every case the translator declines must end in a
-// refusal, never in a publish. This is the assertion that makes the narrowing safe, and it is the
-// one to run against any future attempt to widen or narrow either half.
-test('every shape the narrowed translation declines is REFUSED, never published', () => {
-  const declined = [
-    // A parenthetical whose segments are not comma-delimited, so none of them IS the identifier.
-    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO; see the note).',
-    // Emphasis around the identifier, which is not stripped before the whole-segment comparison.
-    'Refuse a clean sweep (**REFUSAL-MESSAGE-PHI-ECHO**).',
-    // Trailing punctuation inside the parenthetical.
-    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO.)',
-    // The word-to-word cut in running prose, which isBoundedCut forbids.
-    'Close REFUSAL-MESSAGE-PHI-ECHO by dropping the caller input from the message.',
-  ];
-  for (const text of declined) {
-    const { headline } = toHeadline(text);
-    assert.match(headline, /REFUSAL-MESSAGE-PHI-ECHO/, `${JSON.stringify(text)}: the id must SURVIVE translation`);
-    const violations = findViolations(`### What changed\n\n- ${headline}.\n`);
-    assert.ok(
-      violations.some((v) => v.rule === 'internal item identifier with an unregistered prefix'),
-      `${JSON.stringify(text)}: what translation declined must be refused by the gate`,
-    );
-  }
-
-  // And the shapes it DOES reach are removed rather than refused, so an ordinary trailing reference
-  // costs an author nothing.
-  for (const text of [
-    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO).',
-    'Refuse a clean sweep (`REFUSAL-MESSAGE-PHI-ECHO`).',
-    'Refuse a clean sweep (REFUSAL-MESSAGE-PHI-ECHO, and CI-REQUIRED-CHECKS).',
-    'REFUSAL-MESSAGE-PHI-ECHO: refuse a clean sweep.',
-  ]) {
-    const { headline } = toHeadline(text);
-    assert.doesNotMatch(headline, /REFUSAL-MESSAGE-PHI-ECHO|CI-REQUIRED-CHECKS/, JSON.stringify(text));
-    assert.deepEqual(
-      findViolations(`### What changed\n\n- ${headline}.\n`)
-        .filter((v) => v.rule === 'internal item identifier with an unregistered prefix'),
-      [],
-    );
-  }
+  // The control: the same sentence without the identifier releases cleanly, so the refusal is the
+  // identifier's doing and not the sentence's.
+  const clean = makeVersionCommitRepo({
+    changesets: {
+      'ok.md':
+        '---\n"@cosyte/hl7": patch\n---\n\nStop echoing the caller input in the refusal message, ' +
+        'which a JSON-driven caller cannot reach.\n',
+    },
+  });
+  const ok = runPrepare(clean.dir);
+  assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+  assert.doesNotMatch(readFileSync(join(clean.dir, 'notes.md'), 'utf8'), /REFUSAL-MESSAGE-PHI-ECHO/);
+  rmSync(clean.dir, { recursive: true, force: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────

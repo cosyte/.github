@@ -53,23 +53,32 @@ tarball**, so what goes in it is part of the package. But the two kinds of repo 
 opposite things from you, and doing the wrong one is not harmless — so check which
 kind you are in before you write anything.
 
-**The check is one file.** Open `.changeset/config.json` and read its `"changelog"`
-key. Nothing else decides this: not the repo's age, not what the file looks like
-today, not what a sibling package does.
+**The check is one file, and its absence is an answer too.** Look for
+`.changeset/config.json`. Nothing else decides this: not the repo's age, not what
+`CHANGELOG.md` looks like today, not what a sibling package does.
 
-**`"changelog": false` — the changelog is written by hand.** Add a bullet under
-`## [Unreleased]` in `CHANGELOG.md`, and add a changeset too if the repo has a
-`.changeset/` directory. This is the older arrangement and it is still correct here.
+**No `.changeset/` directory at all — the changelog is written by hand, and there is
+no changeset to add.** Add a bullet under `## [Unreleased]` in `CHANGELOG.md` and
+you are done. Several repos here are not published to npm and do not use Changesets;
+this is the arm for them, and it is the one to take when you cannot find the file.
 
-**Anything else — the Changesets generator is on, and your changeset summary *is* the
-changelog entry.** Add the changeset and leave `CHANGELOG.md` alone. The release
-writes it: `changeset version` inserts a `## <version>` section from the changesets
-it consumes. Hand-editing the file fights that, and a hand-added `## [Unreleased]`
-heading is worse than untidy — generated releases are prepended above it, so it would
-sit below every future release claiming to be the unreleased one, permanently.
+**`.changeset/config.json` with `"changelog": false` — the changelog is written by
+hand, and a changeset is needed as well.** Add the `## [Unreleased]` bullet *and* run
+`pnpm changeset`. The changeset drives the version bump and the public release notes;
+the `CHANGELOG.md` entry is separate and still yours to write.
 
-Repos move from the first arrangement to the second one at a time, so **re-read the
-key rather than remembering the answer**.
+**`.changeset/config.json` with anything else — the Changesets generator is on, and
+your changeset summary *is* the changelog entry.** Add the changeset and leave
+`CHANGELOG.md` alone. The release writes it: `changeset version` inserts a
+`## <version>` section from the changesets it consumes. Hand-editing the file fights
+that, and a hand-added `## [Unreleased]` heading is worse than untidy — generated
+releases are prepended above it, so it would sit below every future release claiming
+to be the unreleased one, permanently.
+
+Repos move between these arrangements one at a time, so **re-read the file rather
+than remembering the answer**. If you are unsure, say so in the pull request: adding
+a `CHANGELOG.md` entry that was not wanted is trivially reverted, and losing one is
+not.
 
 ### Writing a changeset
 

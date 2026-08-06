@@ -220,51 +220,59 @@ const INTERNAL_ID = new RegExp(
 // every time one is filed. Registering them one at a time is a deny-list, and a deny-list buys
 // exactly one evasion per entry.
 //
-// SO THIS IS A SHAPE RULE, WHICH THE HEADER OF THIS FILE SAYS CANNOT BE DONE. Read that paragraph
-// again, because it is precise and this does not contradict it: the shape it rules out is `WORD-N`,
-// and it rules it out because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` ARE that shape and
-// are the reference material a consumer needs. This shape is a different one and shares no member
-// with it: THREE OR MORE HYPHEN-JOINED RUNS, EVERY RUN TWO OR MORE LETTERS, NO DIGIT ANYWHERE. A
-// digit is what every segment-field reference has and what no item id has, so the two sets are
-// disjoint by construction rather than by luck.
+// THIS IS A DETECTOR ONLY. IT IS IN CONTENT_RULES AND DELIBERATELY NOT IN TRANSLATION_RULES, SO IT
+// NEVER CUTS. That is the whole design, it is the second thing tried rather than the first, and the
+// first one shipping would have been a serious defect. Read the next paragraph before proposing
+// that it translate.
 //
-// MEASURED, NOT ARGUED. THE DURABLE CLAIM IS THE ONE WITHOUT A NUMBER IN IT: across the changesets,
-// changelogs and READMEs of all thirteen callers, the only match that is not an item identifier is
-// `YYYY-MM-DD`, a date placeholder, and it occurs ONLY in README prose. Every single match inside a
-// changeset -- the text that actually becomes a release bullet -- is an item identifier.
+// A TRANSLATING VERSION WAS BUILT, MEASURED CLEAN OVER EVERY CHANGESET THESE REPOS HAVE EVER HAD,
+// AND REFUTED ANYWAY BY CONSTRUCTED INPUT. It cut only where a boundary rule said the sentence
+// survived -- head, tail, whole clause between separators, whole parenthetical -- and refused the
+// word-to-word cut. That sounded safe and was not, because those permitted cuts are exactly where a
+// FALSE POSITIVE does its damage. Measured end to end through the real `prepare`, on a real version
+// commit, each of these published with exit 0 and `findViolations` returning nothing:
 //
-// AND THE CORPUS THAT SETTLES IT IS EVERY CHANGESET THESE REPOS HAVE EVER HAD, NOT THE ONES PENDING
-// TODAY. The pending set is ~30 files and moves hourly; the historical set is every blob ever
-// committed under `.changeset/*.md` across all thirteen repos, recovered from git. On 2026-08-06
-// that is 634 distinct blobs, and against them this rule:
+//   "Map OBX to observation ONE-TO-ONE."          published "Map OBX to observation."
+//   "The 837 writer is now ALL-OR-NOTHING."       published "The 837 writer is now."
+//   "The reader is now correct END-TO-END."       published "The reader is now correct."
+//   "Round-trip the dataset BYTE-FOR-BYTE."       published "Round-trip the dataset."
+//   "Emit the birthDate (YYYY-MM-DD)."            published "Emit the birthDate."
 //
-//   changes 13 rendered headlines, every one of them the defect (a leading `ITEM-ID:` stripped or a
-//     trailing `(ITEM-ID)` parenthetical dropped);
-//   NEWLY REFUSES 2, which are two blob revisions of ONE `ncpdp` changeset, since reworded by that
-//     repo itself;
-//   and `requireBoundary` costs 0 of 634.
+// The first one is the sharpest: the cardinality WAS the sentence, and the published bullet then
+// asserts something the author never wrote. All five publish verbatim without this rule. None of
+// them is exotic -- `YYYY-MM-DD` is the FHIR `date` primitive's own form, and `END-TO-END`,
+// `OUT-OF-SCOPE` and `ALL-OR-NOTHING` are ordinary ALL-CAPS emphasis that this org's own markdown
+// uses today. The corpus contained none of them, which is precisely the trap: what a rule CAN reach
+// is not bounded by what the corpus happens to contain. A general rule was built, measured clean and
+// withdrawn once before in this same file for the same reason.
 //
-// That last figure is the one to re-derive before anyone loosens the boundary rule. It is future
-// safety with no measured present cost, over the whole history rather than over a snapshot.
+// SO THE RULE MAY READ A SHAPE BUT MAY NOT EDIT PROSE ON ONE. A name may be translated because the
+// gate KNOWS the token is internal bookkeeping. A shape can only be REFUSED, because the gate merely
+// suspects it, and of the two failure modes only one is recoverable: a refusal costs one changeset
+// edit before anything is published, while a wrong cut is a permanent page saying something the
+// author did not write, in well-formed prose no gate can see.
 //
-// THE LIMIT THE HISTORICAL SWEEP EXPOSED, STATED RATHER THAN FIXED. collectHeadlines checks
-// `refused` BEFORE `isConsumerFacing`, so an identifier that cannot be cut refuses the run even in a
-// headline that would have been DROPPED as internal-only and could therefore never have published.
-// A registered identifier in the same position is word-to-word cuttable and slips through, so the
-// two rules are not symmetric here. Measured over the 634: ZERO instances, which is why this is a
-// disclosure and not a change. Do not "fix" it by reordering those checks -- the same ordering
-// governs the over-cap and dangling-tail refusals, and rearranging it is a behaviour change in the
-// file where a mistake stops thirteen repos publishing.
+// THE SHAPE ITSELF, and why it is not the `WORD-N` shape the header of this file rules out. That
+// paragraph is precise and this does not contradict it: `WORD-N` is ruled out because `SCH-11`,
+// `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` ARE that shape. This one is THREE OR MORE HYPHEN-JOINED
+// RUNS, EVERY RUN TWO OR MORE LETTERS, NO DIGIT ANYWHERE. A digit is what every segment-field
+// reference has and what no item id has, so the two sets are disjoint by construction. Note this
+// buys much less than it looks like it does now that the rule only detects: a false positive costs
+// a refusal, not a corrupted code.
 //
-// AND BECAUSE IT IS A GUESS RATHER THAN A NAME, IT MAY TAKE FEWER CUTS THAN THE RULE ABOVE. That
-// asymmetry is the whole safety argument, and it is enforced by `requireBoundary` where this rule is
-// listed. The registered rule KNOWS a token is ours, so it may take the word-to-word cut that
-// removes a modifier from inside a clause. This rule only knows a token LOOKS like ours, so it is
-// allowed the cuts that cannot change what a sentence means -- the head, the tail, a whole clause
-// between two separators, and a parenthetical, which is removable by construction -- and must REFUSE
-// the word-to-word cut, where a false positive would silently delete a word the author chose.
-// "Dates render as YYYY-MM-DD in the header" is therefore refused with the sentence named, not
-// published as "Dates render as in the header".
+// WHAT DETECT-ONLY COSTS, MEASURED OVER EVERY CHANGESET BLOB EVER COMMITTED UNDER `.changeset/*.md`
+// ACROSS ALL THIRTEEN REPOS -- 634 distinct blobs, recovered from git, on 2026-08-06:
+//
+//   headlines it rewrites .............. 0, and 0 is structural rather than measured. It cannot
+//                                        rewrite one; it is not in TRANSLATION_RULES.
+//   releases it newly refuses .......... 8 of 634. Each costs one reworded changeset.
+//   of the changesets pending today .... 1 (`fhir`), which carries two item ids in a trailing
+//                                        parenthetical and would put both on a public page.
+//
+// A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect
+// them to say so clearly. That is the trade taken: a refusal a human resolves, over a rewrite nobody
+// can see. Do not re-propose translating this without an argument that answers the five inputs above
+// by name.
 const UNREGISTERED_ID = /\b[A-Z]{2,}(?:-[A-Z]{2,}){2,}\b/;
 
 const ORDINAL =
@@ -639,34 +647,6 @@ function separatorAfter(whole, end, edgeIsSeparator) {
   return CLAUSE_SEPARATOR.test(after[0]) && /^.(\s|$)/.test(after);
 }
 
-/**
- * The strictly smaller cut permission, for a rule that recognises a SHAPE rather than a NAME.
- *
- * `isSafeCut` accepts a span whose sides MATCH: separator on both, or plain word on both. The
- * word-to-word case is the one it cannot reason about -- a boundary rule cannot tell a modifier from
- * a grammatical argument, so "Accept an NCPDP-SCRIPT NewRx transaction" becomes "Accept an NewRx
- * transaction". That limit is stated and accepted for the registered rule, because there the token
- * is KNOWN to be internal bookkeeping and something has to give.
- *
- * A shape rule has not earned it. Its whole risk is the false positive, and the word-to-word cut is
- * exactly where a false positive does its damage silently: it deletes a word the author chose and
- * leaves well-formed prose behind, which is this file's worst failure mode. So a rule marked
- * `requireBoundary` may take only the cuts whose result cannot be a sentence the author did not
- * write -- the head, the tail, and a span with a clause separator on BOTH sides, which takes a whole
- * clause and leaves the remaining ones joining correctly. Everything else it REFUSES, which surfaces
- * as a named refusal with the sentence quoted, and a refusal is recoverable.
- *
- * A parenthetical's segments arrive with `edgeIsSeparator`, so a segment that is nothing but the
- * identifier reads as separator-bounded on both sides and is taken. That is the case this rule
- * exists for and it is the safest cut of the lot: a parenthetical is removable by construction.
- */
-export function isBoundedCut(text, start, end, edgeIsSeparator = false) {
-  const whole = String(text);
-  const left = whole.slice(0, start).replace(/\s+$/, '');
-  const right = whole.slice(end).replace(/^\s+/, '');
-  if (!edgeIsSeparator && (left === '' || right === '')) return true;
-  return separatorBefore(whole, start, edgeIsSeparator) && separatorAfter(whole, end, edgeIsSeparator);
-}
 
 /**
  * The rules the translator removes, in the order it removes them.
@@ -674,13 +654,10 @@ export function isBoundedCut(text, start, end, edgeIsSeparator = false) {
  * Exported so that a tool asking "was this text removed on purpose?" asks the translator rather
  * than restating its rules, which would drift the moment a new programme prefix is added above.
  */
+// UNREGISTERED_ID IS DELIBERATELY NOT IN THIS LIST. It is a DETECTOR ONLY, in CONTENT_RULES. See
+// the comment on UNREGISTERED_ID for the measurement that put it there and took it out of here.
 export const TRANSLATION_RULES = [
   { name: 'internal project identifier', pattern: INTERNAL_ID },
-  // `requireBoundary` is the difference between a NAME and a GUESS, and this is the only rule that
-  // carries it. See UNREGISTERED_ID for the argument; the mechanism is in stripSpans. Listed AFTER
-  // the registered rule so a token both of them match (`TERMINOLOGY-ATTW-FORWARDING-UNPINNED` is
-  // one) is removed by the rule that knows its name, on the wider permission it has earned.
-  { name: 'internal item identifier with an unregistered prefix', pattern: UNREGISTERED_ID, requireBoundary: true },
   { name: 'phase or slice language', pattern: PHASE_TALK },
   { name: 'ADR reference', pattern: ADR_REFERENCE },
 ];
@@ -708,13 +685,7 @@ function stripSpans(text, rules, edgeIsSeparator = false) {
       if (!found) break;
       const start = found.index;
       let end = start + found[0].length;
-      // Two permissions, and the narrower one applies only to the rule that asks for it. See
-      // isBoundedCut: a rule that recognises a shape may not take the word-to-word cut that a rule
-      // recognising a name may.
-      const permitted =
-        isSafeCut(out, start, end, edgeIsSeparator) &&
-        (!rule.requireBoundary || isBoundedCut(out, start, end, edgeIsSeparator));
-      if (!permitted) {
+      if (!isSafeCut(out, start, end, edgeIsSeparator)) {
         refused.push({ rule: rule.name, match: found[0] });
         from = end;
         continue;
@@ -774,41 +745,12 @@ function stripInternal(segment) {
  * Whether `inner`, the contents of one parenthetical, holds something the translator should act on.
  *
  * DERIVED FROM TRANSLATION_RULES, never restated beside them. The hand-restated list this replaces
- * was already one rule out of date the moment a fourth rule was added, and it failed in the worst
- * direction: a parenthetical holding ONLY the new rule's match was returned "exactly as the author
- * wrote it" and published.
- *
- * `requireBoundary` APPLIES HERE TOO, AND THIS IS ITS SECOND HALF. The principle is one sentence: a
- * rule that reads a SHAPE may only ever remove text that is ENTIRELY the token it matched. In
- * running prose isBoundedCut enforces that. In a parenthetical the enforcement has to be different,
- * because a selected parenthetical is not cut, it is DROPPED: its segments are cleaned and a
- * parenthetical left with nothing survivable disappears whole. So for a shape rule, merely
- * CONTAINING a match is not enough to select one. Some comma-delimited segment must BE the match.
- *
- * Without that, the widening is real and silent, and it is the exact failure the shape rule's
- * measurement warns about. `Correct the header (a note, dates are YYYY-MM-DD, and the tz is UTC)`
- * would select on `YYYY-MM-DD`, then lose the first segment to the 8-character floor, the second to
- * a refused cut and the third to the leading-function-word filter, and publish `Correct the header`
- * with the author's whole aside gone. Requiring a whole segment leaves it exactly as written.
- *
- * The registered rules are unchanged: they know a token's NAME, so containing one still selects, and
- * `(the NCPDP-SCRIPT NewRx path)` is dropped whole here today and was before this rule existed.
+ * named three patterns, so it was structurally one edit away from being wrong, and it would have
+ * been wrong SILENTLY and in the worst direction: a parenthetical holding only an unlisted rule's
+ * match would be returned "exactly as the author wrote it" and published.
  */
 function selectsParenthetical(inner) {
-  return TRANSLATION_RULES.some((rule) => {
-    if (!rule.pattern.test(inner)) return false;
-    if (!rule.requireBoundary) return true;
-    return String(inner)
-      .split(',')
-      .some((segment) => {
-        // Backticks are stripped before comparing because a code span is how these are usually
-        // written, and `` `ID` `` is no less entirely the identifier than `ID` is.
-        const bare = segment.trim().replace(/^`+|`+$/g, '').trim();
-        if (bare === '') return false;
-        const found = new RegExp(rule.pattern.source, rule.pattern.flags).exec(bare);
-        return found !== null && found[0] === bare;
-      });
-  });
+  return TRANSLATION_RULES.some((rule) => rule.pattern.test(inner));
 }
 
 /**

@@ -8,13 +8,14 @@
 
 - [ ] The full pipeline passes locally (`pnpm typecheck && pnpm lint && pnpm test && pnpm build`).
 - [ ] Tests cover the change.
-- [ ] The change is recorded the way **this** repo records changes. Open `.changeset/config.json` and
-      read its `"changelog"` key, which is the only thing that decides it:
-  - `"changelog": false` — `CHANGELOG.md` is written by hand. Add a `## [Unreleased]` entry, plus a
-    changeset if the repo has a `.changeset/` directory.
-  - anything else — the Changesets generator is on, so **your changeset summary is the changelog
+- [ ] The change is recorded the way **this** repo records changes. Look for
+      `.changeset/config.json`; its absence is an answer too:
+  - **no `.changeset/` directory** — add a `## [Unreleased]` entry to `CHANGELOG.md`. There is no
+    changeset to add. Take this arm when you cannot find the file.
+  - **`"changelog": false`** — add a `## [Unreleased]` entry **and** a changeset.
+  - **anything else** — the Changesets generator is on, so **your changeset summary is the changelog
     entry**. Add the changeset and do **not** hand-edit `CHANGELOG.md`: the release writes that file,
-    and a hand-written `## [Unreleased]` section there would sit above generated releases forever.
+    and a hand-written `## [Unreleased]` section there would sit below every future release forever.
 - [ ] **No PHI anywhere in the diff** — fixtures, examples, and tests use synthetic data only.
 - [ ] Public API changes are documented (JSDoc + any affected docs content).
 - [ ] One logical change per PR.

@@ -1171,109 +1171,85 @@ deny-list, and a deny-list buys exactly one evasion per entry.
 body, while `X12-*` identifiers in adjacent bullets were stripped correctly, and the gate passed it
 by design.**
 
-The fix is a **shape** rule, which the header of `release-notes.mjs` says cannot be done. Read that
-paragraph again, because it is precise and this does not contradict it: the shape it rules out is
-`WORD-N`, and it rules it out because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` **are** that
-shape and are exactly the reference material a consumer needs. This is a different shape and shares
-no member with it:
+`UNREGISTERED_ID` reads the shape instead:
 
 > three or more hyphen-joined runs, every run two or more **letters**, no digit anywhere.
 
-A digit is what every segment-field reference has and what no item identifier has, so the two sets
-are disjoint by construction rather than by luck.
+That is not the `WORD-N` shape the header of `release-notes.mjs` rules out. `WORD-N` is ruled out
+because `SCH-11`, `PID-3`, `MSH-2`, `NM1-03` and `ICD-10` **are** that shape; a digit is what every
+segment-field reference has and what no item identifier has, so the two sets are disjoint.
 
-**Measured, not argued, and the durable claim is the one with no number in it:** across the
-changesets, changelogs and READMEs of all thirteen callers, **the only match that is not an item
-identifier is `YYYY-MM-DD`**, a date placeholder, and it occurs **only in README prose**. Every
-match inside a changeset, which is the text that becomes a release bullet, is an item identifier.
+#### It is a DETECTOR ONLY, and that is the whole design
 
-**And the corpus that settles it is every changeset these repos have ever had, not the ones pending
-today.** The pending set is about thirty files and moves hourly. The historical set is **every blob
-ever committed under `.changeset/*.md` across all thirteen repos**, recovered from git: 634 distinct
-blobs on 2026-08-06. Against those, the rule
+It is in `CONTENT_RULES` and deliberately **not** in `TRANSLATION_RULES`, so it never cuts. The
+`(REFUSAL-MESSAGE-PHI-ECHO)` case is now a **hard red at `prepare`**, before npm, with the sentence
+quoted; the author rewrites the changeset. There is no position from which a false positive can edit
+anything.
 
-- **changes 13 rendered headlines, and every one of them is the defect** (a leading `ITEM-ID:`
-  stripped, or a trailing `(ITEM-ID)` parenthetical dropped);
-- **newly refuses 2**, which are two blob revisions of **one** `ncpdp` changeset, since reworded by
-  that repo itself;
-- and **`requireBoundary` costs 0 of 634.**
+**This was the second thing tried, and the first one shipping would have been a serious defect.** A
+translating version was built. It cut only where a boundary rule said the sentence survived (head,
+tail, whole clause between separators, whole parenthetical) and refused the word-to-word cut. It
+measured **clean over every changeset these repos have ever had**: 634 blobs, 64 distinct shape
+matches, all 64 item identifiers, and the boundary restriction costing zero. It was refuted anyway,
+by constructed input, because **the permitted cuts are exactly where a false positive does its
+damage.** Run end to end through the real `prepare` on a real version commit, each of these published
+with **exit 0** and no violation reported:
 
-That last figure is the one to re-derive before anyone loosens the boundary rule: future safety with
-no measured present cost, over the whole history rather than over a snapshot.
+| changeset opening sentence | what the translating version published |
+|---|---|
+| `Map OBX to observation ONE-TO-ONE.` | `Map OBX to observation.` |
+| `The 837 writer is now ALL-OR-NOTHING.` | `The 837 writer is now.` |
+| `The reader is now correct END-TO-END.` | `The reader is now correct.` |
+| `Round-trip the dataset BYTE-FOR-BYTE.` | `Round-trip the dataset.` |
+| `YYYY-MM-DD is now the only accepted date form.` | `Is now the only accepted date form.` |
+| `Emit the birthDate (YYYY-MM-DD).` | `Emit the birthDate.` |
+| `Fix the header, YYYY-MM-DD, and the timezone handling.` | `Fix the header, and the timezone handling.` |
 
-#### The limit the historical sweep exposed, stated rather than fixed
+The first is the sharpest: **the cardinality was the claim**, and the published bullet then asserts
+something else as fact on a permanent page. None of these is exotic. `YYYY-MM-DD` is the FHIR `date`
+primitive's own form, and ALL-CAPS emphasis is how this org's own markdown is written. **The corpus
+contained none of them**, which is the entire lesson, and the same one this repo learned when a
+general tail-cut rule was built, measured clean, and withdrawn anyway: *what a rule can reach is not
+bounded by what the corpus happens to contain.*
 
-`collectHeadlines` checks `refused` **before** `isConsumerFacing`. So an identifier that cannot be
-cut refuses the run even in a headline that would have been **dropped** as internal-only, and could
-therefore never have published. A registered identifier in the same position is word-to-word
-cuttable and slips through, so the two rules are **not symmetric** there.
+**So the rule may read a shape but may not edit prose on one.** A **name** may be translated, because
+the gate knows the token is internal bookkeeping. A **shape** may only be refused, because the gate
+merely suspects it. Of the two failure modes only one is recoverable: a refusal costs one changeset
+edit before anything is published; a wrong cut is a permanent page saying something the author did
+not write, in well-formed prose no gate can see.
 
-**Zero instances across the 634**, which is why this is a disclosure and not a change. Do not "fix"
-it by reordering those checks: the same ordering governs the over-cap and dangling-tail refusals, and
-rearranging it is a behaviour change in the file where a mistake stops thirteen repos publishing.
+#### What detect-only costs
 
-#### A shape is a guess, so it may take fewer cuts than a name
+Measured over the same 634 blobs:
 
-This is the whole safety argument and it is enforced in the code, by `requireBoundary` on that one
-rule. The registered rule **knows** a token is internal bookkeeping, so it may take the word-to-word
-cut that lifts a modifier out of the middle of a clause; that limit is stated and accepted at
-`isSafeCut` ("Accept an NCPDP-SCRIPT NewRx transaction" becomes "Accept an NewRx transaction"). The
-shape rule only knows a token **looks** like one, and its whole risk is the false positive, so it is
-allowed only the cuts that cannot change what a sentence means:
+| | |
+|---|---|
+| headlines it rewrites | **0**, and structurally so. It is not in `TRANSLATION_RULES` and cannot rewrite one |
+| releases it newly refuses | **8 of 634**, each costing one reworded changeset |
+| of the changesets pending today | **1** (`fhir`), which carries two identifiers in a trailing parenthetical and would put both on a public page |
 
-| cut | allowed | why |
-|---|---|---|
-| the head (`CHANGELOG-PREAMBLE-FUTURE-TENSE: turn the generator on`) | yes | the sentence starts after it |
-| the tail | yes | nothing on its right to break; a dangling remainder is refused separately |
-| a whole clause, separator on both sides | yes | the remaining clauses still join |
-| a parenthetical | yes | removable by construction, which is what this file already does with one |
-| word to word | **no** | this is where a false positive deletes an author's word and leaves well-formed prose |
+A trailing `(ITEM-ID)` is this org's own habit, so expect refusals rather than none, and expect them
+to name the sentence. **Do not re-propose translating this** without an argument that answers the
+seven inputs above by name.
 
-So `Dates render as YYYY-MM-DD in the header` is **refused with the sentence quoted**, not published
-as `Dates render as in the header`. A refusal costs one changeset edit; a wrong cut is a permanent
-page that says something the author did not write.
+**A pre-existing collision the measurement surfaced and does not fix:** `HL7-V2`, `X12-005010`,
+`NCPDP-SCRIPT` and `DICOM-RT` are already eaten by the **registered** rule, because each opens with a
+registered prefix, and `NCPDP-SCRIPT` is a real standard's real name. `PRE-EXISTING`, disclosed in a
+test rather than folded into the disjointness claim.
 
-**`requireBoundary` costs 0 of the 31 pending changesets.** It is future safety, not a live trade,
-and that is the number to re-measure before anyone loosens it.
+**A silent drift closed alongside it.** `sanitizeInternalDetailed`'s parenthetical branch restated
+three of the translation rules by hand, so it was structurally one edit from being wrong, silently
+and in the worst direction. It is now derived from `TRANSLATION_RULES`.
 
-#### The same principle has a second half, in the parenthetical
+#### Not closed here, and filed rather than half-built
 
-A selected parenthetical is not cut, it is **dropped**: its segments are cleaned and one left with
-nothing survivable disappears whole. So the cut permission above does not reach it, and the first
-version of this rule had a real, silent widening. `Correct the header (a note, dates are YYYY-MM-DD,
-and the tz is UTC)` selected on the false positive, then lost the first segment to the 8-character
-floor, the second to a refused cut and the third to the leading-function-word filter, and published
-`Correct the header` with the author's whole aside gone.
+A refusal lands **late**: `prepare` runs on the version commit, so it arrives after the "Version
+Packages" PR merged and consumed the changeset, which is the expensive recovery under RECOVERY.
+Closing that means a lint over the pending `.changeset/*.md` running in `ci.yml`, on the pull request
+that introduces the changeset, where the fix is free. That is a new job across thirteen repos and
+wants its own census and its own commit; it would also subsume the standing "assert every changeset
+against the cap before merging a Version PR" procedure.
 
-One principle covers both: **a rule that reads a shape may only remove text that is entirely the
-token it matched.** In running prose `isBoundedCut` enforces it; in a parenthetical it means some
-comma-delimited segment must **be** the match, not merely contain one. Backticks are stripped before
-comparing, because `` `ID` `` is no less entirely the identifier than `ID`. So
-`(`PHI-SCAN-WALK-ROOT-SCOPE`, `PHI-SCAN-OBSERVED-NOTHING-IS-GLOBAL`)` is dropped and the aside above
-is left exactly as written. **The registered rules are unaffected**: they know a token's name, so
-containing one still selects, and `(the NCPDP-SCRIPT NewRx path)` is dropped whole here today and
-was before any of this existed.
-
-#### What the narrowing does not reach, and why that is safe
-
-Both halves make the **translator** narrower, and a narrower translator leaves more text standing.
-That is only acceptable because `UNREGISTERED_ID` is in `CONTENT_RULES` as well, so the **detector**
-re-reads the finished bytes and the run goes red naming the line. The design is one sentence:
-**translate what can be removed without changing meaning, refuse the rest.**
-
-So `(REFUSAL-MESSAGE-PHI-ECHO; see the note)` (not comma-delimited),
-`(**REFUSAL-MESSAGE-PHI-ECHO**)` (emphasis is not stripped before the comparison),
-`(REFUSAL-MESSAGE-PHI-ECHO.)` and the word-to-word cut are all **declined by the translator and then
-refused by the gate.** None of them publishes. That is asserted as a property rather than left
-implied, and it is the test to run against any future attempt to widen or narrow either half.
-
-**Two things this deliberately does not do.** It does not register the new prefixes: that is the
-deny-list it replaces. And it does not fire at changeset time, only at release time, so a refusal
-lands **after** the "Version Packages" PR has merged and consumed the changeset, which is the
-expensive recovery documented under RECOVERY. Closing that is a separate piece of work: a lint over
-the pending `.changeset/*.md` running in `ci.yml`, on the pull request that introduces the changeset,
-where the fix is free. It is a new required-ish job across thirteen repos and wants its own census
-and its own commit.
 
 ### The changelog must carry a section for the version being released
 
