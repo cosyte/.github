@@ -47,9 +47,11 @@ name: Em-dash gate
 #
 #   `no-emdash-messages` scans the PR TITLE, BODY and COMMIT MESSAGES, and it must NEVER be required.
 #   Dependabot composes a PR body by pasting the dependency's UPSTREAM RELEASE NOTES into it, em
-#   dashes included, and this repository has open Dependabot pull requests today. Requiring this
-#   context would block a dependency bump on prose nobody in this org wrote and nobody here can edit
-#   without rewriting the PR by hand. That is the same refusal this ecosystem already made for a CI
+#   dashes included. Stated as the standing configuration rather than as a count of open pull
+#   requests, which goes stale between one session and the next: `dependabot.yml` in this repo keeps
+#   a weekly `github-actions` schedule, so such a PR arrives on someone else's clock indefinitely.
+#   Requiring this context would block a dependency bump on prose nobody in this org wrote and
+#   nobody here can edit without rewriting the PR by hand. That is the same refusal this ecosystem already made for a CI
 #   `pnpm audit`: a gate that fails on someone else's clock stops being a signal and becomes a tax.
 #   HONOUR THIS EXEMPTION AND ITS WRITTEN REASON; DO NOT REMOVE IT.
 #

@@ -901,7 +901,9 @@ unchanged: still red, still before npm.
 
 **`@cosyte/synth` `v0.0.1` published "Release hardening: the final."** `PHASE_TALK` matches `roadmap
 phase`, and in *"…release hardening: the final roadmap phase"* that is the **head noun of "the final
-roadmap phase"**. `isSafeCut` allows it because a cut at the end of a sentence has nothing on its
+roadmap phase"**. (The published title used an em dash where the colon stands here, which this
+repository no longer spells. `test/release-notes.test.mjs` asserts on the real form, built from its
+codepoint, and `toHeadline` returns the same headline for both.) `isSafeCut` allows it because a cut at the end of a sentence has nothing on its
 right to break, so the determiner run is left standing with nothing to govern. `DANGLING_TAIL` cannot
 see it and **must not be grown to**: `final` is a content word, and that list may only ever hold words
 that cannot change a sentence's meaning. `@cosyte/deid` wrote the same shape and would have published
@@ -1372,8 +1374,11 @@ dash into one, so it is safe to require and it should be required.
 `no-emdash-messages` scans the pull-request title, body and commit range, which is the half no local
 pre-commit hook can see: a new file is untracked so a scan of the index misses it, and nothing local
 sees a PR body at all. **It must never be a required context.** Dependabot composes a PR body by
-pasting the dependency's upstream release notes into it, em dashes included, and this repository has
-open Dependabot pull requests. Requiring it would block a dependency bump on prose nobody here wrote.
+pasting the dependency's upstream release notes into it, em dashes included, and `dependabot.yml`
+keeps a standing weekly `github-actions` schedule here, so such a pull request arrives on someone
+else's clock indefinitely. (Stated as the configuration rather than as a count of open pull
+requests, which goes stale between sessions.) Requiring it would block a dependency bump on prose
+nobody here wrote.
 Nor is an actor `if:` a fix: on a required context that leaves the check permanently pending, which
 is worse than red because nothing says why.
 
@@ -1404,9 +1409,11 @@ anything into, and the test suite recomputes the total bytes read **independentl
 breaks it. Both mutations are pinned as test cases rather than described.
 
 **The bound, named rather than chased:** the gate and its tests are both files a mutator is editing,
-so a read-then-discard mutation still passes with the suite green. No assertion inside a repository
-closes that class, only raises its cost. It is now a line that opens a file and throws the bytes
-away, which is visibly incoherent in review. That is the stopping point.
+so a mutation that ACCOUNTS for a file without reading it still passes with the suite green: the
+cheapest one takes each path's `statSync` size, adds it to both totals, and skips the read, so every
+number reconciles. No assertion inside a repository closes that class, only raises its cost. It is
+now a block that measures a file in order to avoid opening it, which is visibly incoherent in
+review. That is the stopping point, and the reason not to add a fourth rung chasing it.
 
 ### Known limits
 

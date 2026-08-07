@@ -17,9 +17,12 @@
 //   has bite rather than asserting that it does.
 //
 // ▶ AND THE BOUND, NAMED RATHER THAN CHASED. This file is itself a file a mutator is editing, so a
-//   read-then-discard mutation still passes with the suite green. No assertion inside a repository
-//   can close that class, only raise its cost. It is now a line that opens a file and throws the
-//   bytes away, which is visibly incoherent in review. That is the right stopping point.
+//   mutation that ACCOUNTS for a file without reading it still passes with the suite green: the
+//   cheapest one takes each path's `statSync` size, adds it to both totals, and skips the read, so
+//   every number below reconciles. No assertion inside a repository can close that class, only
+//   raise its cost. It is now a block that measures a file in order to avoid opening it, which is
+//   visibly incoherent in review. That is the right stopping point, and the reason not to add a
+//   fourth rung chasing it.
 //
 // Every banned spelling is ASSEMBLED from the codepoint here, exactly as the script assembles it, so
 // this file contains none of them as text and needs no exclusion from the scan it is testing.

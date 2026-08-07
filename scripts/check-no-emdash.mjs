@@ -181,7 +181,7 @@ const SPECIMENS = [
 ];
 
 /**
- * The floor under `git ls-files`, deliberately NOT the current count. This repo tracked 46 paths
+ * The floor under `git ls-files`, deliberately NOT the current count. This repo tracked 48 paths
  * when the gate landed, so a floor of 30 leaves room to retire a script and its tests without
  * turning the refusal into a chore. Set it near the count and every ordinary deletion reads as a
  * filtered enumeration; set it at zero and there is no floor at all.
