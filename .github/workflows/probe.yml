@@ -1,0 +1,43 @@
+name: Probe
+
+# TEMPORARY MEASUREMENT ARTIFACT. It exists to settle SKIPPED-REQUIRED-CONTEXT-UNSETTLED with a live
+# run and is deleted from the branch before the pull request merges. It ships nothing.
+#
+# Three shapes, measured side by side on one pull request, because they are different objects and may
+# report differently:
+#
+#   probe-call / probe-inner   a reusable workflow's job behind a job-level `if:` on a false input.
+#                              This is what `ci.yml`'s `if: ${{ inputs.run-actionlint }}` produces.
+#   probe-job-skipped          a plain job behind a job-level `if:` that evaluates false.
+#   probe-steps-skipped        a job that RUNS with every step behind an `if:` that evaluates false.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe-call:
+    uses: ./.github/workflows/probe-reusable.yml
+    with:
+      run-probe: false
+
+  # `actionlint` refuses a constant `false` condition, so the two plain shapes below use a real
+  # expression that is false in a `pull_request` run. What is being measured is a job-level and a
+  # step-level condition that evaluates false, not the particular expression; the literal
+  # `if: ${{ inputs.<boolean> }}` shape `ci.yml` uses is covered by `probe-call` above.
+  probe-job-skipped:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: This step never runs
+        run: echo "probe-job-skipped ran"
+
+  probe-steps-skipped:
+    runs-on: ubuntu-latest
+    steps:
+      - name: This step never runs, but the job around it does
+        if: ${{ github.event_name == 'schedule' }}
+        run: echo "probe-steps-skipped ran"
