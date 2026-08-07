@@ -99,9 +99,15 @@ rollup: `conclusion: SKIPPED`, `isRequired: true`, and `statusCheckRollup.state:
 ### Which shape `ci.yml` produces, and what that means for a caller
 
 `ci.yml`'s `actionlint` job carries `if: ${{ inputs.run-actionlint }}`. That is a **job-level**
-condition inside a `workflow_call` workflow, which is row one above, measured on the identical shape
-rather than reasoned across from row two. The context is still emitted, still named
+condition inside a `workflow_call` workflow, which is row one above, measured on the identical **job**
+shape rather than reasoned across from row two. The context is still emitted, still named
 `<caller job id> / <inner job id>` the way `ci / actionlint` is, and still satisfies.
+
+**One axis of row one was not varied, stated rather than glossed:** the probe called its reusable
+workflow **locally** (`uses: ./.github/workflows/probe-reusable.yml`) while every real caller calls it
+**remotely** (`cosyte/.github/.github/workflows/ci.yml@main`). Nothing in the finding rests on that
+axis, and row two reaches the same conclusion through a plain job with no reusable workflow at all,
+so the word to use is "the identical job shape" and not "identical".
 
 **So a caller setting `run-actionlint: false` does not strand its pull requests. It removes the gate
 while its ruleset still lists the context, and nothing anywhere says so.** A maintainer reading a
@@ -120,9 +126,12 @@ request cannot gate every pull request**, whether the skip is at the job level o
   workflow at `@main` and that is a policy change with an org-wide blast radius. It belongs to its
   own change with its own census, not to the investigation that measured it. The only edit made to
   `ci.yml` here is a comment at the input naming the consequence.
-- **No context list and no count is written anywhere in this repository.** Nothing in a repository
-  can observe its own ruleset, so any list here goes stale the next time a workflow grows a job.
-  Derive it instead:
+- **No context list and no count is written by this change.** Nothing in a repository can observe its
+  own ruleset, so any list goes stale the next time a workflow grows a job. That is stated as what
+  this change does rather than as a property of the repository, because **older counts of this
+  repository's required contexts survive elsewhere in this tree and at least one of them is already
+  false**, which this measurement is what disproves. They are recorded as a follow-up rather than
+  swept into an investigation. Derive the live answer instead:
 
   ```bash
   gh api repos/cosyte/<repo>/rulesets --jq '.[].id'

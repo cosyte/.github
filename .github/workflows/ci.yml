@@ -36,8 +36,10 @@ on:
       # is still emitted as `<caller job id> / actionlint`, its conclusion is `skipped`, and GitHub
       # treats that as successful. So a caller whose ruleset requires `ci / actionlint` keeps a green
       # merge button and a context that has stopped proving anything, with nothing saying so.
-      # Measured live rather than reasoned, on this exact shape, in `cosyte/.github#46`; the primary
-      # source, the negative control and the step-level contrast are in that repo's README.md under
+      # Measured live rather than reasoned, on this exact JOB shape, in `cosyte/.github#46`; the
+      # probe called its reusable workflow locally rather than remotely and nothing rests on that
+      # axis, which is disclosed there rather than glossed. The primary source, the negative control
+      # and the step-level contrast are in that repo's README.md under
       # "What a skipped required context does to a merge". Whether the input should exist at all is a
       # policy question for the thirteen callers and is deliberately not answered here.
       run-actionlint:
