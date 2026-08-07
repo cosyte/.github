@@ -55,9 +55,14 @@ name: Em-dash gate
 #   `pnpm audit`: a gate that fails on someone else's clock stops being a signal and becomes a tax.
 #   HONOUR THIS EXEMPTION AND ITS WRITTEN REASON; DO NOT REMOVE IT.
 #
-#   And do not "fix" the Dependabot case by requiring it with an actor `if:`. An
-#   `if: github.actor != 'dependabot[bot]'` on a REQUIRED context leaves the check permanently
-#   PENDING on exactly those PRs, which is worse than red: nothing says why.
+#   And do not "fix" the Dependabot case by requiring it with an actor `if:`. THE REASON STATED HERE
+#   UNTIL 2026-08-07 WAS THE WRONG WAY ROUND: it does not leave the check pending. A job skipped by a
+#   conditional SATISFIES its required context, measured live in `#46`, so an
+#   `if: github.actor != 'dependabot[bot]'` on a REQUIRED context would quietly stop gating on
+#   exactly those PRs while the ruleset went on listing it as required. That is worse than pending,
+#   because a pending check at least says something. The measurement, the primary source and what it
+#   means for `ci.yml`'s `run-actionlint` are in README.md, "What a skipped required context does to
+#   a merge". Do not restate it here; a second copy is how the wrong version survived.
 #
 # ▶ MAKING `no-emdash` REQUIRED IS A SEPARATE ACT WITH A PRECONDITION. Stated as the condition rather
 #   than as a state, because a sibling's copy of this file asserts a state that stopped being true

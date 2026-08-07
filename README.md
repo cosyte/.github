@@ -43,6 +43,109 @@ jobs:
     secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
 ```
 
+## What a skipped required context does to a merge
+
+**Settled 2026-08-07 against a primary source and a live run, in `#46`, because it had been guessed
+at twice in opposite directions and one of the guesses was shipped as prose in this file.**
+
+**The answer: a job skipped by a conditional SATISFIES its required context. It does not block a
+merge.** So putting a required job behind a job-level `if:` does not strand a pull request. It
+**silently un-requires the gate**, leaving the ruleset still naming a context that now proves
+nothing. That is the false-green direction, and it is quiet. The loud direction, a pull request
+stranded forever, has a different cause and is a different row of the same table: a context that is
+**never reported at all**.
+
+### The primary source
+
+GitHub, *Troubleshooting required status checks*,
+<https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks>.
+Under "Required check needs to succeed against the latest commit SHA", verbatim:
+
+> Successful check statuses are `success`, `skipped`, and `neutral`.
+
+And under "Handling skipped but required checks", the two rows that separate the directions, verbatim:
+
+| Cause | Result | How to fix or check |
+| --- | --- | --- |
+| A workflow is skipped by path filtering, branch filtering, or a commit message | Associated checks stay in a "Pending" state and block merging | Avoid requiring workflows that can be skipped. |
+| A job is skipped by a conditional | The job reports "Success" | ... |
+
+### The live run
+
+`#46` on this repository, head `5381b69`, run `31208484929`. Three shapes were built as a temporary
+probe workflow, measured on one real pull request, and the probe was then deleted from the branch, so
+what merged carries this section and no workflow. Each context was added to ruleset `19990161` in
+turn, pinned to `integration_id: 15368` like every other, and the ruleset was restored afterwards and
+verified identical to its pre-measurement snapshot.
+
+| Shape | Check-run `conclusion` | Required during the measurement | Pull request |
+| --- | --- | --- | --- |
+| A `workflow_call` job behind a job-level `if:` on a false boolean input | `skipped` | yes | `MERGEABLE`, `mergeable_state: clean` |
+| A plain job behind a job-level `if:` that evaluates false | `skipped` | yes | `MERGEABLE`, `mergeable_state: clean` |
+| A job that RUNS with every step behind an `if:` that evaluates false | `success` | yes | `MERGEABLE`, `mergeable_state: clean` |
+| **Negative control:** a required context nothing emits | no check run at all | yes | `BLOCKED`, `mergeable_state: blocked` |
+
+**The negative control is what makes the other three rows mean anything**, and it is the reason this
+was worth a live run rather than a reading. `mergeable_state` reports `clean` for a great many
+reasons, so a single green measurement proves only that the field was green. Requiring a context
+nothing emits flipped the identical pull request to `blocked` and removing it flipped it back, which
+establishes that the field is tracking required-check satisfaction here and not something else.
+
+**One precision the documentation glosses and a reader will otherwise get wrong.** The conclusion
+string on a conditionally skipped job is literally `skipped`, not `success`. "The job reports
+Success" describes how the merge treats it, not what the API returns. Both are visible at once in the
+rollup: `conclusion: SKIPPED`, `isRequired: true`, and `statusCheckRollup.state: SUCCESS`.
+
+### Which shape `ci.yml` produces, and what that means for a caller
+
+`ci.yml`'s `actionlint` job carries `if: ${{ inputs.run-actionlint }}`. That is a **job-level**
+condition inside a `workflow_call` workflow, which is row one above, measured on the identical **job**
+shape rather than reasoned across from row two. The context is still emitted, still named
+`<caller job id> / <inner job id>` the way `ci / actionlint` is, and still satisfies.
+
+**One axis of row one was not varied, stated rather than glossed:** the probe called its reusable
+workflow **locally** (`uses: ./.github/workflows/probe-reusable.yml`) while every real caller calls it
+**remotely** (`cosyte/.github/.github/workflows/ci.yml@main`). Nothing in the finding rests on that
+axis, and row two reaches the same conclusion through a plain job with no reusable workflow at all,
+so the word to use is "the identical job shape" and not "identical".
+
+**So a caller setting `run-actionlint: false` does not strand its pull requests. It removes the gate
+while its ruleset still lists the context, and nothing anywhere says so.** A maintainer reading a
+green merge button gets no signal that a required check stopped checking.
+
+**A required job gates all of its steps, and that cuts the same way, only more quietly.** Moving a
+gate into a step behind an `if:` un-requires it exactly as completely, and the context then reports
+`success` rather than `skipped`, so it is invisible to anyone auditing conclusions. The rule that
+follows from the whole table is one sentence: **a context that does not do its work on every pull
+request cannot gate every pull request**, whether the skip is at the job level or the step level.
+
+### What deliberately does not follow here
+
+- **`ci.yml`'s behaviour is unchanged.** The settled fact may well argue for taking the input away,
+  or for callers requiring something unskippable instead, but thirteen repositories call this
+  workflow at `@main` and that is a policy change with an org-wide blast radius. It belongs to its
+  own change with its own census, not to the investigation that measured it. The only edit made to
+  `ci.yml` here is a comment at the input naming the consequence.
+- **No context list and no count is written by this change.** Nothing in a repository can observe its
+  own ruleset, so any list goes stale the next time a workflow grows a job. That is stated as what
+  this change does rather than as a property of the repository, because **one older count of this
+  repository's required contexts survives in `test/install-check.test.mjs` and this measurement is
+  what disproves it.** It is named here and left alone rather than swept into an investigation, and
+  correcting it is its own change. Derive the live answer instead:
+
+  ```bash
+  gh api repos/cosyte/<repo>/rulesets --jq '.[].id'
+  gh api repos/cosyte/<repo>/rulesets/<id> \
+    --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
+  ```
+
+- **No gate was built.** There is nothing here for one to check. `ci.yml`'s condition is deliberate,
+  and the thing that would need guarding is each caller's ruleset, which no code in a repository can
+  see. A CI job that reads the ruleset over the API is specifically **not** the answer until someone
+  answers the flakiness question first: the anonymous rate limit is 60 requests per hour and it is
+  charged per shared runner IP, so such a gate trades a false green for a flaky red on a required
+  context, which is worse.
+
 ## Who authors the "Version Packages" PR
 
 **`GITHUB_TOKEN` cannot, and the failure is silent.** GitHub does not start workflow runs for events
@@ -1379,8 +1482,12 @@ keeps a standing weekly `github-actions` schedule here, so such a pull request a
 else's clock indefinitely. (Stated as the configuration rather than as a count of open pull
 requests, which goes stale between sessions.) Requiring it would block a dependency bump on prose
 nobody here wrote.
-Nor is an actor `if:` a fix: on a required context that leaves the check permanently pending, which
-is worse than red because nothing says why.
+Nor is an actor `if:` a fix, and **the reason stated here until 2026-08-07 was the wrong way round**.
+It does not leave the check pending. A job skipped by a conditional satisfies its required context
+(measured in `#46`, see "What a skipped required context does to a merge" above), so requiring this
+one behind `if: github.actor != 'dependabot[bot]'` would produce a gate that quietly stops gating on
+exactly the pull requests the condition names, while the ruleset goes on listing it as required.
+That is worse than not requiring it, because nothing distinguishes it from a gate that ran.
 
 Making `no-emdash` required has a precondition rather than a date: a context may not be required
 before its workflow has completed on `main`, or every PR sits pending and unmergeable with nothing
