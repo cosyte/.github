@@ -265,12 +265,12 @@ export function consumerDependencyNames(manifest) {
 // written first and was WRONG IN THE DANGEROUS DIRECTION: it promoted every kind to `blocked` in the
 // gate that runs on real publishes. Measured against this file's own `classify` with identical
 // facts, `@cosyte/assets=private` gave `uninstallable`/failing before and `blocked-peer`/passing
-// after — so the edit that was supposed to change nothing here quietly taught this gate to excuse
+// after, so the edit that was supposed to change nothing here quietly taught this gate to excuse
 // the one kind that is DEFINED as "must not excuse a package that publishes". This gate only ever
 // observes packages that published.
 //
 // An unrecognised or `private` tag is therefore left ATTACHED, and an attached tag matches no
-// dependency name, so it excuses nothing — which is byte-for-byte what this function did before
+// dependency name, so it excuses nothing, which is byte-for-byte what this function did before
 // tags existed. `prepublish-check.mjs` refuses an unknown kind outright; here it simply does not
 // excuse, because a pre-publish gate may fail closed on a typo and this one may not.
 /** Parse a comma/whitespace separated allowance into a normalized, de-duplicated list of NAMES. */

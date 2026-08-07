@@ -10,7 +10,7 @@ name: CodeQL
 #         actions: read
 #       uses: cosyte/.github/.github/workflows/codeql.yml@main
 # A called workflow can only downgrade the caller's token, never escalate it, so the caller MUST grant
-# security-events: write — without it GitHub rejects the workflow at startup. Actions pinned to SHAs.
+# security-events: write. Without it GitHub rejects the workflow at startup. Actions pinned to SHAs.
 
 on:
   workflow_call:

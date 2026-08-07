@@ -42,7 +42,7 @@
 //   name=blocked    Absent for a reason outside this repo's control, and EXPECTED TO CLEAR.
 //                   `@cosyte/fhir` is the only one today: a persistent unexplained npm `E403`
 //                   (FHIR-NPM-NAME), staged on `main`, not missing work. This kind EXCUSES an
-//                   install failure, and it is self-clearing — the moment the package publishes,
+//                   install failure, and it is self-clearing: the moment the package publishes,
 //                   nothing is absent, the install simply passes, and the entry is reported stale
 //                   so it gets deleted.
 //
@@ -63,7 +63,7 @@
 //                   is absent BY DESIGN could be excused, and it takes a human writing that exact
 //                   name into a workflow input.
 //
-// A malformed entry FAILS — an unknown kind, an empty name, or one name written twice with
+// A malformed entry FAILS: an unknown kind, an empty name, or one name written twice with
 // different kinds. That last one is not pedantry: the argument for failing on a typo is that a typo
 // silently NARROWING the allowance would be invisible, and de-duplicating on the name alone would
 // silently WIDEN it instead, keeping whichever kind happened to be written first. Every other
@@ -71,7 +71,7 @@
 // is offline, deterministic and one line to fix.
 //
 // ▶ `install-check.mjs` READS THE SAME STRING AND STRIPS ONLY `=blocked`. It cannot fail closed on a
-// typo — a red there misreports a permanent release — so instead an unrecognised or `private` tag is
+// typo (a red there misreports a permanent release), so instead an unrecognised or `private` tag is
 // left ATTACHED to the name, matches no dependency, and excuses nothing. The two gates therefore
 // agree on the only kind that excuses anything, which is what makes "one grammar" true rather than
 // merely tidy. Stripping every tag was written first and quietly taught the post-publish gate to
@@ -221,8 +221,8 @@ export function unexplainedAbsences(absentNames, entries) {
  * these are notices and never failures.
  * `declaredNames` is `null` for UNKNOWN and `[]` for KNOWN-EMPTY, and the distinction is the whole
  * reason it is not just an array. A package that declares no consumer dependencies at all is the
- * case where an allowance entry is MOST obviously dead weight, and an `array.length > 0` guard —
- * which is what this had first — silently declines to say so on exactly that package.
+ * case where an allowance entry is MOST obviously dead weight, and an `array.length > 0` guard
+ * (which is what this had first) silently declines to say so on exactly that package.
  * @param {{name: string, kind: string}[]} entries
  */
 export function staleAllowance(entries, { presentNames = [], declaredNames = null } = {}) {
@@ -269,7 +269,7 @@ export const PACK_VERDICTS = Object.freeze([
 ]);
 
 /**
- * LAYER 1. Offline, deterministic, and never excusable by any allowance — the same rule
+ * LAYER 1. Offline, deterministic, and never excusable by any allowance: the same rule
  * `install-check.mjs` applies to the manifest the registry serves, applied to the manifest that is
  * about to become it.
  * @param {{manifest: Record<string, any>, malformedAllowance?: string[]}} facts
@@ -359,8 +359,8 @@ export function classifyPack(facts) {
 
   // THE SPECIFIER LINT IS EVALUATED FIRST AND INDEPENDENTLY OF THE INSTALL, HERE TOO, AND THIS IS
   // NOT REDUNDANT WITH LAYER 1. `install-check.mjs`'s `classify` orders it first precisely so the
-  // allowance cannot excuse a `file:` specifier in a package that ALSO has a genuinely blocked peer
-  // — which is exactly `@cosyte/cli@0.0.1`, four `file:` specifiers and a blocked `@cosyte/fhir`.
+  // allowance cannot excuse a `file:` specifier in a package that ALSO has a genuinely blocked peer,
+  // which is exactly `@cosyte/cli@0.0.1`, four `file:` specifiers and a blocked `@cosyte/fhir`.
   // Leaving that ordering to the workflow's step order made the property depend on a caller's
   // configuration: with `run-prepublish-manifest-lint: false` and `run-prepublish-install: true`,
   // that shape settled `blocked-peer` and exited 0. The verdict function owns it now, so no
@@ -387,7 +387,7 @@ export function classifyPack(facts) {
       failing: true,
       reason:
         `The manifest declares entry points that do not exist in the working tree: ` +
-        `${missingFromTree.join(", ")}. Build before packing — this is this workflow's mistake, ` +
+        `${missingFromTree.join(", ")}. Build before packing. This is this workflow's mistake, ` +
         `not the package's.`,
     };
   }
@@ -489,7 +489,7 @@ export function classifyPack(facts) {
 /**
  * The files a consumer's resolver will reach for, read out of the manifest rather than guessed.
  * `exports` is walked to arbitrary depth because a conditional map nests, and only string leaves
- * that look like relative paths are taken — a leaf that is `null` is a deliberate block, not a file.
+ * that look like relative paths are taken: a leaf that is `null` is a deliberate block, not a file.
  * @param {Record<string, any>} manifest
  */
 export function declaredFiles(manifest) {
@@ -499,7 +499,7 @@ export function declaredFiles(manifest) {
   // DEFECT IN THIS ORG'S OWN TOOLING, NOT A HYPOTHETICAL. The `attw` preflight shipped with exactly
   // this blind spot and three repos closed it independently (`cli#25` disclosed it, `fhir#49` and
   // `hl7#78` fixed it). A path filter that quietly drops a legal spelling does not produce a false
-  // red — it produces a package with NO entry point asserted at all, which reads as a pass.
+  // red. It produces a package with NO entry point asserted at all, which reads as a pass.
   const take = (value) => {
     if (typeof value !== "string") return;
     const v = value.trim();
@@ -541,8 +541,8 @@ export function toolingEntries(present) {
 // fails CLOSED that throw is a RED pull request on a package with nothing wrong with it.
 //
 // "Slice from the first bracket" is the obvious fix and it is wrong: that prefix line STARTS with
-// `[`. So the candidate starts are the document boundaries npm's pretty-printer actually produces —
-// the beginning, and every line that opens with `[` or `{` — and the first one that parses into
+// `[`. So the candidate starts are the document boundaries npm's pretty-printer actually produces
+// (the beginning, and every line that opens with `[` or `{`), and the first one that parses into
 // something carrying a `filename` wins. A prefix that happens to be valid JSON without a filename is
 // skipped rather than accepted.
 // The scan takes EVERY bracket as a candidate start, not only one that opens a line, and extracts a
@@ -658,7 +658,7 @@ export async function readManifest(repo) {
 }
 
 /**
- * LAYER 1, whole. Trivial by design — the value is that it is offline, so it can run before
+ * LAYER 1, whole. Trivial by design: the value is that it is offline, so it can run before
  * `pnpm install` and cost a caller nothing.
  */
 export async function runManifestLayer({ repo, allowanceRaw, manifest }) {
@@ -748,7 +748,7 @@ export async function runPackLayer({
     // that ladder exists because the org publishes in WAVES and a sibling published seconds ago is
     // genuinely unpropagated. Nothing is being published here, so the only thing a retry buys is
     // insurance against a single transient fault turning into a red people learn to ignore. An
-    // absence the allowance has already settled is not retried — the allowance is a statement that
+    // absence the allowance has already settled is not retried: the allowance is a statement that
     // it is standing rather than transient, so re-asking cannot change the answer.
     const budget = Math.max(1, attempts);
     for (let attempt = 1; attempt <= budget; attempt += 1) {
@@ -810,9 +810,9 @@ export async function runPackLayer({
 export function renderSummary(result) {
   const icon = result.failing ? "❌" : result.verdict === "pass" ? "✅" : "⚠️";
   const lines = [
-    `### ${icon} Pre-publish ${result.layer} layer — \`${result.verdict}\``,
+    `### ${icon} Pre-publish ${result.layer} layer: \`${result.verdict}\``,
     "",
-    `**${result.package ?? "(unnamed package)"}** — ${result.reason}`,
+    `**${result.package ?? "(unnamed package)"}**: ${result.reason}`,
   ];
   const untagged = (result.allowance ?? []).filter((e) => !e.tagged);
   if (untagged.length > 0) {

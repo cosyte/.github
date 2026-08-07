@@ -51,7 +51,7 @@ on:
       # policy call with a real blast radius rather than a build. As of that date no caller passes
       # this input, so the default is the whole story and the flip turned layer 2 on for all thirteen
       # at once. Measured the same day against the live registry with the default allowance below:
-      # 11 `pass`, 2 `blocked-peer` (`transform` and `synth`, on `@cosyte/fhir`), 0 red — and both
+      # 11 `pass`, 2 `blocked-peer` (`transform` and `synth`, on `@cosyte/fhir`), 0 red, and both
       # `blocked-peer` results exit 0, so the flip reds nobody. Read those as a dated measurement,
       # not a standing guarantee; the registry is not ours and the answer can change under us.
       # It costs a full install per run and touches the network on every pull request. That price is
@@ -66,7 +66,7 @@ on:
       # names its known-unpublished consumer dependencies and the gate asserts EXACTLY that set: a
       # named absence is the expected state and warns, an absence nobody named still fails. Without
       # it layer 2 reds `transform` and `synth` for `@cosyte/fhir` (FHIR-NPM-NAME), which nobody can
-      # fix from those repos, and a permanently red gate is one people learn to ignore — the same
+      # fix from those repos, and a permanently red gate is one people learn to ignore: the same
       # failure as a step that never runs.
       #
       # THE `=blocked` TAG IS LOAD-BEARING, AND IT IS THE ONLY KIND THAT EXCUSES ANYTHING.
@@ -118,7 +118,7 @@ jobs:
   # THE TWO PRE-PUBLISH LAYERS, IN THEIR OWN JOB RATHER THAN AS STEPS IN `verify`, AND THE REASON IS
   # NOT TIDINESS. This needs a checkout of `cosyte/.github` for the script, `actions/checkout`
   # refuses a path outside `GITHUB_WORKSPACE`, and a second tree inside the caller's workspace is
-  # visible to `pnpm lint`, `pnpm format:check` and `pnpm phi-scan` — `ccda`'s PHI scanner walks from
+  # visible to `pnpm lint`, `pnpm format:check` and `pnpm phi-scan`. `ccda`'s PHI scanner walks from
   # the REPO ROOT. Putting it in `verify` would have this gate seeding files inside another gate's
   # scan roots, which is the enumerate-then-read hazard that has already cost this org a blocked
   # publish. Its own job has its own workspace and touches none of them.

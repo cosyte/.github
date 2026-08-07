@@ -5,7 +5,7 @@ name: Scorecard
 #   jobs:
 #     scorecard:
 #       permissions:
-#         contents: read         # REQUIRED — the caller job reads this reusable to resolve it;
+#         contents: read         # REQUIRED, because the caller job reads this reusable to resolve it;
 #                                # omit it and the job gets contents:none and startup-fails.
 #         security-events: write # upload the SARIF to the repo's Security tab
 #         id-token: write        # publish results to the OpenSSF API (for the badge)

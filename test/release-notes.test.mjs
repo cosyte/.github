@@ -50,8 +50,8 @@ const EXPECTED_BODY = join(HERE, 'fixtures/hl7-v0.0.2/expected-release-body.md')
 /** The exact body every cosyte release carried before this change. */
 const PRODUCTION_STUB = 'Automated release of v0.0.2.';
 
-/** U+2014 as an escape: these files must not contain the character under test. */
-const EM = '\u2014';
+/** U+2014, assembled: these files must not contain the character under test, in any spelling. */
+const EM = String.fromCodePoint(0x2014);
 
 function loadFixtureFiles() {
   return readdirSync(FIXTURE_DIR)
@@ -280,11 +280,11 @@ test('a phase phrase at the END of a sentence is cut whole, not decapitated', ()
   // hardening: the final." (corrected by hand afterwards) and @cosyte/deid wrote the same shape.
   // isSafeCut allows it because a cut at the end of a sentence has nothing on its right to break,
   // and DANGLING_TAIL is FORBIDDEN to catch it -- `final` is a content word.
-  assert.equal(toHeadline('Phase 9 (SYNTH-11): release hardening — the final roadmap phase').headline, 'Release hardening');
-  assert.equal(toHeadline('DEID-10 — release hardening (roadmap §Phase 10), the final roadmap phase').headline, 'Release hardening');
+  assert.equal(toHeadline(`Phase 9 (SYNTH-11): release hardening ${EM} the final roadmap phase`).headline, 'Release hardening');
+  assert.equal(toHeadline(`DEID-10 ${EM} release hardening (roadmap §Phase 10), the final roadmap phase`).headline, 'Release hardening');
   // Which is byte-for-byte what @cosyte/x12, @cosyte/ncpdp and @cosyte/astm already publish for the
   // same change, so the rule lands on the corpus's own answer rather than inventing one.
-  assert.equal(toHeadline('Phase 10 — release hardening').headline, 'Release hardening');
+  assert.equal(toHeadline(`Phase 10 ${EM} release hardening`).headline, 'Release hardening');
 
   // ANCHORED TO THE TAIL. A determiner run is only stranded when no noun follows it, so mid-sentence
   // this alternative must not fire: unanchored it rewrites the line below to "Complete and ship the

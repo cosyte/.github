@@ -30,8 +30,8 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, '../scripts/release-diff.mjs');
 
-/** U+2014 as an escape: these files must not contain the character under test. */
-const EM = '\u2014';
+/** U+2014, assembled: these files must not contain the character under test, in any spelling. */
+const EM = String.fromCodePoint(0x2014);
 
 // ---------------------------------------------------------------------------------------------
 // Real captured input

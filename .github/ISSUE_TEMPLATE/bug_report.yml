@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the report. Two things up front:
-        - **Use synthetic data only — never real PHI.** Swap names, MRNs, and dates for fabricated values.
+        - **Use synthetic data only, never real PHI.** Swap names, MRNs, and dates for fabricated values.
         - Reduce to the **smallest input** that reproduces the problem.
   - type: dropdown
     id: package
@@ -55,5 +55,5 @@ body:
     attributes:
       label: PHI check
       options:
-        - label: This report contains no real patient data — synthetic identifiers only.
+        - label: This report contains no real patient data, only synthetic identifiers.
           required: true

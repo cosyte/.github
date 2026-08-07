@@ -99,9 +99,10 @@ const ABBREVIATIONS = new Set([
 /** Markdown that decorates a word without being part of it. Code-span CONTENT is kept: it is prose. */
 const DECORATION = /[*_`"'“”‘’]/g;
 
-// The dashes, as escapes: this repo's own files must not carry the character its release notes ban,
-// and a character class is the one place it would otherwise sneak back in unread.
-const DASHES = '\\u2014\\u2013';
+// The dashes, assembled from their codepoints: this repo's own files must not carry the character
+// its release notes ban, in any spelling, and a character class is the one place it would otherwise
+// sneak back in unread. U+2014 em dash, U+2013 en dash.
+const DASHES = String.fromCodePoint(0x2014, 0x2013);
 const LEADING_PUNCTUATION = new RegExp(`^[([{<,;:.!?${DASHES}-]+`);
 const TRAILING_PUNCTUATION = new RegExp(`[)\\]}>,;:.!?${DASHES}]+$`);
 
