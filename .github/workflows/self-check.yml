@@ -6,6 +6,42 @@ name: Self-check
 # It also runs the unit tests for scripts/, which is where the release-notes derivation and the gate
 # that refuses meaningless release bodies live. That code runs in 8+ public repos behind a protected
 # environment, so it is awkward to iterate on there and has to be proved here.
+#
+# ▶ BOTH JOB IDS BELOW ARE CHECK-RUN CONTEXT NAMES, AND BOTH ARE SAFE TO REQUIRE. Neither reads a
+#   pull request's title or body, so neither can be reddened by prose an outside author wrote, which
+#   is the reason `no-emdash-messages` in the sibling workflow must never be required.
+#
+#   `scripts` was NOT required for a stretch, and the reason is worth keeping because it is not the
+#   reason the record first gave. It is not path conditional and never was: there is no `paths:`
+#   filter here and no job-level `if:`. The job was simply ADDED (0a759fe, 2026-07-27) after three of
+#   the then open pull requests already existed, so it had never run on them, and requiring a context
+#   an open branch cannot emit strands that branch. The remedy is a rebase, which is a documented
+#   cost rather than a defect.
+#
+# ▶ THE PRECONDITION FOR REQUIRING EITHER, stated as a condition rather than as a state, because a
+#   state written in a repository cannot observe the ruleset it describes and goes stale silently:
+#   a context may not be required before its workflow has COMPLETED ON `main`, or every pull request
+#   sits pending and unmergeable with nothing saying why. Read the context name off a LIVE CHECK RUN,
+#   never off this file's `name:`. This workflow is titled "Self-check" and the contexts are the bare
+#   job ids `actionlint` and `scripts`. Confirm on real `pull_request` check runs that the job emits
+#   on pull requests it does not otherwise touch, not only on the one that added it:
+#     gh api repos/cosyte/<repo>/commits/<sha>/check-runs --jq '.check_runs[].name'
+#
+#   To see what is required right now rather than trust this comment, derive it:
+#     gh api repos/cosyte/.github/rulesets/19990161 --jq '.rules[]
+#       | select(.type=="required_status_checks")
+#       | .parameters.required_status_checks'
+#
+# ▶ TWO WAYS TO UN-REQUIRE A JOB WITHOUT TOUCHING A RULESET, both silent, both guarded by
+#   `test/self-check.test.mjs` rather than by this paragraph:
+#
+#   (1) RENAME A JOB ID and the ruleset entry naming it detaches, with no error anywhere. The old
+#       context is then required and emitted by nothing, so every pull request strands. Change the
+#       job id and the ruleset entry together, or neither.
+#   (2) A REQUIRED JOB GATES ITS STEPS, NOT WHAT SELECTS THE WORK. The `scripts` context says the
+#       command below exited 0; it says nothing about how many files the glob handed it. Narrowing
+#       `test/*.test.mjs`, or splitting a step out into a job nobody requires, leaves the context
+#       green over strictly less. Name the glob when you change it.
 on:
   push:
     branches: [main]
@@ -16,6 +52,7 @@ permissions:
   contents: read
 
 jobs:
+  # The job id is the check-run context name a branch ruleset requires; see the note above.
   actionlint:
     runs-on: ubuntu-latest
     steps:
@@ -24,6 +61,7 @@ jobs:
         with:
           fail_on_error: true
 
+  # Likewise a context name. Renaming this detaches any ruleset entry naming it; see the note above.
   scripts:
     runs-on: ubuntu-latest
     steps:
@@ -33,5 +71,12 @@ jobs:
           node-version: "22"
       # Zero dependencies on purpose: node:test and node:assert only, so this repo needs no
       # package.json, no lockfile, and no install step to stay verifiable.
+      #
+      # THE GLOB IS THE SELECTION, and this job is a required context, so narrowing it is a way to
+      # keep the context green over less work. `test/self-check.test.mjs` asserts that this exact
+      # pattern selects every `test/*.test.mjs` file on disk, so a narrowing reds here rather than
+      # passing quietly. The quotes are load-bearing: unquoted, the shell expands the glob and
+      # `node --test` receives a file list, which happens to work today and stops matching what the
+      # test reads the moment a filename contains a space.
       - name: Unit tests
         run: node --test "test/*.test.mjs"
