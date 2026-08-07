@@ -30,6 +30,16 @@ on:
         description: "Run the repo's PHI scanner (pnpm phi-scan)."
         type: boolean
         default: false
+      # 🛑 SETTING THIS FALSE DOES NOT STRAND A PULL REQUEST. IT SILENTLY UN-REQUIRES THE GATE, which
+      # is the quiet direction rather than the loud one. The job below carries a JOB-LEVEL `if:` on
+      # this input, and a job skipped by a conditional SATISFIES its required context: the check run
+      # is still emitted as `<caller job id> / actionlint`, its conclusion is `skipped`, and GitHub
+      # treats that as successful. So a caller whose ruleset requires `ci / actionlint` keeps a green
+      # merge button and a context that has stopped proving anything, with nothing saying so.
+      # Measured live rather than reasoned, on this exact shape, in `cosyte/.github#46`; the primary
+      # source, the negative control and the step-level contrast are in that repo's README.md under
+      # "What a skipped required context does to a merge". Whether the input should exist at all is a
+      # policy question for the thirteen callers and is deliberately not answered here.
       run-actionlint:
         description: "Lint the repo's workflow files with actionlint."
         type: boolean
