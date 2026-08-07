@@ -651,8 +651,9 @@ test("the blocked-peer warning still says the package is uninstallable for consu
 });
 
 test("no annotation or summary carries an em dash, which the release gate bans org-wide", () => {
-  // Written as an escape rather than the character, so this file itself stays free of one.
-  const EM_DASH = "\u2014";
+  // Assembled from its codepoint rather than written, so this file itself stays free of the
+  // character in every spelling the em-dash gate bans, the JavaScript escape included.
+  const EM_DASH = String.fromCodePoint(0x2014);
   const cases = [
     classify(facts({ specifierFindings: findNonRegistrySpecifiers(CLI_0_0_1) })),
     classify(facts({ ownServed: false, installAttempted: false, installOk: false })),

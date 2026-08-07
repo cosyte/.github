@@ -8,7 +8,7 @@ name: Nightly fuzz
 #   jobs:
 #     fuzz:
 #       uses: cosyte/.github/.github/workflows/nightly-fuzz.yml@main
-# Arbitrary/malformed bytes must never crash, hang, or OOM — they degrade to a typed error or warning.
+# Arbitrary/malformed bytes must never crash, hang, or OOM: they degrade to a typed error or warning.
 
 on:
   workflow_call:

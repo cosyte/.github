@@ -1,7 +1,7 @@
 // Unit tests for the two PRE-PUBLISH layers.
 //
 // Zero dependencies and no network: `node:test` + `node:assert` only, matching the rest of this
-// repo. Every I/O the pack layer performs is injected, so the taxonomy, the retry and — above all —
+// repo. Every I/O the pack layer performs is injected, so the taxonomy, the retry and, above all,
 // the DECLARED ALLOWANCE are driven here against fakes.
 //
 // The allowance is the reason this file is long. It is a mechanism whose entire job is to EXCUSE a
@@ -157,12 +157,12 @@ test("ALLOWANCE_KINDS is the list the parser actually enforces, not a restated o
 // ONE GRAMMAR, TWO GATES, AND ONLY ONE KIND IS STRIPPED. `install-check.mjs` reads the same input
 // string and must not start seeing "@cosyte/fhir=blocked" as a package literally named that. It must
 // ALSO not start excusing `=private`, which is the kind defined as "must not excuse a package that
-// publishes" — and the post-publish gate only ever observes packages that published. Stripping every
+// publishes", and the post-publish gate only ever observes packages that published. Stripping every
 // tag was written first and was wrong in exactly that direction.
 test("the post-publish gate strips =blocked and ONLY =blocked", () => {
   assert.deepEqual(parseAllowance("@cosyte/fhir=blocked"), ["@cosyte/fhir"]);
   assert.deepEqual(parseAllowance("@cosyte/fhir"), ["@cosyte/fhir"]);
-  // Left attached, so it matches no dependency name and excuses nothing — byte-for-byte what this
+  // Left attached, so it matches no dependency name and excuses nothing, byte-for-byte what this
   // function did before tags existed.
   assert.deepEqual(parseAllowance("@cosyte/assets=private"), ["@cosyte/assets=private"]);
   assert.deepEqual(parseAllowance("@cosyte/fhir=pending"), ["@cosyte/fhir=pending"]);
@@ -179,8 +179,8 @@ test("=blocked is behaviour-identical to the untagged spelling release.yml shipp
 // ── What the allowance does and does not excuse ─────────────────────────────────────────────────
 
 // EXACTLY ONE KIND EXCUSES ANYTHING. An earlier draft let `private` excuse "a package that is itself
-// private", which reads reasonable and is UNREACHABLE — a private manifest settles `not-published`
-// before anything is installed — so it was a behaviour only a test could ever exhibit.
+// private", which reads reasonable and is UNREACHABLE (a private manifest settles `not-published`
+// before anything is installed), so it was a behaviour only a test could ever exhibit.
 test("blocked excuses; private excuses nothing, anywhere", () => {
   assert.equal(allowanceExcuses({ kind: "blocked" }), true);
   assert.equal(allowanceExcuses({ kind: "private" }), false);
@@ -197,7 +197,7 @@ test("a 404 that is deliberate and a 404 that is a block do not share words", ()
   assert.match(unexplained[0].why, /absent by design and never going to clear/);
 });
 
-test("an absence nobody declared is a finding — the allowance is exact, not a mute", () => {
+test("an absence nobody declared is a finding: the allowance is exact, not a mute", () => {
   const { entries } = parseDeclaredAllowance("@cosyte/fhir=blocked");
   const unexplained = unexplainedAbsences(["@cosyte/fhir", "@cosyte/somethingnew"], entries);
   assert.deepEqual(unexplained.map((u) => u.name), ["@cosyte/somethingnew"]);
@@ -332,7 +332,7 @@ test("declaredFiles ignores a null exports leaf, which is a deliberate block and
 
 // A LEADING `./` IS OPTIONAL AND LEGAL. This org's `attw` preflight shipped requiring one, and
 // three repos closed that same blind spot independently. Dropping a legal spelling here does not
-// red anything — it asserts NOTHING about the entry point and reads as a pass.
+// red anything: it asserts NOTHING about the entry point and reads as a pass.
 test("declaredFiles takes a bin and an entry point written without a leading ./", () => {
   assert.deepEqual(declaredFiles({ bin: "cli.mjs", main: "index.js" }), ["cli.mjs", "index.js"]);
 });
@@ -564,6 +564,26 @@ test("a stale allowance is reported in the summary so it gets deleted", () => {
   });
   assert.match(s, /The declared allowance is stale/);
   assert.match(s, /Delete the entry/);
+});
+
+// The mirror of the same assertion in `test/install-check.test.mjs`. `check-no-emdash.mjs` reads
+// tracked FILES, so it sees the template literals in `renderSummary` but not the string this step
+// actually writes into a job summary, which is composed at runtime from a verdict and a reason. Both
+// reporters render into the same surface, so both are held to the same rule.
+test("no annotation or summary carries an em dash, which the brand rule bans org-wide", () => {
+  // Assembled from its codepoint rather than written, so this file itself stays free of the
+  // character in every spelling the em-dash gate bans, the JavaScript escape included.
+  const EM_DASH = String.fromCodePoint(0x2014);
+  const results = [
+    { layer: "manifest", verdict: "pass", failing: false, package: "@cosyte/x", reason: "r" },
+    { layer: "pack", verdict: "blocked-peer", failing: false, package: "@cosyte/x", reason: "r" },
+    { layer: "pack", verdict: "uninstallable", failing: true, package: "@cosyte/x", reason: "r" },
+    { layer: "pack", verdict: "not-built", failing: true, package: undefined, reason: classifyPack({ missingFromTree: ["dist/index.mjs"] }).reason },
+  ];
+  for (const result of results) {
+    assert.equal((renderAnnotation(result) || "").includes(EM_DASH), false, result.verdict);
+    assert.equal(renderSummary(result).includes(EM_DASH), false, result.verdict);
+  }
 });
 
 // ── End to end, against a real tree on disk, with npm and the network faked ─────────────────────
@@ -825,7 +845,7 @@ test("ci.yml wires both layers the way the script expects", async () => {
   );
 
   // The defaults are the policy, so they are pinned rather than described: layer 1 on (measured zero
-  // findings across all thirteen callers on 2026-08-05), and layer 2 on as well since 2026-08-05 —
+  // findings across all thirteen callers on 2026-08-05), and layer 2 on as well since 2026-08-05,
   // the policy call the finished mechanism was waiting on, measured 11 `pass` / 2 `blocked-peer` /
   // 0 red across the same thirteen that day.
   //
@@ -833,8 +853,8 @@ test("ci.yml wires both layers the way the script expects", async () => {
   // block spells `run-prepublish-install: false` when it tells a caller how to opt out, so an
   // unanchored search can start on that comment and scan forward into the real declaration. It would
   // still read the right value here, but only by accident: it is a decoy that lets the assertion pass
-  // while pointing somewhere it was never meant to point. What separates the two is NOT the indent —
-  // the comment lines in that block are indented six spaces as well — it is that the six spaces must
+  // while pointing somewhere it was never meant to point. What separates the two is NOT the indent
+  // (the comment lines in that block are indented six spaces as well): it is that the six spaces must
   // be followed immediately by the input's name, and a comment carries `#` in that position.
   assert.match(yml, /^ {6}run-prepublish-manifest-lint:[\s\S]{0,400}?default: true$/m);
   assert.match(yml, /^ {6}run-prepublish-install:[\s\S]{0,400}?default: true$/m);
@@ -861,7 +881,7 @@ test("ci.yml wires both layers the way the script expects", async () => {
   );
   // And it installs before it builds, or `pnpm build` has no toolchain. The `>= 0` is not belt and
   // braces: with the step ABSENT, `indexOf` returns -1, which is less than the build index, so the
-  // comparison alone passes on exactly the failure it names — the same vacuity the assertion above
+  // comparison alone passes on exactly the failure it names, the same vacuity the assertion above
   // was just corrected for, reintroduced by its own companion.
   assert.ok(
     job.indexOf("pnpm install --frozen-lockfile") >= 0 &&

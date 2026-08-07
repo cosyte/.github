@@ -91,8 +91,11 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 
-// Written as an escape on purpose: this file must not itself contain the character it bans.
-const EM_DASH = '\u2014';
+// Assembled from its codepoint on purpose: this file must not itself contain the character it
+// bans, in ANY spelling. The escape would be a spelling, and `check-no-emdash.mjs` bans it on the
+// same footing as the literal. `String.fromCodePoint(0x2014)` is that same string, built rather
+// than written.
+const EM_DASH = String.fromCodePoint(0x2014);
 
 /** GitHub rejects a release body longer than this. */
 const MAX_BODY_CHARS = 125000;

@@ -1,7 +1,7 @@
 # Contributing to cosyte
 
-Thanks for considering a contribution. The `@cosyte/*` packages — the HL7, MLLP,
-DICOM, X12, C-CDA, and NCPDP parsers — get better when real integration teams
+Thanks for considering a contribution. The `@cosyte/*` packages (the HL7, MLLP,
+DICOM, X12, C-CDA, and NCPDP parsers) get better when real integration teams
 surface the vendor quirks they hit in production. A bug report with a reproducing
 fixture is one of the most valuable things you can send us.
 
@@ -12,10 +12,10 @@ wins.
 
 ## Before you start
 
-- **Use synthetic data only — never real PHI.** Swap names, MRNs, and dates for
+- **Use synthetic data only, never real PHI.** Swap names, MRNs, and dates for
   fabricated values in every issue, fixture, and example. This is the one rule we
   don't bend.
-- Search existing issues first — your quirk may already be logged.
+- Search existing issues first: your quirk may already be logged.
 - For anything larger than a small fix, open an issue to discuss it before you
   build. It saves everyone a round-trip.
 
@@ -28,7 +28,7 @@ forms will walk you through it.
 ## Opening a pull request
 
 1. Fork and branch from `main`.
-2. Run the full pipeline locally before pushing — every `@cosyte/*` package uses
+2. Run the full pipeline locally before pushing: every `@cosyte/*` package uses
    the same toolchain:
 
    ```bash
@@ -41,8 +41,8 @@ forms will walk you through it.
 
    All of them must exit zero. CI runs the same checks on Node 22 and 24.
 3. Record the change. **How you do that differs by repo, and the repo tells you which
-   kind it is** — see [Recording your change](#recording-your-change) below.
-4. Keep PRs focused — one logical change each. Large refactors start as an issue.
+   kind it is**. See [Recording your change](#recording-your-change) below.
+4. Keep PRs focused: one logical change each. Large refactors start as an issue.
 5. Write a clear commit message. Imperative mood (`fix(parser): …`) is encouraged,
    not enforced.
 
@@ -50,30 +50,30 @@ forms will walk you through it.
 
 Every `@cosyte/*` package has a `CHANGELOG.md`, and it ships **inside the published
 tarball**, so what goes in it is part of the package. But the two kinds of repo want
-opposite things from you, and doing the wrong one is not harmless — so check which
+opposite things from you, and doing the wrong one is not harmless, so check which
 kind you are in before you write anything.
 
 **The check is one file, and its absence is an answer too.** Look for
 `.changeset/config.json`. Nothing else decides this: not the repo's age, not what
 `CHANGELOG.md` looks like today, not what a sibling package does.
 
-**No `.changeset/` directory at all — there is no changeset to add.** If the repo has
+**No `.changeset/` directory at all: there is no changeset to add.** If the repo has
 a `CHANGELOG.md`, add a bullet under `## [Unreleased]` and you are done. **If it has
-neither, there is nothing to record beyond the pull request itself** — several repos
+neither, there is nothing to record beyond the pull request itself**. Several repos
 here publish nothing to npm and have deliberately never kept a changelog, and adding
 one is a change in its own right, not part of your fix. This is the arm to take when
 you cannot find `.changeset/config.json`.
 
-**`.changeset/config.json` with `"changelog": false` — the changelog is written by
+**`.changeset/config.json` with `"changelog": false`: the changelog is written by
 hand, and a changeset is needed as well.** Add the `## [Unreleased]` bullet *and* run
 `pnpm changeset`. The changeset drives the version bump and the public release notes;
 the `CHANGELOG.md` entry is separate and still yours to write.
 
-**`.changeset/config.json` with anything else — the Changesets generator is on, and
+**`.changeset/config.json` with anything else: the Changesets generator is on, and
 your changeset summary *is* the changelog entry.** Add the changeset and leave
 `CHANGELOG.md` alone. The release writes it: `changeset version` inserts a
 `## <version>` section from the changesets it consumes. Hand-editing the file fights
-that, and a hand-added `## [Unreleased]` heading is worse than untidy — generated
+that, and a hand-added `## [Unreleased]` heading is worse than untidy: generated
 releases are prepended above it, so it would sit below every future release claiming
 to be the unreleased one, permanently.
 
@@ -102,7 +102,7 @@ enforced by the release pipeline rather than by review:
 ## The toolchain, briefly
 
 Every package is TypeScript, built with `tsup` (dual ESM + CJS), tested with
-Vitest, linted with ESLint, and formatted with Prettier — all inherited from the
+Vitest, linted with ESLint, and formatted with Prettier, all inherited from the
 shared `@cosyte/*` config packages, not copied per repo. Most parsers ship with
 **zero runtime dependencies**, and we keep it that way unless there's a strong
 reason not to.

@@ -259,8 +259,8 @@ npm in [`test/prepublish-check.test.mjs`](test/prepublish-check.test.mjs).
 
 | Layer | Input | Default | What it does |
 |---|---|---|---|
-| **1 — manifest** | `run-prepublish-manifest-lint` | **on** | Offline, no npm, no network. `dependencies` / `peerDependencies` / `optionalDependencies` must carry only specifiers a registry can resolve |
-| **2 — pack** | `run-prepublish-install` | **on** | `npm pack` the tree, install **that tarball** into a clean anonymous directory, load what it declares |
+| **1: manifest** | `run-prepublish-manifest-lint` | **on** | Offline, no npm, no network. `dependencies` / `peerDependencies` / `optionalDependencies` must carry only specifiers a registry can resolve |
+| **2: pack** | `run-prepublish-install` | **on** | `npm pack` the tree, install **that tarball** into a clean anonymous directory, load what it declares |
 
 **Layer 1 is on by default because it was measured, not because it feels safe.** Run against all
 thirteen callers on 2026-08-05 it produced **zero findings**, `transform` and `synth` included. The
@@ -275,7 +275,7 @@ call, not a build.** The mechanism shipped finished and measured, and the flip w
 rather than for more work. It was made on 2026-08-05 and **layer 2 is now on by default.**
 
 The measurement that flip rests on, stated as the dated measurement it is: run against all thirteen
-callers on **2026-08-05**, with the default allowance, against the live registry — **11 `pass`, 2
+callers on **2026-08-05**, with the default allowance, against the live registry: **11 `pass`, 2
 `blocked-peer` (`transform`, `synth`), 0 red.** Both `blocked-peer` results warn and exit 0, so the
 flip reds nobody that day. It is not a standing guarantee: the registry is not ours, and a package
 that resolves today can stop resolving tomorrow. Re-measure before quoting it forward.
@@ -285,10 +285,10 @@ that resolves today can stop resolving tomorrow. Re-measure before quoting it fo
 here with no change on its side. `transform` and `synth` included: `@cosyte/fhir` is the only
 registry-absent dependency **name** either of them carries, and the default allowance already names
 it. That is the whole of what the allowance has to cover for them, which is not the same claim as
-nothing else being wrong with them — see `blocked-peer` below.
+nothing else being wrong with them. See `blocked-peer` below.
 
-A caller that cannot pay the cost — layer 2 is a full install per run and touches the network on
-every pull request — opts **out**:
+A caller that cannot pay the cost (layer 2 is a full install per run and touches the network on
+every pull request) opts **out**:
 
 ```yaml
 jobs:
@@ -307,7 +307,7 @@ Read what `blocked-peer` does and does not establish before treating those two a
 `expect-unpublished-deps` is the same input `release.yml` takes, in the same grammar. A repo names its
 known-unpublished consumer dependencies and the gate asserts **exactly that set**: a named absence is
 the expected state and warns, an absence nobody named still fails. Without it, layer 2 reds
-`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`), which nobody can fix from those repos —
+`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`), which nobody can fix from those repos,
 and a permanently red gate is one people learn to ignore, which is the same failure as a step that
 never runs. With an open-ended one you get a mute, which is worse than no gate because it reads as a
 gate.
@@ -318,12 +318,12 @@ words, so an entry carries a kind:
 
 | Entry | Meaning | Excuses an install failure? |
 |---|---|---|
-| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear** — `@cosyte/fhir` is the only one today | **yes**, and it is self-clearing |
+| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear**. `@cosyte/fhir` is the only one today | **yes**, and it is self-clearing |
 | `name=private` | absent **by design**, `private: true`, never going to clear | **no, anywhere.** A published package whose dependency will never exist is a permanent defect wearing the same 404 as a temporary one |
-| `name` | untagged — the spelling `release.yml` shipped with in `#31` | **yes**, read as `blocked`, and reported as untagged in the step summary so it can be tightened |
+| `name` | untagged: the spelling `release.yml` shipped with in `#31` | **yes**, read as `blocked`, and reported as untagged in the step summary so it can be tightened |
 
 **The two gates strip `=blocked` and only `=blocked`, and that asymmetry is load-bearing.**
-`install-check.mjs` cannot fail closed on a typo — a red there misreports a permanent release — so
+`install-check.mjs` cannot fail closed on a typo (a red there misreports a permanent release), so
 instead an unrecognised or `private` tag stays **attached** to the name, matches no dependency, and
 excuses nothing. The first version stripped every tag, which is behaviour-identical for `blocked` and
 quietly taught the **post-publish** gate to excuse `private`: measured against the same facts,
@@ -346,18 +346,18 @@ silently *widen* it instead, keeping whichever kind was written first.
 | `non-registry-specifier` | both | **1** | a consumer-facing specifier a registry cannot resolve. Deterministic, offline, **never excusable by the allowance** |
 | `malformed-allowance` | both | **1** | `expect-unpublished-deps` does not parse |
 | `not-built` | 2 | **1** | a declared entry point is absent from the **working tree**. This workflow's mistake, not the package's |
-| `not-packed` | 2 | **1** | present on disk and **absent from the tarball** — `files` or `.npmignore` drops something the manifest declares |
+| `not-packed` | 2 | **1** | present on disk and **absent from the tarball**: `files` or `.npmignore` drops something the manifest declares |
 | `tooling-in-tarball` | 2 | **1** | the tarball contains this gate's own checkout, so the measurement is contaminated |
-| `blocked-peer` | 2 | 0 | uninstallable, and every dependency name the registry does not serve is declared `blocked`. **Not the same as "fully explained"** — see below |
+| `blocked-peer` | 2 | 0 | uninstallable, and every dependency name the registry does not serve is declared `blocked`. **Not the same as "fully explained"**. See below |
 | `inconclusive` | 2 | 0 | the install failed and the registry gave **no usable answer** for a dependency |
 | `undeclared-absent-dependency` | 2 | **1** | an absent dependency the allowance does not account for |
 | `uninstallable` | 2 | **1** | the install failed with every declared dependency present, or it installed and its entry points do not load |
 
-**`blocked-peer` establishes less than "fully explained", and the gap is `PRE-EXISTING` — the
+**`blocked-peer` establishes less than "fully explained", and the gap is `PRE-EXISTING`: the
 post-publish gate makes the same claim in the same words.** What is actually established is that every
 dependency *name* the registry will not serve is declared. npm short-circuits: measured live, a
-package carrying `"@cosyte/hl7": "^99.0.0"` — a range that will never resolve, permanently
-uninstallable for every consumer — **plus** a declared blocked peer settles `blocked-peer` and exits
+package carrying `"@cosyte/hl7": "^99.0.0"` (a range that will never resolve, permanently
+uninstallable for every consumer) **plus** a declared blocked peer settles `blocked-peer` and exits
 0, because npm gives up on the `@cosyte/fhir` 404 and never reports the second defect. A declared
 absence therefore masks any other install failure behind it. Not fixed here: closing it means
 installing with the blocked names excised, which is a different probe from the one a consumer runs.
@@ -382,10 +382,10 @@ weather. That stays three-valued and warns, exactly as it does post-publish.
 
 - **`npm pack --json` does not guarantee that stdout is only JSON.** At `--loglevel error` in this
   org's own trees it emitted `[ERROR], Was not able to set git hooks. Error: ... EACCES ...` ahead of
-  the document — `--ignore-scripts` does not stop `prepare`, and `prepare` runs on pack. "Slice from
+  the document. `--ignore-scripts` does not stop `prepare`, and `prepare` runs on pack. "Slice from
   the first bracket" is the obvious fix and it is **wrong**: that prefix line starts with `[`. The
   parser scans every bracket, extracts a **balanced, string-aware** span rather than slicing to the
-  end of the buffer, and takes the first document that names a tarball — so noise after the document
+  end of the buffer, and takes the first document that names a tarball, so noise after the document
   and a prefix with no trailing newline are both survivable. This gate fails closed, so a parse
   failure here is a red pull request on a good package.
 - **Layer 1 is stricter than reality for one shape, and it is default-ON, so it is stated here rather
@@ -394,10 +394,10 @@ weather. That stays three-valued and warns, exactly as it does post-publish.
   published manifest carrying one is. Latent today: **none of the thirteen callers is a pnpm
   workspace** (`config`, `docs`, `website` and `pathways` are, and none of them calls this workflow).
   The first caller to adopt one gets a false red. Fix it then, by reading the packed manifest rather
-  than the working-tree one — do not soften the rule, which is what makes it deterministic.
+  than the working-tree one. Do not soften the rule, which is what makes it deterministic.
 - **The layers run in their own job, not as steps in `verify`.** They need a checkout of this repo for
   the script, `actions/checkout` refuses a path outside `GITHUB_WORKSPACE`, and a second tree inside
-  the caller's workspace is visible to `pnpm lint`, `pnpm format:check` and `pnpm phi-scan` —
+  the caller's workspace is visible to `pnpm lint`, `pnpm format:check` and `pnpm phi-scan`.
   **`ccda`'s PHI scanner walks from the repo root.** Putting it in `verify` would have one gate
   seeding files inside another gate's scan roots. Belt and braces: layer 2 refuses a tarball that
   contains the tooling checkout (`tooling-in-tarball`) rather than trusting every caller's `files`
@@ -900,8 +900,10 @@ unchanged: still red, still before npm.
 ### A phase phrase at the end of a sentence is cut whole, not decapitated
 
 **`@cosyte/synth` `v0.0.1` published "Release hardening: the final."** `PHASE_TALK` matches `roadmap
-phase`, and in *"…release hardening — the final roadmap phase"* that is the **head noun of "the final
-roadmap phase"**. `isSafeCut` allows it because a cut at the end of a sentence has nothing on its
+phase`, and in *"…release hardening: the final roadmap phase"* that is the **head noun of "the final
+roadmap phase"**. (The published title used an em dash where the colon stands here, which this
+repository no longer spells. `test/release-notes.test.mjs` asserts on the real form, built from its
+codepoint, and `toHeadline` returns the same headline for both.) `isSafeCut` allows it because a cut at the end of a sentence has nothing on its
 right to break, so the determiner run is left standing with nothing to govern. `DANGLING_TAIL` cannot
 see it and **must not be grown to**: `final` is a content word, and that list may only ever hold words
 that cannot change a sentence's meaning. `@cosyte/deid` wrote the same shape and would have published
@@ -1337,5 +1339,97 @@ caller's tree at its `package.json` version.
 The residual worth naming: for a repo that has just turned the generator on, **the first release
 after the flip is the first one this gate governs**, and its version section is written by the very
 `changeset version` call this gate exists to check. That is the intended coverage, not a gap.
+
+## The em-dash gate
+
+Founder directive 2026-07-24: cosyte never uses the em dash. Not in a file, not in a commit message,
+not in a pull-request title or body. [`scripts/check-no-emdash.mjs`](scripts/check-no-emdash.mjs)
+enforces it, [`.github/workflows/no-emdash.yml`](.github/workflows/no-emdash.yml) runs it, and
+[`test/check-no-emdash.test.mjs`](test/check-no-emdash.test.mjs) proves it still bites. Run it
+locally with `node scripts/check-no-emdash.mjs`; there is no `pnpm` script because this repository
+has no `package.json`, which is also why the gate is Node builtins only.
+
+**It landed with its sweep, in one commit.** 98 literal occurrences across 19 of the 45 tracked
+files, plus 5 JavaScript escapes, rewritten in the same change. A gate landing before its sweep reds
+`main` on arrival; a sweep landing before its gate grows the character back on the next session.
+
+**The sweep changed comments and human-readable strings only, and that restriction is specific to
+this repository.** Thirteen repos call these workflows at `@main`, so a mistake in the YAML reds
+thirteen repos at once, and a required job gates all of its steps, so renaming a job id detaches any
+ruleset entry naming it without error. Every workflow and `dependabot.yml` was verified to parse to a
+byte-identical tree before and after: no job id, step, condition, `run:` body, `uses:` ref or input or
+output name moved. **Keep that discipline when you fix a red here.**
+
+**One trap measured during that sweep, because it is the exact shape a careless fix takes.** A colon
+is the usual replacement for an em dash, and an unquoted YAML plain scalar cannot contain one
+followed by a space. Rewriting an issue-form `label:` value that way produces a file that no longer
+parses, on a surface every repository in the org inherits without asking. Inside a block scalar (`|`)
+a colon is fine. Use a comma when you are not sure.
+
+### Two jobs, and only one of them may ever be required
+
+`no-emdash` scans tracked files and tracked filenames. Nothing outside this repository can put an em
+dash into one, so it is safe to require and it should be required.
+
+`no-emdash-messages` scans the pull-request title, body and commit range, which is the half no local
+pre-commit hook can see: a new file is untracked so a scan of the index misses it, and nothing local
+sees a PR body at all. **It must never be a required context.** Dependabot composes a PR body by
+pasting the dependency's upstream release notes into it, em dashes included, and `dependabot.yml`
+keeps a standing weekly `github-actions` schedule here, so such a pull request arrives on someone
+else's clock indefinitely. (Stated as the configuration rather than as a count of open pull
+requests, which goes stale between sessions.) Requiring it would block a dependency bump on prose
+nobody here wrote.
+Nor is an actor `if:` a fix: on a required context that leaves the check permanently pending, which
+is worse than red because nothing says why.
+
+Making `no-emdash` required has a precondition rather than a date: a context may not be required
+before its workflow has completed on `main`, or every PR sits pending and unmergeable with nothing
+saying why. Read the context name off a live check run, never off a workflow's `name:`. The current
+state is derivable rather than quotable:
+
+```bash
+gh api repos/cosyte/.github/rulesets/19990161 \
+  --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
+```
+
+### Nothing is exempt, and that is a strengthening
+
+Sibling copies of this gate partition the tree into "scanned" and "declared binary", because they
+track vendored `.tgz` archives where a DEFLATE stream can hold the three bytes by coincidence. This
+repository tracks no binary and keeps no changelog archive, so there is no partition and no skip
+path: every tracked file is read in full, `scanned` always equals `git ls-files`, and a `binary`
+attribute is refused rather than honoured.
+
+That matters because a refuter defeated the sibling's partition twice with a one-line path exclusion:
+first by accounting the skipped paths into the declared-binary bucket so the arithmetic balanced,
+then, once that was closed, by routing the identical exclusion through the scanned bucket, leaving
+every asserted field byte-identical to an honest run. With no skip path there is no bucket to route
+anything into, and the test suite recomputes the total bytes read **independently**, from
+`git ls-files` plus `statSync`, because an in-script invariant is satisfied by the same edit that
+breaks it. Both mutations are pinned as test cases rather than described.
+
+**The bound, named rather than chased:** the gate and its tests are both files a mutator is editing,
+so a mutation that ACCOUNTS for a file without reading it still passes with the suite green: the
+cheapest one takes each path's `statSync` size, adds it to both totals, and skips the read, so every
+number reconciles. No assertion inside a repository closes that class, only raises its cost. It is
+now a block that measures a file in order to avoid opening it, which is visibly incoherent in
+review. That is the stopping point, and the reason not to add a fourth rung chasing it.
+
+### Known limits
+
+- It matches U+2014 as UTF-8, plus the percent-encoding, the three HTML character references, and
+  both JavaScript escapes. An em dash in some other charset (a CP1252 `0x97` fixture, a UTF-16
+  document) scans clean. There is none today.
+- The PCRE source spelling of the codepoint is deliberately **not** banned. It is how a PCRE-based
+  scanner names this codepoint, and `test/fixtures/hl7-v0.0.2/changeset/emdash-ci-gate.md` carries
+  one inside a code span: that fixture is a real captured changeset and its bytes are the input a
+  release-notes test asserts on.
+- `scripts/release-notes.mjs` and `scripts/release-diff.mjs` build their dash constants with
+  `String.fromCodePoint` rather than a JavaScript escape. Those constants are operative, since the
+  release-notes gate refuses a release body containing an em dash and has to be able to name the
+  character. Assembling it keeps the ban total without exempting the one file that enforces it. **Do
+  not answer a red here by adding an exclusion; assemble the spelling instead.**
+- This repository has no `documentation/agent-notes.md`, so the agent-instruction contract gate some
+  siblings run has nothing to check here. That is a stated absence, not a missing file to create.
 
 See the meta-repo `documentation/conventions.md` for the engineering standard these enforce.

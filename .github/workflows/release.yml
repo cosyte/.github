@@ -166,15 +166,15 @@ on:
       # reports the entry as stale so it gets deleted. DELETE IT THEN; it is not load-bearing.
       #
       # THE `=blocked` TAG IS `ci.yml`'s PRE-PUBLISH LAYERS SPEAKING, AND ONE GRAMMAR IS THE POINT.
-      # Those layers read this same input and must tell `@cosyte/fhir` — absent for a reason expected
-      # to clear — from `@cosyte/assets` and `@cosyte/docs`, which are `E404` in exactly the same way
+      # Those layers read this same input and must tell `@cosyte/fhir` (absent for a reason expected
+      # to clear) from `@cosyte/assets` and `@cosyte/docs`, which are `E404` in exactly the same way
       # and `private: true` BY DESIGN. A deliberate absence and an unexplained block must not share
       # words. Two spellings of one allowance across two gates in one repo is the drift this pipeline
       # has already been bitten by.
       #
       # `parseAllowance` strips `=blocked` AND ONLY `=blocked`, so this default is byte-identical to
       # the untagged spelling it shipped with. Any other tag stays attached, matches no dependency
-      # name, and therefore excuses nothing here — which is deliberate, not incidental: `=private`
+      # name, and therefore excuses nothing here, which is deliberate, not incidental: `=private`
       # means "absent by design and never going to clear", and THIS gate only ever observes packages
       # that already published, where such a dependency is a permanent defect rather than an expected
       # state. A first version stripped every tag and quietly taught this gate to excuse it.
