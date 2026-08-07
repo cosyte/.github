@@ -72,7 +72,7 @@ jobs:
       # Zero dependencies on purpose: node:test and node:assert only, so this repo needs no
       # package.json, no lockfile, and no install step to stay verifiable.
       #
-      # THE GLOB IS THE SELECTION, and this job is a required context, so narrowing it is a way to
+      # THE GLOB IS THE SELECTION, and while this job is a required context, narrowing it is a way to
       # keep the context green over less work. `test/self-check.test.mjs` asserts that this exact
       # pattern selects every `test/*.test.mjs` file on disk, so a narrowing reds here rather than
       # passing quietly. The quotes are load-bearing: unquoted, the shell expands the glob and

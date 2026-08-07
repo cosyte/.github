@@ -325,7 +325,8 @@ derive them rather than quoting this paragraph forward:
 
 ```bash
 # What a caller's ruleset actually requires. Nothing in a repository can read its own ruleset, which
-# is why no context list or count is written anywhere in this tree.
+# is why this tree states the rule and gives this command rather than naming a required set or a
+# count. `includes_parents=true` is the default and matters: repo rulesets compose with org ones.
 gh api repos/cosyte/<repo>/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/cosyte/<repo>/rulesets/{} \
       --jq '.rules[] | select(.type=="required_status_checks")
@@ -1429,8 +1430,9 @@ gh api repos/cosyte/.github/rulesets/19990161 \
 
 ### Two ways a required job stops gating without anyone touching a ruleset
 
-Both are silent, and [`test/self-check.test.mjs`](test/self-check.test.mjs) is what makes them red
-here rather than nowhere.
+Two that are guarded, not two that exist. Both are silent, and
+[`test/self-check.test.mjs`](test/self-check.test.mjs) is what makes them red here rather than
+nowhere. A third and a fourth are named below and are **not** guarded.
 
 **Rename the job id.** A ruleset entry names a string. Rename `scripts` and the entry detaches with
 no error anywhere: the old context is required and emitted by nothing, so every pull request sits
@@ -1444,16 +1446,27 @@ against the test files actually on disk, and a plausible narrowing is exhibited 
 rather than asserted to be catchable. The same hazard has a second door: splitting a step out into a
 job nobody requires un-requires that step, silently.
 
-A third is now refused rather than merely absent. Adding a `paths:` filter or a job-level `if:` would
-make either context genuinely conditional, and a **conditional required context strands every pull
-request that does not match it**. An actor `if:` is the tempting version of this and it is the worst
-one, because it leaves the check permanently pending on exactly the pull requests it exempts.
+A third is now refused rather than merely absent. Adding a `paths:` filter or a **job-level** `if:`
+would make either context genuinely conditional, and a **conditional required context strands every
+pull request that does not match it**. An actor `if:` is the tempting version, and it leaves the check
+permanently pending on exactly the pull requests it exempts, which is worse than red because nothing
+says why.
+
+**Read "job-level" there literally, because the same word one indent further in behaves in the
+opposite direction and is not guarded.** A **step-level** `if:` does not strand anything: the step is
+skipped, the job succeeds, and the required context reports **green over nothing**. So does
+`continue-on-error: true` on a step, which goes green over a suite that failed. Those are the worse
+outcome of the two and the guard does not catch them, so they are named here rather than implied to be
+covered.
 
 The bound, named rather than chased: that test file is not a YAML parser and must not become one.
 There is no dependency here to parse YAML with, by design. It reads the workflow as text, anchored on
-indentation, which is enough to catch a rename, a narrowing and a new conditional, and **not** enough
-to catch a restructuring its anchors no longer locate. That case is made to red rather than pass
-quietly, which is the failure mode of every text-anchored assertion ever written.
+indentation, which is enough to catch a rename, a narrowing and a new job-level conditional, and
+**not** enough to catch a step-level `if:`, a `continue-on-error:`, or a restructuring its anchors no
+longer locate. The last of those is made to red rather than pass quietly, which is the failure mode of
+every text-anchored assertion ever written. The first two are an open hole, stated rather than closed:
+closing them is a rule per step attribute, and a guard that grows one rule per spelling is the shape
+this ecosystem deletes rather than hardens.
 
 ## The em-dash gate
 
