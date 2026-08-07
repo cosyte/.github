@@ -128,10 +128,10 @@ request cannot gate every pull request**, whether the skip is at the job level o
   `ci.yml` here is a comment at the input naming the consequence.
 - **No context list and no count is written by this change.** Nothing in a repository can observe its
   own ruleset, so any list goes stale the next time a workflow grows a job. That is stated as what
-  this change does rather than as a property of the repository, because **older counts of this
-  repository's required contexts survive elsewhere in this tree and at least one of them is already
-  false**, which this measurement is what disproves. They are recorded as a follow-up rather than
-  swept into an investigation. Derive the live answer instead:
+  this change does rather than as a property of the repository, because **one older count of this
+  repository's required contexts survives in `test/install-check.test.mjs` and this measurement is
+  what disproves it.** It is named here and left alone rather than swept into an investigation, and
+  correcting it is its own change. Derive the live answer instead:
 
   ```bash
   gh api repos/cosyte/<repo>/rulesets --jq '.[].id'
