@@ -302,6 +302,44 @@ jobs:
 Read what `blocked-peer` does and does not establish before treating those two as explained: it is
 **less than "fully explained"**, and the gap is set out under [The verdicts](#the-verdicts) below.
 
+### Turning the layers on made them RUN everywhere. It did not make them BLOCK anywhere
+
+**A default is a property of this repository. Whether a red check stops a merge is a property of the
+caller's ruleset, and nothing here can reach it.** The layers run in their own job rather than as
+steps inside `verify` (the reason is under [Two things measured while building
+it](#two-things-measured-while-building-it-both-of-which-would-have-been-red-pull-requests)), and the
+consequence is easy to miss: a separate job is a **separate check-run context**, `ci / prepublish`.
+A caller whose ruleset requires the `verify` matrix and `ci / actionlint` does **not** thereby require
+this one. It reports a red X on the pull request and the merge button stays green.
+
+That is not a defect in the flip, and it is not fixable from here. It is one line per caller, in that
+caller's own ruleset, and it belongs to that repository's own `CI-REQUIRED-CHECKS` pass.
+
+**Censused 2026-08-07 against real `pull_request` check runs, not against workflow names.** Every one
+of the thirteen callers emits `ci / prepublish` on its pull requests, as expected now that both
+layers default on and no caller passes either input. **Of those thirteen, `cli` is the only one whose
+ruleset requires it.** In the rest, a red pre-publish gate is documentation.
+
+Both halves of that are a dated measurement rather than a standing fact, and both are derivable, so
+derive them rather than quoting this paragraph forward:
+
+```bash
+# What a caller's ruleset actually requires. Nothing in a repository can read its own ruleset, which
+# is why this tree states the rule and gives this command rather than naming a required set or a
+# count. `includes_parents=true` is the default and matters: repo rulesets compose with org ones.
+gh api repos/cosyte/<repo>/rulesets --jq '.[].id' \
+  | xargs -I{} gh api repos/cosyte/<repo>/rulesets/{} \
+      --jq '.rules[] | select(.type=="required_status_checks")
+            | .parameters.required_status_checks[].context'
+
+# What it actually emits. Read the context off the check run, never off the workflow's `name:`.
+gh api repos/cosyte/<repo>/commits/<pr-head-sha>/check-runs --jq '.check_runs[].name'
+```
+
+**Before adding it to a caller, the same precondition governs as anywhere else:** the context may not
+be required until that workflow has completed on the caller's `main`, and requiring it blocks any open
+pull request whose branch predates the job until it rebases. That cost is documented, not a defect.
+
 ### The declared allowance, and why its entries carry a kind
 
 `expect-unpublished-deps` is the same input `release.yml` takes, in the same grammar. A repo names its
@@ -1340,6 +1378,86 @@ The residual worth naming: for a repo that has just turned the generator on, **t
 after the flip is the first one this gate governs**, and its version section is written by the very
 `changeset version` call this gate exists to check. That is the intended coverage, not a gap.
 
+## What gates this repository itself
+
+Everything above is what this repository does **to** thirteen other repositories. This is what holds
+it, and it matters more than its size suggests: `release.yml` and `ci.yml` are called at `@main`, so
+a mistake here reds thirteen repositories at once with no version to pin back to.
+
+[`.github/workflows/self-check.yml`](.github/workflows/self-check.yml) is the gate. A reusable
+`workflow_call` workflow does not run on push by itself, so without this the YAML in this tree would
+be unlinted until a caller broke. It has two jobs, and **the job id is the check-run context name**,
+which is the only name a ruleset can be given:
+
+| Job | What it covers |
+|---|---|
+| `actionlint` | every workflow in this tree, with `shellcheck` on the `run:` bodies |
+| `scripts` | the unit suite for `scripts/`, `node --test` over `test/*.test.mjs`, zero dependencies |
+
+**Both are safe to require, and both are meant to be required.** Neither reads a
+pull request's title or body, so neither can be reddened by prose an outside author wrote, which is
+the whole reason `no-emdash-messages` below must never be required. Run them locally with `actionlint`
+and `node --test "test/*.test.mjs"`; there is no `pnpm` script because this repository has no
+`package.json`, which is also why the suite is Node builtins only.
+
+**`scripts` sat un-required for a stretch, and the recorded reason for that was wrong.** It was read
+as a path-conditional job because it appeared on some open pull requests and not others. It is not
+conditional and never was: there is no `paths:` filter and no job-level `if:`. The job was simply
+**added after those branches already existed**, so it had never run on them, and a required context an
+open branch cannot emit strands that branch. Same conclusion at the time, different cause, and the
+difference is what made the state reversible: nothing had to change in the workflow, only the fact
+that every current branch now carries the job. That was checked on 2026-08-07 by reading `scripts` off
+the real `pull_request` check runs of every then-open pull request, rather than inferred from the
+absence of a filter.
+
+**The procedure for requiring one, wherever the job lives.** The precondition is that the workflow
+emitting the context has **completed on `main`**; requiring one that has never run leaves every pull
+request pending and unmergeable with nothing saying why. Then confirm on real `pull_request` check
+runs that the job appears on pull requests that did not add it, fold the entry into the single
+`ci-required-checks` ruleset rather than adding a second one, and pin it to `integration_id: 15368`
+the way the existing entries are. An unpinned context can be satisfied by **any** app, which is a hole
+rather than a convenience. Expect the price: requiring a new context blocks any open pull request
+whose branch predates the job until it rebases.
+
+**Do not write down which contexts are required.** Nothing inside a repository can observe its own
+ruleset, so any list or count here goes stale the next time this workflow grows a job, and only a
+comment defends it. Derive it:
+
+```bash
+gh api repos/cosyte/.github/rulesets/19990161 \
+  --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
+```
+
+### Two ways a required job stops gating without anyone touching a ruleset
+
+Two that are guarded, not two that exist. Both are silent, and
+[`test/self-check.test.mjs`](test/self-check.test.mjs) is what makes them red here rather than
+nowhere. Others exist and are not guarded; the bound at the end of this section says so.
+
+**Rename the job id.** A ruleset entry names a string. Rename `scripts` and the entry detaches with
+no error anywhere: the old context is required and emitted by nothing, so every pull request sits
+**pending**, which is worse than red because nothing says why. Change the job id and the ruleset
+entry together, or change neither.
+
+**Narrow what selects the work.** A required job gates its **steps**, not the selection those steps
+operate on. `node --test "test/*.test.mjs"` exits 0 just as happily over one file as over all of
+them, and the context is green either way. So the glob is read out of the workflow and compared
+against the test files actually on disk, and a plausible narrowing is exhibited as a failing case
+rather than asserted to be catchable. The same hazard has a second door: splitting a step out into a
+job nobody requires un-requires that step, silently.
+
+A third is now refused rather than merely absent: a `paths:` filter, and an `if:` on either job. **A
+context that does not run on every pull request cannot gate every pull request.**
+
+The bound, named rather than chased: that test file is not a YAML parser and must not become one.
+There is no dependency here to parse YAML with, by design. It reads the workflow as text, anchored on
+indentation, which is enough to catch a rename, a narrowing and a new job-level conditional, and
+**not** enough to catch every way a step can be neutralised from inside the job, nor a restructuring
+its anchors no longer locate. The restructuring case is made to red rather than pass quietly, which is
+the failure mode of every text-anchored assertion ever written. The rest is an open hole, stated
+rather than closed: closing it is a rule per step attribute, and a guard that grows one rule per
+spelling is the shape this ecosystem deletes rather than hardens.
+
 ## The em-dash gate
 
 Founder directive 2026-07-24: cosyte never uses the em dash. Not in a file, not in a commit message,
@@ -1379,8 +1497,7 @@ keeps a standing weekly `github-actions` schedule here, so such a pull request a
 else's clock indefinitely. (Stated as the configuration rather than as a count of open pull
 requests, which goes stale between sessions.) Requiring it would block a dependency bump on prose
 nobody here wrote.
-Nor is an actor `if:` a fix: on a required context that leaves the check permanently pending, which
-is worse than red because nothing says why.
+Nor is an actor `if:` a fix.
 
 Making `no-emdash` required has a precondition rather than a date: a context may not be required
 before its workflow has completed on `main`, or every PR sits pending and unmergeable with nothing

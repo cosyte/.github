@@ -43,7 +43,7 @@ name: Em-dash gate
 #   `no-emdash` scans TRACKED FILES ONLY. Nothing outside this repository can put an em dash into
 #   one. Dependabot writes tracked files here (`.github/workflows/*.yml` action pins are its whole
 #   job in this repo), but it writes SHAs and version comments, never prose. So this job is safe to
-#   make a required context, and it SHOULD become one.
+#   make a required context, and it belongs in the set this repository requires.
 #
 #   `no-emdash-messages` scans the PR TITLE, BODY and COMMIT MESSAGES, and it must NEVER be required.
 #   Dependabot composes a PR body by pasting the dependency's UPSTREAM RELEASE NOTES into it, em
@@ -55,19 +55,18 @@ name: Em-dash gate
 #   `pnpm audit`: a gate that fails on someone else's clock stops being a signal and becomes a tax.
 #   HONOUR THIS EXEMPTION AND ITS WRITTEN REASON; DO NOT REMOVE IT.
 #
-#   And do not "fix" the Dependabot case by requiring it with an actor `if:`. An
-#   `if: github.actor != 'dependabot[bot]'` on a REQUIRED context leaves the check permanently
-#   PENDING on exactly those PRs, which is worse than red: nothing says why.
+#   And do not "fix" the Dependabot case by requiring it with an actor `if:`.
 #
-# ▶ MAKING `no-emdash` REQUIRED IS A SEPARATE ACT WITH A PRECONDITION. Stated as the condition rather
-#   than as a state, because a sibling's copy of this file asserts a state that stopped being true
-#   the moment the context was required, and nothing updated the comment.
+# ▶ REQUIRING A CONTEXT IS A SEPARATE ACT WITH A PRECONDITION. Stated as the condition rather than as
+#   a state, because a sibling's copy of this file asserts a state that stopped being true the moment
+#   the context was required, and nothing updated the comment.
 #
 #   THE PRECONDITION: a context may not be required before its workflow has COMPLETED ON `main`.
 #   Requiring one that has never run leaves every pull request pending and unmergeable with nothing
-#   saying why. Once this workflow has completed on `main`, add `no-emdash` (the tracked-file job,
-#   NOT the messages one) to the `ci-required-checks` ruleset, folding into that one ruleset rather
-#   than adding a second, and pinned to `integration_id: 15368` the way the existing context is.
+#   saying why. The PROCEDURE that satisfies it, and the silent ways a job that IS required stops
+#   gating, are set out in full in README section "What gates this repository itself" and are not
+#   restated here. This file's own subject is WHICH of its two jobs may ever be required, above, and
+#   that half is not derivable from anywhere.
 #
 #   Read the real context name off a LIVE CHECK RUN, never off this file's `name:`. This workflow is
 #   titled "Em-dash gate" and the contexts are the bare job ids `no-emdash` and `no-emdash-messages`.
