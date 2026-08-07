@@ -1394,7 +1394,7 @@ which is the only name a ruleset can be given:
 | `actionlint` | every workflow in this tree, with `shellcheck` on the `run:` bodies |
 | `scripts` | the unit suite for `scripts/`, `node --test` over `test/*.test.mjs`, zero dependencies |
 
-**Both are safe to require, and both belong in the set this repository requires.** Neither reads a
+**Both are safe to require, and both are meant to be required.** Neither reads a
 pull request's title or body, so neither can be reddened by prose an outside author wrote, which is
 the whole reason `no-emdash-messages` below must never be required. Run them locally with `actionlint`
 and `node --test "test/*.test.mjs"`; there is no `pnpm` script because this repository has no
@@ -1432,7 +1432,7 @@ gh api repos/cosyte/.github/rulesets/19990161 \
 
 Two that are guarded, not two that exist. Both are silent, and
 [`test/self-check.test.mjs`](test/self-check.test.mjs) is what makes them red here rather than
-nowhere. A third and a fourth are named below and are **not** guarded.
+nowhere. Others exist and are not guarded; the bound at the end of this section says so.
 
 **Rename the job id.** A ruleset entry names a string. Rename `scripts` and the entry detaches with
 no error anywhere: the old context is required and emitted by nothing, so every pull request sits
@@ -1446,27 +1446,26 @@ against the test files actually on disk, and a plausible narrowing is exhibited 
 rather than asserted to be catchable. The same hazard has a second door: splitting a step out into a
 job nobody requires un-requires that step, silently.
 
-A third is now refused rather than merely absent. Adding a `paths:` filter or a **job-level** `if:`
-would make either context genuinely conditional, and a **conditional required context strands every
-pull request that does not match it**. An actor `if:` is the tempting version, and it leaves the check
-permanently pending on exactly the pull requests it exempts, which is worse than red because nothing
-says why.
+A third is now refused rather than merely absent: a `paths:` filter, and an `if:` on either job. The
+reason needs no theory about what a skipped check does to a merge, which is just as well, because
+**this repository does not know the answer and this page deliberately does not state one.** A context
+that does not run on every pull request cannot gate every pull request, whichever way a skip resolves,
+and that is enough to refuse both.
 
-**Read "job-level" there literally, because the same word one indent further in behaves in the
-opposite direction and is not guarded.** A **step-level** `if:` does not strand anything: the step is
-skipped, the job succeeds, and the required context reports **green over nothing**. So does
-`continue-on-error: true` on a step, which goes green over a suite that failed. Those are the worse
-outcome of the two and the guard does not catch them, so they are named here rather than implied to be
-covered.
+**What a SKIPPED required context does is an open question, and it is being escalated rather than
+answered here.** `deid`'s `ci.yml` records the same question against `run-actionlint` and tells you not
+to change that input until it is settled. Do not settle it in a comment. Whatever the answer is, it
+governs thirteen repositories at `@main`, so it wants a primary source and a live run, in its own
+change, not a sentence written in passing here.
 
 The bound, named rather than chased: that test file is not a YAML parser and must not become one.
 There is no dependency here to parse YAML with, by design. It reads the workflow as text, anchored on
 indentation, which is enough to catch a rename, a narrowing and a new job-level conditional, and
-**not** enough to catch a step-level `if:`, a `continue-on-error:`, or a restructuring its anchors no
-longer locate. The last of those is made to red rather than pass quietly, which is the failure mode of
-every text-anchored assertion ever written. The first two are an open hole, stated rather than closed:
-closing them is a rule per step attribute, and a guard that grows one rule per spelling is the shape
-this ecosystem deletes rather than hardens.
+**not** enough to catch every way a step can be neutralised from inside the job, nor a restructuring
+its anchors no longer locate. The restructuring case is made to red rather than pass quietly, which is
+the failure mode of every text-anchored assertion ever written. The rest is an open hole, stated
+rather than closed: closing it is a rule per step attribute, and a guard that grows one rule per
+spelling is the shape this ecosystem deletes rather than hardens.
 
 ## The em-dash gate
 

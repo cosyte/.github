@@ -67,9 +67,11 @@ name: Em-dash gate
 #   Requiring one that has never run leaves every pull request pending and unmergeable with nothing
 #   saying why. The PROCEDURE that satisfies it, and the silent ways a job that IS required stops
 #   gating, are set out in full in README section "What gates this repository itself" and are not
-#   restated here. The precondition itself is short and load-bearing at three sites, so it is stated
-#   at each; the procedure is long and is stated once. This file's own subject is WHICH of its two
-#   jobs may ever be required, above, and that half is not derivable from anywhere.
+#   restated here. The precondition itself is one sentence and load-bearing wherever a context is
+#   discussed, so it is repeated; the procedure is long and is stated once. No count of the sites is
+#   given, for the same reason no count of contexts is: it would be a number nothing re-checks. This
+#   file's own subject is WHICH of its two jobs may ever be required, above, and that half is not
+#   derivable from anywhere.
 #
 #   Read the real context name off a LIVE CHECK RUN, never off this file's `name:`. This workflow is
 #   titled "Em-dash gate" and the contexts are the bare job ids `no-emdash` and `no-emdash-messages`.

@@ -25,26 +25,27 @@
 //   a stretch because it appeared on some open pull requests and not others, and the standing record
 //   read that as a path-conditional job. It was not: the job POSTDATED those branches. The
 //   distinction matters going forward rather than backwards, because a `paths:` filter or a
-//   job-level `if:` added later would make the context genuinely conditional, and a conditional
-//   REQUIRED context strands every pull request that does not match it. Both are refused here.
+//   job-level `if:` added later would make the context genuinely conditional. Both are refused here,
+//   and the refusal needs no theory about how a skip resolves: a context that does not run on every
+//   pull request cannot gate every pull request.
 //
 // ▶ THE BOUND, NAMED RATHER THAN CHASED. This file is not a YAML parser and must not become one:
 //   the repository has no `package.json` by design, so there is no dependency to parse YAML with,
 //   and hand-rolling one to test a 60-line workflow is the machinery this ecosystem deletes. It
 //   reads the file as text, anchored on indentation. That is enough to catch a rename, a narrowing
-//   and a new JOB-LEVEL conditional, and it is NOT enough to catch an author who restructures the
-//   file into a shape these anchors no longer locate. The `the anchors located something`
-//   assertions exist so that case reds rather than passing vacuously, which is the failure mode of
-//   every text-anchored assertion ever written.
+//   and a new JOB-LEVEL conditional, and it is NOT enough to catch every way a step can be
+//   neutralised from inside the job, nor an author who restructures the file into a shape these
+//   anchors no longer locate. The `the anchors located something` assertions exist so the
+//   restructuring case reds rather than passing vacuously, which is the failure mode of every
+//   text-anchored assertion ever written. The rest is an open hole, stated rather than closed:
+//   closing it is one rule per step attribute, and a guard that grows one rule per spelling is a
+//   deny-list, which this repository has already paid for twice. Know the shape instead.
 //
-//   TWO MORE ARE OPEN AND ARE STATED RATHER THAN CLOSED, because they are the same shape as the
-//   thing being guarded and they run the OPPOSITE way, which is what makes them worth naming:
-//   a STEP-level `if:` (one indent further in than the job-level one refused below) does not strand
-//   anything, and neither does `continue-on-error: true` on a step. The step is skipped or its
-//   failure is swallowed, the job succeeds, and the required context reports GREEN OVER NOTHING.
-//   That is worse than a strand, which at least stops the merge. Closing them is one rule per step
-//   attribute, and a guard that grows one rule per spelling is a deny-list: this repository has
-//   already paid twice for one and the second round closed nothing new. Know the shape instead.
+//   NOTHING HERE SAYS WHAT A SKIPPED REQUIRED CONTEXT DOES TO A MERGE. That question is open in this
+//   org (`deid`'s `ci.yml` records it against `run-actionlint`) and it is being escalated on its own
+//   rather than answered in a comment. The job-level `if:` below is refused without needing the
+//   answer: a context that does not run on every pull request cannot gate every pull request,
+//   whichever way a skip resolves.
 //
 //   And nothing here asserts that any context IS required. A repository cannot observe its own
 //   ruleset, so such an assertion would be a claim this file could never re-check. Derive it:
@@ -108,8 +109,12 @@ function globToRegExp(glob) {
   // string and then substituted back out. A two-pass version has to pick a sentinel that cannot
   // occur in a path, and "cannot occur" is exactly the class of assumption this repository keeps
   // being wrong about.
+  // `**` CROSSES A SEPARATOR ONLY AS A WHOLE SEGMENT, which is node's rule and therefore the only
+  // one worth encoding: `test/**/*.test.mjs` spans directories, `test/**.test.mjs` does NOT. Mapping
+  // a bare `**` to `.*` was measured wrong against a real `node --test` run, and it fails in the
+  // dangerous direction: the comparison below would report a selection wider than the one CI runs.
   const body = escaped.replace(/\*\*\/|\*\*|\*/g, (m) =>
-    m === '**/' ? '(?:[^/]+/)*' : m === '**' ? '.*' : '[^/]*',
+    m === '**/' ? '(?:[^/]+/)*' : '[^/]*',
   );
   return new RegExp(`^${body}$`);
 }
@@ -195,6 +200,11 @@ test('a test file added in a SUBDIRECTORY would not be selected, and that is wha
   // gets deleted rather than obeyed. `test/**/*.test.mjs` must select both depths.
   assert.equal(globToRegExp('test/**/*.test.mjs').test('test/unit/foo.test.mjs'), true);
   assert.equal(globToRegExp('test/**/*.test.mjs').test('test/release-notes.test.mjs'), true);
+  // And the near miss, measured against a real `node --test` run rather than assumed: a bare `**`
+  // that is not a whole segment does NOT cross a separator. Reading it as if it did would let the
+  // comparison below believe CI selects a subdirectory it never opens.
+  assert.equal(globToRegExp('test/**.test.mjs').test('test/unit/foo.test.mjs'), false);
+  assert.equal(globToRegExp('test/**.test.mjs').test('test/release-notes.test.mjs'), true);
   // And a plausible narrowing really does fail the comparison, rather than being caught only by the
   // spelling assertion above.
   const onDisk = testFilesOnDisk();
