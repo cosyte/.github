@@ -25,9 +25,8 @@
 //   a stretch because it appeared on some open pull requests and not others, and the standing record
 //   read that as a path-conditional job. It was not: the job POSTDATED those branches. The
 //   distinction matters going forward rather than backwards, because a `paths:` filter or a
-//   job-level `if:` added later would make the context genuinely conditional. Both are refused here,
-//   and the refusal needs no theory about how a skip resolves: a context that does not run on every
-//   pull request cannot gate every pull request.
+//   job-level `if:` added later would make the context genuinely conditional. Both are refused here:
+//   a context that does not run on every pull request cannot gate every pull request.
 //
 // ▶ THE BOUND, NAMED RATHER THAN CHASED. This file is not a YAML parser and must not become one:
 //   the repository has no `package.json` by design, so there is no dependency to parse YAML with,
@@ -40,12 +39,6 @@
 //   text-anchored assertion ever written. The rest is an open hole, stated rather than closed:
 //   closing it is one rule per step attribute, and a guard that grows one rule per spelling is a
 //   deny-list, which this repository has already paid for twice. Know the shape instead.
-//
-//   NOTHING HERE SAYS WHAT A SKIPPED REQUIRED CONTEXT DOES TO A MERGE. That question is open in this
-//   org (`deid`'s `ci.yml` records it against `run-actionlint`) and it is being escalated on its own
-//   rather than answered in a comment. The job-level `if:` below is refused without needing the
-//   answer: a context that does not run on every pull request cannot gate every pull request,
-//   whichever way a skip resolves.
 //
 //   And nothing here asserts that any context IS required. A repository cannot observe its own
 //   ruleset, so such an assertion would be a claim this file could never re-check. Derive it:
@@ -109,10 +102,11 @@ function globToRegExp(glob) {
   // string and then substituted back out. A two-pass version has to pick a sentinel that cannot
   // occur in a path, and "cannot occur" is exactly the class of assumption this repository keeps
   // being wrong about.
-  // `**` CROSSES A SEPARATOR ONLY AS A WHOLE SEGMENT, which is node's rule and therefore the only
-  // one worth encoding: `test/**/*.test.mjs` spans directories, `test/**.test.mjs` does NOT. Mapping
-  // a bare `**` to `.*` was measured wrong against a real `node --test` run, and it fails in the
-  // dangerous direction: the comparison below would report a selection wider than the one CI runs.
+  // `**/` spans whole directories and a bare `**` does not, matching what `node --test` was measured
+  // to do over the same tree: `test/**/*.test.mjs` selected 347 tests, `test/**.test.mjs` selected
+  // 346. Mapping a bare `**` to `.*` fails in the dangerous direction, because the comparison below
+  // would then report a selection wider than the one CI runs. A `**` that is neither of those two
+  // shapes is not translated faithfully and is not refused either; do not write one.
   const body = escaped.replace(/\*\*\/|\*\*|\*/g, (m) =>
     m === '**/' ? '(?:[^/]+/)*' : '[^/]*',
   );
@@ -130,8 +124,8 @@ test('the job ids are the context names a ruleset requires, so they are pinned',
 
 test('neither required job is conditional, at the workflow or at the job level', () => {
   // A `paths:` filter on the trigger, or an `if:` on the job, makes the context appear on some pull
-  // requests and not others. On a REQUIRED context that is not a saving: it is every non-matching
-  // pull request stranded, pending, with nothing saying why.
+  // requests and not others. A context that does not run on every pull request cannot gate every
+  // pull request.
   const triggers = yml.slice(yml.indexOf('\non:\n'), yml.indexOf('\npermissions:'));
   assert.ok(triggers.includes('pull_request:'), 'the `on:` block was not located');
   assert.doesNotMatch(triggers, /^ +paths(-ignore)?:/m);

@@ -1446,17 +1446,8 @@ against the test files actually on disk, and a plausible narrowing is exhibited 
 rather than asserted to be catchable. The same hazard has a second door: splitting a step out into a
 job nobody requires un-requires that step, silently.
 
-A third is now refused rather than merely absent: a `paths:` filter, and an `if:` on either job. The
-reason needs no theory about what a skipped check does to a merge, which is just as well, because
-**this repository does not know the answer and this page deliberately does not state one.** A context
-that does not run on every pull request cannot gate every pull request, whichever way a skip resolves,
-and that is enough to refuse both.
-
-**What a SKIPPED required context does is an open question, and it is being escalated rather than
-answered here.** `deid`'s `ci.yml` records the same question against `run-actionlint` and tells you not
-to change that input until it is settled. Do not settle it in a comment. Whatever the answer is, it
-governs thirteen repositories at `@main`, so it wants a primary source and a live run, in its own
-change, not a sentence written in passing here.
+A third is now refused rather than merely absent: a `paths:` filter, and an `if:` on either job. **A
+context that does not run on every pull request cannot gate every pull request.**
 
 The bound, named rather than chased: that test file is not a YAML parser and must not become one.
 There is no dependency here to parse YAML with, by design. It reads the workflow as text, anchored on
@@ -1506,8 +1497,7 @@ keeps a standing weekly `github-actions` schedule here, so such a pull request a
 else's clock indefinitely. (Stated as the configuration rather than as a count of open pull
 requests, which goes stale between sessions.) Requiring it would block a dependency bump on prose
 nobody here wrote.
-Nor is an actor `if:` a fix: on a required context that leaves the check permanently pending, which
-is worse than red because nothing says why.
+Nor is an actor `if:` a fix.
 
 Making `no-emdash` required has a precondition rather than a date: a context may not be required
 before its workflow has completed on `main`, or every PR sits pending and unmergeable with nothing
