@@ -1332,9 +1332,9 @@ test("REGRESSION: a real probe child sees none of the job's credentials, on BOTH
 });
 
 // THE WHOLE SECURITY PROPERTY OF THE REMOVAL STEP IS ITS POSITION, so the position is what is
-// pinned. Nothing else in this repository reads step order: `actionlint` checks that the workflow is
-// valid, not that its steps are in the one order that makes this one do anything, so a future edit
-// that moves this step to the end of the job, or drops it, would otherwise ship green. Anchored
+// pinned. Nothing else pins where this step sits: `actionlint` checks that the workflow is valid,
+// not that its steps are in the one order that makes this one do anything, so a future edit that
+// moves this step to the end of the job, or drops it, would otherwise ship green. Anchored
 // structurally on the steps array, the way the version-PR wiring is anchored in
 // `test/release-notes.test.mjs`, rather than on text adjacency.
 test("release.yml drops the release credentials between the publish and everything that follows", async () => {
