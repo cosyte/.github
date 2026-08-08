@@ -127,14 +127,25 @@ request cannot gate every pull request**, whether the skip is at the job level o
   own change with its own census, not to the investigation that measured it. The only edit made to
   `ci.yml` here is a comment at the input naming the consequence.
 - **No context list and no count is written by this change.** Nothing in a repository can observe its
-  own ruleset, so any list goes stale the next time a workflow grows a job. That is stated as what
-  this change does rather than as a property of the repository, because **one older count of this
-  repository's required contexts survives in `test/install-check.test.mjs` and this measurement is
-  what disproves it.** It is named here and left alone rather than swept into an investigation, and
-  correcting it is its own change. Derive the live answer instead:
+  own ruleset, so any list goes stale the next time a workflow grows a job, silently and with nothing
+  to catch it. That is stated as what this change does rather than as a property of the repository.
+  **The older count this measurement disproved lived in `test/install-check.test.mjs`. It was named
+  here and left alone for its own change; that change has since landed, and it DELETED the claim
+  rather than correcting it.** Deleting is the remedy to reach for every time, because a corrected
+  count is still a count and rots on the same clock. Derive the live answer instead, either folded,
+  which accounts for an org-level ruleset by construction:
 
   ```bash
-  gh api repos/cosyte/<repo>/rulesets --jq '.[].id'
+  gh api repos/cosyte/<repo>/rules/branches/main \
+    --jq '.[] | select(.type=="required_status_checks")
+                | .parameters.required_status_checks[].context'
+  ```
+
+  or per ruleset, where `includes_parents` defaults to true and is worth passing anyway so a reader
+  can see it was accounted for:
+
+  ```bash
+  gh api 'repos/cosyte/<repo>/rulesets?includes_parents=true' --jq '.[].id'
   gh api repos/cosyte/<repo>/rulesets/<id> \
     --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
   ```

@@ -1332,9 +1332,10 @@ test("REGRESSION: a real probe child sees none of the job's credentials, on BOTH
 });
 
 // THE WHOLE SECURITY PROPERTY OF THE REMOVAL STEP IS ITS POSITION, so the position is what is
-// pinned. `actionlint` is this repo's only required status context and it has no opinion about step
-// order, so a future edit that moves this step to the end of the job, or drops it, would otherwise
-// ship green. Anchored structurally on the steps array, the way the version-PR wiring is anchored in
+// pinned. Nothing else in this repository reads step order: `actionlint` checks that the workflow is
+// valid, not that its steps are in the one order that makes this one do anything, so a future edit
+// that moves this step to the end of the job, or drops it, would otherwise ship green. Anchored
+// structurally on the steps array, the way the version-PR wiring is anchored in
 // `test/release-notes.test.mjs`, rather than on text adjacency.
 test("release.yml drops the release credentials between the publish and everything that follows", async () => {
   const { readFile } = await import("node:fs/promises");
@@ -1372,8 +1373,25 @@ test("release.yml drops the release credentials between the publish and everythi
   // WHICH FILES TO REMOVE WAS READ OUT OF `changesets/action` AT THIS SHA, so a bump to the action
   // can invalidate the step silently: it would still exit 0, still print "Removed", and still leave
   // a credential wherever the new version puts it. Nothing else in this repo notices where that
-  // action writes. This assertion is the notice. It is not a required status context, so it does not
-  // block the bump; it makes the bump say out loud that someone re-read src/index.ts.
+  // action writes. This assertion is the notice: it reds the suite, so the bump has to say out loud
+  // that someone re-read src/index.ts.
+  //
+  // WHETHER REDDING THE SUITE ALSO BLOCKS THE MERGE IS NOT SOMETHING THIS FILE CAN KNOW, AND THE
+  // SENTENCE THAT USED TO ANSWER IT HERE WAS FALSE BY THE TIME ANYONE READ IT. A repository cannot
+  // observe its own ruleset, so a required-context list or count written into one rots the next time
+  // a workflow grows a job, silently, with nothing to catch it. Do not write one back in either
+  // direction. Derive the live answer, which folds in any org-level ruleset for free:
+  //
+  //   gh api repos/cosyte/.github/rules/branches/main \
+  //     --jq '.[] | select(.type=="required_status_checks")
+  //                 | .parameters.required_status_checks[].context'
+  //
+  // Per ruleset instead, where `includes_parents` defaults to true and is worth passing anyway so
+  // the reader can see it was accounted for:
+  //
+  //   gh api 'repos/cosyte/.github/rulesets?includes_parents=true' --jq '.[].id'
+  //   gh api repos/cosyte/.github/rulesets/<id> \
+  //     --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
   assert.match(
     yml,
     /uses: changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/,
