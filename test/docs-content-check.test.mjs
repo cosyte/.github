@@ -920,8 +920,21 @@ test('a REAL invocation creates, modifies and deletes NO path anywhere under the
 // Delivery fetches ONE file into `$RUNNER_TEMP`. An entry point importing a sibling under
 // `scripts/` passes every test above and dies `ERR_MODULE_NOT_FOUND` in the first adopting caller's
 // run, so what it imports is asserted here rather than discovered there.
+/**
+ * The checker's source with its COMMENTS REMOVED.
+ *
+ * Every assertion below is about what the code DOES, and this file's prose explains at length why
+ * it does not call `existsSync` and does not open anything for writing. Naming a hazard is not
+ * committing it.
+ */
+function checkerCode() {
+  return readFileSync(SCRIPT, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+}
+
 test('the checker imports `node:*` and NOTHING ELSE, this repository included', () => {
-  const source = readFileSync(SCRIPT, 'utf8');
+  const source = checkerCode();
   const specifiers = [...source.matchAll(/^\s*import\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm)].map(
     (match) => match[1],
   );
@@ -932,8 +945,21 @@ test('the checker imports `node:*` and NOTHING ELSE, this repository included', 
   assert.doesNotMatch(source, /require\(/, 'and no CommonJS route around the same rule');
 });
 
+// THE CROSS-CELL CLAIM, IN THE ONLY FORM THIS REPOSITORY CAN MAKE IT. No suite here can run a
+// macOS or Windows cell, so what is asserted is the property that makes every cell agree:
+// resolution never asks the FILESYSTEM whether a candidate exists. `statSync` appears only in the
+// single walk that builds the listing, where it classifies an entry the walk already found by
+// name; an `existsSync` or `accessSync` anywhere would be a case-insensitive lookup on two of the
+// three runner families and a different verdict from the site's.
+test('the checker never asks the filesystem whether a path exists', () => {
+  const source = checkerCode();
+  for (const forbidden of ['existsSync', 'accessSync', 'access(', 'exists(']) {
+    assert.equal(source.includes(forbidden), false, `${forbidden} would resolve case-insensitively on some cells`);
+  }
+});
+
 test('the checker opens nothing for writing', () => {
-  const source = readFileSync(SCRIPT, 'utf8');
+  const source = checkerCode();
   for (const forbidden of [
     'writeFileSync',
     'appendFileSync',
