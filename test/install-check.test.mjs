@@ -1138,16 +1138,31 @@ test("release.yml wires the gate the way the script expects", async () => {
     "the install gate must run after the release step, not before it",
   );
 
-  // It must not request a permission the callers do not grant. Every caller pins exactly
-  // contents/id-token/pull-requests, and a called workflow can only downgrade, so adding one here
-  // rejects all 13 at startup. Asserted against the YAML with comments stripped, because the step's
-  // own comment explains at length why `issues: write` is unavailable and would match otherwise.
+  // WHAT THIS WORKFLOW ASKS OF A CALLER'S TOKEN, PINNED. A called workflow's token can only be equal
+  // to or more restrictive than its caller's, so every key added here has to be granted in thirteen
+  // calling jobs FIRST or GitHub rejects the whole workflow at startup, for all of them at once.
+  // Asserted against the YAML with comments stripped, because the comments discuss the keys at length
+  // and would match otherwise.
+  //
+  // `actions: read` IS DELIBERATE AND IS THE ONE ADDITION. It is what the release-environment gate at
+  // the top of the job reads a caller's protection rules with, it carries the caller-side
+  // precondition written up under "THE CALLER-SIDE PRECONDITION" in release.yml, and it is a READ.
+  // `issues: write` is still refused: it is a write, it buys a notifier rather than a gate, and
+  // nobody has decided it is worth thirteen grants. The set is pinned WHOLE rather than by a
+  // presence check, so a fourth key cannot arrive without someone reading this comment.
   const code = yml
     .split("\n")
     .filter((line) => !line.trim().startsWith("#"))
     .join("\n");
   assert.doesNotMatch(code, /issues:\s*write/);
-  assert.match(code, /permissions:\s*\n\s+contents: write/);
+  const header = "\npermissions:\n";
+  const declared = [];
+  for (const line of code.slice(code.indexOf(header) + header.length).split("\n")) {
+    const match = /^ {2}([\w-]+): *([a-z]+)/.exec(line);
+    if (!match) break;
+    declared.push(`${match[1]}: ${match[2]}`);
+  }
+  assert.deepEqual(declared, ["contents: write", "id-token: write", "pull-requests: write", "actions: read"]);
 });
 
 // ── `--ignore-scripts` (founder decision, 2026-08-04) ───────────────────────────────────────────

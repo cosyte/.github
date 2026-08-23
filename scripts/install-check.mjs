@@ -56,10 +56,13 @@
 //
 // THE STICKY-ISSUE ROUTE WAS THE PREFERRED DESIGN AND IS NOT AVAILABLE. Opening an issue needs
 // `issues: write`, and a called workflow's token can only be equal to or more restrictive than the
-// caller's. Every caller of `release.yml` pins exactly `contents` + `id-token` + `pull-requests`,
-// against a repo default of `contents: read`. Adding `issues: write` here would be an escalation and
-// GitHub rejects the whole workflow at startup, one second, no jobs, no logs, for all thirteen
-// callers at once. So the menu is exactly {warn, fail}, and a warning on a green run notifies
+// caller's. No caller of `release.yml` grants it. Adding `issues: write` here would be an escalation
+// and GitHub rejects the whole workflow at startup, one second, no jobs, no logs, for all thirteen
+// callers at once. (That mechanism is also why `release.yml`'s `actions: read`, added for the
+// release-environment gate, carries a caller-side precondition: the grant goes into each caller's
+// calling job FIRST. The difference is that a reviewer decided a read that proves the human gate on
+// this publish was worth thirteen one-line changes, and nobody has made that call for a notifier.)
+// So the menu is exactly {warn, fail}, and a warning on a green run notifies
 // nobody. `release.yml` already writes that residual down for the dispatch and accepts it there ONLY
 // because a backstop exists. Here none does, so warn-only would reproduce the exact defect this gate
 // was built to close: a condition detected and never acted on.

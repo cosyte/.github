@@ -1412,18 +1412,29 @@ test('release.yml authors the version PR with a credential that is not GITHUB_TO
   // sends preemptively, which outranks the `~/.netrc` the action writes with our token. Leave that
   // persisted and the `opened` event is fixed while every later `synchronize` is not, so the PR
   // returns to zero applicable checks as soon as a second changeset lands on main.
-  // Anchored STRUCTURALLY, on the first step of the job rather than on text adjacency. An earlier
-  // version matched `fetch-depth: 0` followed by `persist-credentials: false` anywhere, which passes
-  // if the caller checkout loses the setting while the SECOND (tooling) checkout, which has always
-  // had it, happens to sit next to a `fetch-depth: 0`. The caller checkout is the one that owns the
-  // push, and it is the first step; that is the thing worth pinning.
-  const steps = workflow.slice(workflow.indexOf('\n    steps:')).split(/\n      - (?=\S)/);
-  const callerCheckout = steps[1];
-  assert.match(
-    callerCheckout ?? '',
-    /^uses: actions\/checkout@/,
-    'the first step of the release job is expected to be the caller checkout',
-  );
+  // Anchored STRUCTURALLY rather than on text adjacency. An earlier version matched `fetch-depth: 0`
+  // followed by `persist-credentials: false` anywhere, which passes if the caller checkout loses the
+  // setting while a TOOLING checkout, which has always had it, happens to sit next to a
+  // `fetch-depth: 0`. The caller checkout is the one that owns the push, and that is what is pinned.
+  //
+  // IT IS NO LONGER THE FIRST STEP, and the anchor moved rather than the property. The release
+  // environment gate now runs ahead of it (with the tooling checkout that carries its script), so
+  // the caller checkout is identified by the thing that makes it the CALLER's: it is the checkout
+  // with no `repository:` input, so it owns the workspace root. That is a stronger anchor than a
+  // position, and it survives the next step that lands above it.
+  const decomment = (chunk) =>
+    chunk
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n');
+  const steps = workflow
+    .slice(workflow.indexOf('\n    steps:'))
+    .split(/\n      - (?=\S)/)
+    .map(decomment);
+  const checkouts = steps.filter((step) => /^ *uses: actions\/checkout@/m.test(step));
+  assert.ok(checkouts.length >= 2, 'the release job checks out the caller tree and this repo\'s tooling');
+  const callerCheckout = checkouts.find((step) => !/^\s*repository:/m.test(step));
+  assert.ok(callerCheckout, 'the release job must check out the caller tree');
   assert.match(
     callerCheckout,
     /^\s*persist-credentials: false$/m,
