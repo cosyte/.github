@@ -91,6 +91,21 @@ on:
         description: "Known-absent consumer deps, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
         type: string
         default: "@cosyte/fhir=blocked"
+      # THE DOCS-CONTENT GATE. OFF BY DEFAULT, AND THAT DEFAULT IS LOAD-BEARING: every caller tracks
+      # `@main` and picks this up the moment it lands, so it must change nothing for any of the
+      # thirteen until that caller opts in BY NAME. A repo that publishes `docs-content/` can today
+      # merge and release content that breaks docs.cosyte.com, because nothing between the author and
+      # the published site resolves the links in it: `x12`'s pull request checks were green while
+      # `cosyte/docs` stayed red for eight days on a link `x12`'s own docs-content introduced.
+      # Turning this on validates, in the pull request that introduces it, that every
+      # PACKAGE-INTERNAL link and image under `docs-content/` and every document id
+      # `docs-content/sidebars.json` names resolves. It requires that exact JSON spelling:
+      # `sidebars.js`/`.ts` cannot be read without executing caller code. See the README's
+      # "The docs-content gate" for what it does NOT claim.
+      check-docs-content:
+        description: "Resolve docs-content/ links, images and sidebar ids (needs docs-content/sidebars.json)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -110,6 +125,55 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+      # THE DOCS-CONTENT GATE RUNS HERE, IN `verify`, AS TWO STEPS, AND EVERY PART OF THAT IS
+      # DELIBERATE.
+      #
+      # IN AN EXISTING JOB, so it adds no status check context. This repository cannot edit any
+      # caller's branch protection, so a failure in a NEW context would leave a caller's required set
+      # green; failing inside an EXISTING one binds every repo already requiring today's contexts.
+      # `verify` specifically because it is the only job here with NO job-level `if:` and no
+      # `needs:`: a job skipped by a conditional SATISFIES its required context (see the README), so
+      # hanging this off `prepublish` or `actionlint` would report success having never run.
+      #
+      # BEFORE THE INSTALL, for the reason the prepublish manifest lint states below: this reads a
+      # directory, needs no network, no dependency and no install, and a finding is deterministic and
+      # never excusable, so there is nothing to be gained by spending an install before saying so.
+      #
+      # DELIVERED OUTSIDE `GITHUB_WORKSPACE`. `actions/checkout` refuses a path outside the
+      # workspace, and a second tree INSIDE it is visible to `pnpm lint`, `pnpm format:check` and
+      # `pnpm phi-scan`, whose scanner walks from the repo root. So the checker is fetched into
+      # `RUNNER_TEMP` instead, unauthenticated (this repository is public), at
+      # `github.job_workflow_sha` rather than `main`: the code that runs must belong to the version
+      # of this workflow the caller resolved, not to whatever `main` holds mid-run. It is ONE
+      # self-contained file importing `node:*` only, asserted in `test/docs-content-check.test.mjs`,
+      # because an entry point importing a sibling under `scripts/` would pass every test there and
+      # die `ERR_MODULE_NOT_FOUND` here.
+      #
+      # `shell: bash` ON BOTH, because the `os` axis is caller-supplied and may be widened to
+      # `windows-latest`, where the default shell is `pwsh`, `$RUNNER_TEMP` expands to nothing and
+      # the fetch would land nowhere while the identical ubuntu cell went green: two verdicts for one
+      # tree. `set -euo pipefail` and the `test -s` are what make a FAILED DELIVERY red the job
+      # rather than read as zero findings, and there is deliberately no `|| true`, no
+      # `continue-on-error` and no tee-and-exit-zero anywhere here: printing findings into the log
+      # while the job stays green reproduces the incident this gate exists to stop, through a fully
+      # compliant pull request.
+      - name: Fetch the docs-content checker
+        if: ${{ inputs.check-docs-content }}
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/cosyte/.github/${TOOLING_SHA}/scripts/docs-content-check.mjs" \
+            --output "${RUNNER_TEMP}/docs-content-check.mjs"
+          test -s "${RUNNER_TEMP}/docs-content-check.mjs"
+      - name: docs-content links, images and sidebar ids must resolve
+        if: ${{ inputs.check-docs-content }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "${RUNNER_TEMP}/docs-content-check.mjs" --repo .
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
