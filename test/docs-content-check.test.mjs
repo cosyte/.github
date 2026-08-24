@@ -571,6 +571,211 @@ test('an indented line CONTINUING a paragraph is prose, not code', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A CONSTRUCT MAY WRAP ACROSS A LINE BREAK, AND HARD WRAPS ARE THE HOUSE STYLE
+// ---------------------------------------------------------------------------
+//
+// THE OTHER HALF OF THE ORIGIN INCIDENT. A line-by-line scan finds no `]` on the opening line and
+// no `[` on the closing one, so a link whose LABEL wraps is never seen at all: the run prints
+// `0 link(s)` and exits ZERO over exactly the class this gate exists to catch. Every markdown file
+// in this org wraps at about 100 columns, `spec.md` and this repository's `README.md` included, so
+// in a real corpus a large share of links cross a line break. Each case below pairs the wrapped
+// spelling with the identical target on ONE line, and the pair is what proves the fixture sound.
+
+test('a broken LINK whose LABEL wraps across a line break reds, exactly as it does on one line', () => {
+  const base = { 'docs-content/sidebars.json': sidebar({ docs: ['intro'] }) };
+  const control = makeTree({
+    ...base,
+    'docs-content/intro.md':
+      '# Intro\n\nSee the [x12 envelope reference](./reference/envelope) for the segment layout.\n',
+  });
+  const first = run(control);
+  assert.equal(first.code, 1, first.output);
+  assert.match(first.output, /B1 docs-content\/intro\.md:3/);
+  rmSync(control, { recursive: true, force: true });
+
+  const wrapped = makeTree({
+    ...base,
+    'docs-content/intro.md':
+      '# Intro\n\nSee the [x12 envelope\nreference](./reference/envelope) for the segment layout.\n',
+  });
+  const second = run(wrapped);
+  assert.match(second.output, /Checked 1 file\(s\), 1 link\(s\)/, second.output);
+  assert.equal(second.code, 1, `a hard wrap must not hide a broken link:\n${second.output}`);
+  // The line reported is where the CONSTRUCT OPENS, which is where the author looks for it.
+  assert.match(second.output, /B1 docs-content\/intro\.md:3/, second.output);
+  rmSync(wrapped, { recursive: true, force: true });
+
+  // And the green mirror: the same wrapped link over a tree that has the file exits zero.
+  const green = makeTree({
+    ...base,
+    'docs-content/intro.md':
+      '# Intro\n\nSee the [x12 envelope\nreference](./reference/envelope) for the segment layout.\n',
+    'docs-content/reference/envelope.md': '# Envelope\n',
+  });
+  const third = run(green);
+  assert.equal(third.code, 0, third.output);
+  rmSync(green, { recursive: true, force: true });
+});
+
+test('a broken IMAGE whose ALT wraps across a line break reds, exactly as it does on one line', () => {
+  const base = { 'docs-content/sidebars.json': sidebar({ docs: ['intro'] }) };
+  const control = makeTree({
+    ...base,
+    'docs-content/intro.md': '# Intro\n\n![Segment layout](./diagrams/envelope.svg)\n',
+  });
+  const first = run(control);
+  assert.equal(first.code, 1, first.output);
+  assert.match(first.output, /B5 docs-content\/intro\.md:3/);
+  rmSync(control, { recursive: true, force: true });
+
+  const wrapped = makeTree({
+    ...base,
+    'docs-content/intro.md': '# Intro\n\n![Segment\nlayout](./diagrams/envelope.svg)\n',
+  });
+  const second = run(wrapped);
+  assert.match(second.output, /Checked 1 file\(s\), 0 link\(s\), 1 image\(s\)/, second.output);
+  assert.equal(second.code, 1, second.output);
+  assert.match(second.output, /B5 docs-content\/intro\.md:3/, second.output);
+  rmSync(wrapped, { recursive: true, force: true });
+});
+
+// THE MIRROR OF THE SAME DEFECT, and the reason the fix is a BLOCK scan rather than a wider regex:
+// a code span opened on one line and closed on the next is ONE span in CommonMark, and reading it
+// line by line extracts `event` from a working sample and reds a page that renders no link at all.
+test('a CODE SPAN opened on one line and closed on the next is still code', () => {
+  assert.deepEqual(extractTargets('Call `handlers\n[0](event) ` before returning.\n'), []);
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': '# Intro\n\nCall `handlers\n[0](event) ` before returning.\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, `a false red on a working sample is a defect of this gate:\n${output}`);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\)/, output);
+  assert.doesNotMatch(output, /event/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a wrapped link inside a BLOCK QUOTE is one link, and a wrapped DEFINITION still carries its target', () => {
+  assert.deepEqual(extractTargets('> See the [x12 envelope\n> reference](./gone) for it.\n'), [
+    { line: 1, raw: './gone', kind: 'link' },
+  ]);
+  // A definition may put its destination on the line after the label, and its label may wrap too.
+  assert.deepEqual(extractTargets('[label]:\n./quickstart\n'), [
+    { line: 1, raw: './quickstart', kind: 'definition' },
+  ]);
+  assert.deepEqual(extractTargets('[a long\nlabel]: ./quickstart "How to"\n'), [
+    { line: 1, raw: './quickstart', kind: 'definition' },
+  ]);
+});
+
+// JOINING A BLOCK IS NOT JOINING A FILE. Two list items are two blocks, so the brackets below are
+// literal text in two bullets and there is no link: reading them as one would be a false RED, the
+// same defect in the other direction.
+test('two list items are never joined into one link, and neither are two paragraphs', () => {
+  assert.deepEqual(extractTargets('- [Item one\n- Item two](./missing)\n'), []);
+  assert.deepEqual(extractTargets('A paragraph [opens\n\na bracket](./missing)\n'), []);
+  assert.deepEqual(extractTargets('# A heading [opens\n\none too](./missing)\n'), []);
+});
+
+// AN UNCLOSED FENCE INSIDE A LIST ITEM must not run to end of file and hide every link after it.
+// The fence ends with the CONTAINER that holds it: a line dedented past the item's content column
+// is outside the item, so it is outside the fence too.
+test('an unclosed fence inside a list item ends with the item, not at end of file', () => {
+  const document = [
+    '- A malformed sample:',
+    '  ```js',
+    '  const out = handlers[0](event);',
+    '',
+    'Back at the top level, see [the guide](./missing).',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(document), [{ line: 5, raw: './missing', kind: 'link' }]);
+
+  // An unclosed fence at the TOP level does run to end of file, which is what CommonMark says: the
+  // clamp above is about the container, not about forgiving the fence.
+  assert.deepEqual(extractTargets('```js\nconst out = [x](./missing);\n'), []);
+});
+
+// ---------------------------------------------------------------------------
+// RAW HTML, JSX ATTRIBUTES AND MDX EXPRESSIONS ARE NOT TARGETS
+// ---------------------------------------------------------------------------
+//
+// "OUT OF SCOPE: raw HTML and JSX attributes (`<a href=...>`, `<img src=...>`) and MDX expressions.
+// A broken target there is a named residual, not a finding." An MDX expression comment is the
+// standard - in MDX the only - way to comment content out of a page, so extracting a target from
+// one reds a pull request over content the site never renders. Each case pairs the out-of-scope
+// spelling with a live target beside it, so the skip is proved BOUNDED rather than merely wide.
+
+test('an MDX expression is not a target, on one line or across a blank one', () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.mdx': '# Intro\n\n{/* [Old link](./retired-page) */}\n\nLive text.\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, `an MDX comment renders nothing, so it is not a finding:\n${output}`);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\)/, output);
+  rmSync(dir, { recursive: true, force: true });
+
+  // Commenting out a SECTION spans blank lines, and the expression is still one expression.
+  assert.deepEqual(
+    extractTargets('{/*\n## An old section\n\n[Old link](./gone)\n*/}\n\nAnd [a live one](./live)\n'),
+    [{ line: 7, raw: './live', kind: 'link' }],
+  );
+  // Mid-line, the expression ends where it ends: the link after it is a link.
+  assert.deepEqual(extractTargets('Text {/* [x](./gone) */} and [y](./missing)\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+});
+
+test('a JSX or HTML ATTRIBUTE VALUE is not a target, while the element\'s children still are', () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.mdx': '# Intro\n\n<Card alt="see [here](./gone)" />\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, `a target inside a JSX attribute is a residual, not a finding:\n${output}`);
+  rmSync(dir, { recursive: true, force: true });
+
+  assert.deepEqual(extractTargets('<a href="./gone">[Child](./missing)</a>\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+  assert.deepEqual(extractTargets('<Card to={"./gone"} label="[x](./gone)">\n  [Child](./missing)\n</Card>\n'), [
+    { line: 2, raw: './missing', kind: 'link' },
+  ]);
+});
+
+test('an HTML COMMENT is not a target, across blank lines too', () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': '# Intro\n\n<!-- [Old link](./retired-page) -->\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, `an HTML comment renders nothing, so it is not a finding:\n${output}`);
+  rmSync(dir, { recursive: true, force: true });
+
+  assert.deepEqual(extractTargets('<!--\n[Old link](./gone)\n\nstill commented\n-->\n\n[Live](./missing)\n'), [
+    { line: 7, raw: './missing', kind: 'link' },
+  ]);
+});
+
+// AND THE SKIP REFUSES TO GUESS. Prose that merely contains an angle bracket is not a tag, so the
+// link between the two angles is still a link: a matcher that swallowed it would turn the residual
+// into the same silent hole the wrap defect was.
+test('prose that is not a tag is scanned as the prose it is', () => {
+  assert.deepEqual(extractTargets('If a<b and [see](./missing)>c then stop.\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+  // An unbalanced brace is literal text too, not the start of an expression that eats the rest.
+  assert.deepEqual(extractTargets('The set {a, b and [see](./missing) matter.\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+  // A tag inside a code span is a code span, not a tag.
+  assert.deepEqual(extractTargets('Write `<Card alt="x">` and then [see](./missing).\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // DOCUMENT IDS
 // ---------------------------------------------------------------------------
 
@@ -691,6 +896,40 @@ test('an `autogenerated` dirName is checked as a DIRECTORY, and a regular file o
   assert.equal(third.code, 0, third.output);
   assert.match(third.output, /autogenerated coverage: dirName "reference" covers 1 file\(s\)/);
   rmSync(present, { recursive: true, force: true });
+});
+
+// A `dirName` THAT CLIMBS OUT OF THE ROOT NAMES NOTHING UNDER IT, and must not be read as the root.
+// An unclamped pop turned `".."` into `""`, which covered the WHOLE tree: every file counted as
+// shown by a category built over a directory that is not even inside `docs-content/`, and the
+// zero-ids finding was suppressed for the entire package. `"../../etc"` collapsed the same way.
+test('an `autogenerated` dirName that escapes the root is B2 and covers NO file', () => {
+  for (const dirName of ['..', '../../etc', './..']) {
+    const dir = makeTree({
+      'docs-content/sidebars.json': sidebar({ docs: [{ type: 'autogenerated', dirName }] }),
+      'docs-content/intro.md': '# Intro\n',
+    });
+    const { code, output } = run(dir);
+    assert.equal(code, 1, `"${dirName}" names no directory under docs-content/:\n${output}`);
+    assert.match(output, /B2 docs-content\/sidebars\.json/, output);
+    assert.doesNotMatch(output, /covers 1 file\(s\)/, `"${dirName}" must cover nothing:\n${output}`);
+    // And with the coverage gone, the tree's one uncovered file reaches the zero-ids finding.
+    assert.match(output, /zero document ids/, output);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // The clamp is not a ban on `..`: one that stays inside the root still resolves.
+  const inside = makeTree({
+    'docs-content/sidebars.json': sidebar({
+      docs: ['intro', { type: 'autogenerated', dirName: 'guides/../reference' }],
+    }),
+    'docs-content/intro.md': '# Intro\n',
+    'docs-content/guides/quickstart.md': '# Q\n',
+    'docs-content/reference/codes.md': '# Codes\n',
+  });
+  const { code, output } = run(inside);
+  assert.equal(code, 0, output);
+  assert.match(output, /covers 1 file\(s\)/, output);
+  rmSync(inside, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -961,6 +1200,36 @@ test('B6: an unreadable file is not ALSO an orphan, and no report line prints an
   assert.doesNotMatch(output, /undefined/, output);
   assert.match(output, /Checked 2 file\(s\)/, 'it is a regular .md file and is counted as one');
   execFileSync('chmod', ['644', join(dir, 'docs-content/secret.md')]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// NOR IS IT A B2. A frontmatter `id` replaces the LAST path segment, so a file whose contents would
+// not read could be declaring any id in its own directory: "no document declares `locked`" is a
+// claim this run cannot make about a file that is sitting right there with only its frontmatter
+// unread. The run is already red on the B6; a second finding beside it would name a defect that may
+// not exist. Same reasoning as the orphan case above, carried into id resolution.
+test('B6: an unreadable file does not ALSO produce a B2 saying nothing declares its id', {
+  skip: POSIX && process.getuid && process.getuid() !== 0 ? false : 'needs a non-root POSIX user',
+}, () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro', 'guides/locked', 'guides/absent'] }),
+    'docs-content/intro.md': '# Intro\n',
+    'docs-content/guides/locked.md': '# Locked\n',
+  });
+  execFileSync('chmod', ['000', join(dir, 'docs-content/guides/locked.md')]);
+  const { code, output } = run(dir);
+  assert.equal(code, 1, output);
+  assert.match(output, /B6 docs-content\/guides\/locked\.md/, output);
+  assert.doesNotMatch(output, /declares the id `guides\/locked`/, output);
+  assert.match(output, /unchecked id: docs-content\/sidebars\.json {2}guides\/locked/, output);
+  // And the suppression is scoped to what the unreadable file could be declaring: a dangling id in
+  // that same directory is still unknown, while one in a directory with no unreadable file is a B2.
+  assert.match(output, /unchecked id: docs-content\/sidebars\.json {2}guides\/absent/, output);
+  execFileSync('chmod', ['644', join(dir, 'docs-content/guides/locked.md')]);
+  const repaired = run(dir);
+  assert.equal(repaired.code, 1, 'with the file readable, the genuinely dangling id is a B2 again');
+  assert.match(repaired.output, /declares the id `guides\/absent`/, repaired.output);
+  assert.doesNotMatch(repaired.output, /declares the id `guides\/locked`/, repaired.output);
   rmSync(dir, { recursive: true, force: true });
 });
 

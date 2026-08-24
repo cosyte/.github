@@ -358,10 +358,122 @@ function parseDestination(text, start) {
   return { target, end: i + 1 };
 }
 
-const DEFINITION = /^ {0,3}\[((?:[^\]\\]|\\.)*)\]:\s*(\S.*)$/;
+// ---------------------------------------------------------------------------
+// RAW HTML, JSX AND MDX EXPRESSIONS, PARSED ONLY SO THEY CAN BE SKIPPED
+// ---------------------------------------------------------------------------
+//
+// The spec puts these OUT OF SCOPE: "raw HTML and JSX attributes (`<a href=...>`, `<img src=...>`)
+// and MDX expressions. A broken target there is a named residual, not a finding." Skipping them is
+// not indulgence, it is the difference between a gate and a nuisance. An MDX expression comment is
+// the standard - in MDX the only - way to comment content out of a page, so extracting a target
+// from one reds a pull request over content the site never renders, which is the same class of
+// defect as reddening a code sample.
+//
+// Every matcher below REFUSES rather than guesses: an unbalanced brace, an unterminated attribute
+// value and a `<` that is not a tag are all left as ordinary text. A bad guess therefore costs a
+// scan, never a swallowed paragraph.
 
 /**
- * Every in-scope target in one line of content, with its kind.
+ * The end of the brace expression opened at `open`, or -1 when nothing closes it here.
+ *
+ * Two things inside an expression would otherwise unbalance the count, and both are consumed whole:
+ * a comment (the `{` slash-star ... star-slash `}` form MDX uses to comment content out) and a
+ * quoted string.
+ *
+ * @param {string} text
+ * @param {number} open
+ */
+function matchBrace(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    const character = text[i];
+    if (character === '\\') {
+      i += 1;
+      continue;
+    }
+    if (character === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      if (end === -1) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      const close = text.indexOf(character, i + 1);
+      if (close === -1) return -1;
+      i = close;
+      continue;
+    }
+    if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The index just past the HTML or JSX tag opening at `start`, or -1 when that is not a tag.
+ *
+ * The whole point is the ATTRIBUTE VALUES: `<Card alt="see [here](./gone)" />` carries bracket-paren
+ * text that is not a link, and `<a href="./gone">` carries a destination the spec calls a residual.
+ * The grammar is deliberately strict - a name, then attributes that are names, quoted values,
+ * unquoted values or brace expressions - so that prose like `a<b and [see](./x)>c` fails to match
+ * and is scanned as the text it is, rather than swallowing the link between the two angles.
+ *
+ * @param {string} text
+ * @param {number} start
+ */
+function matchTag(text, start) {
+  const head = /^<\/?[A-Za-z][A-Za-z0-9.-]*/.exec(text.slice(start));
+  if (!head) return -1;
+  let i = start + head[0].length;
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (i >= text.length) return -1;
+    if (text[i] === '>') return i + 1;
+    if (text[i] === '/' && text[i + 1] === '>') return i + 2;
+    if (text[i] === '{') {
+      const close = matchBrace(text, i);
+      if (close === -1) return -1;
+      i = close + 1;
+      continue;
+    }
+    const name = /^[A-Za-z_:][A-Za-z0-9_.:-]*/.exec(text.slice(i));
+    if (!name) return -1;
+    i += name[0].length;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (text[i] !== '=') continue;
+    i += 1;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    const quote = text[i];
+    if (quote === '"' || quote === "'") {
+      const close = text.indexOf(quote, i + 1);
+      if (close === -1) return -1;
+      i = close + 1;
+      continue;
+    }
+    if (quote === '{') {
+      const close = matchBrace(text, i);
+      if (close === -1) return -1;
+      i = close + 1;
+      continue;
+    }
+    const unquoted = /^[^\s"'=<>`]+/.exec(text.slice(i));
+    if (!unquoted) return -1;
+    i += unquoted[0].length;
+  }
+}
+
+/**
+ * Every in-scope target in one BLOCK of content, with its kind.
+ *
+ * `content` is a whole block, not a line: the lines of a paragraph are joined with `\n` before this
+ * runs, because a link whose LABEL wraps across a line break is ONE link in CommonMark and one link
+ * in the rendered page. Scanning line by line finds no `]` on the opening line and no `[` on the
+ * closing one, so a broken target hidden by a hard wrap ships GREEN - and hard-wrapped prose is the
+ * house style of every markdown file in this org. The same join is what lets a code span opened on
+ * one line and closed on the next stay code instead of becoming a false red.
  *
  * BRACKETS NEST, and which of the nested destinations the published page actually serves is
  * CommonMark's answer, not the outermost pair's. Three ordinary shapes, all of them targets the
@@ -378,14 +490,15 @@ const DEFINITION = /^ {0,3}\[((?:[^\]\\]|\\.)*)\]:\s*(\S.*)$/;
  *     inside it is ever live; the image's own destination is. A link there still deactivates an
  *     ENCLOSING link, exactly as one directly in the link's text does.
  *
- * @param {string} content the line with its container prefix stripped
- * @param {number} line 1-based line number in the file
+ * @param {string} content the block's lines, container prefixes stripped, joined with `\n`
+ * @param {number} base the offset of `content` within the block, for line attribution
+ * @param {(index: number) => number} lineAt the 1-based file line an offset in the block sits on
  * @param {{line: number, raw: string, kind: 'link'|'image'|'definition'}[]} found
  * @param {boolean} [live] false inside an image's alt: constructs there are still parsed, because
  *   a link in an alt suppresses an enclosing link, but no destination inside one is ever served
  * @returns {boolean} whether this text IS or CONTAINS a link, which suppresses any enclosing one
  */
-function scanInline(content, line, found, live = true) {
+function scanInline(content, base, lineAt, found, live = true) {
   let i = 0;
   let containsLink = false;
   while (i < content.length) {
@@ -396,7 +509,8 @@ function scanInline(content, line, found, live = true) {
     }
     if (character === '`') {
       // A CODE SPAN, and the reason this arm exists at all: `handlers[0](event)` in a JavaScript
-      // sample is not a link, and reddening a working sample is a defect of this gate.
+      // sample is not a link, and reddening a working sample is a defect of this gate. A span may
+      // open on one line and close on the next, which is why the block is scanned as one string.
       const run = runLength(content, i, '`');
       const close = closingBacktickRun(content, i + run, run);
       i = close === -1 ? i + run : close + run;
@@ -406,11 +520,31 @@ function scanInline(content, line, found, live = true) {
       // An AUTOLINK is a whole construct in angle brackets and carries no target here. It is NOT
       // the angle-bracket DESTINATION above, which is in scope and handled in `parseDestination`.
       const match = /^<[A-Za-z][A-Za-z0-9+.-]*:[^<>\s]*>/.exec(content.slice(i));
-      i += match ? match[0].length : 1;
+      if (match) {
+        i += match[0].length;
+        continue;
+      }
+      // An HTML comment renders nothing, so nothing inside one is a target. Unterminated, it runs
+      // to the end of this block and no further - a blank line ends an HTML block.
+      if (content.startsWith('<!--', i)) {
+        const end = content.indexOf('-->', i + 4);
+        i = end === -1 ? content.length : end + 3;
+        continue;
+      }
+      const tag = matchTag(content, i);
+      i = tag === -1 ? i + 1 : tag;
+      continue;
+    }
+    if (character === '{') {
+      // An MDX expression. Out of scope by name, and the residual that buys is exactly the one the
+      // spec accepts: a broken target inside one is invisible rather than a false red.
+      const close = matchBrace(content, i);
+      i = close === -1 ? i + 1 : close + 1;
       continue;
     }
     if (character === '[' || (character === '!' && content[i + 1] === '[')) {
       const isImage = character === '!';
+      const start = i;
       const open = isImage ? i + 1 : i;
       const close = matchBracket(content, open);
       if (close === -1) {
@@ -421,17 +555,20 @@ function scanInline(content, line, found, live = true) {
       if (content[close + 1] === '(') {
         const destination = parseDestination(content, close + 2);
         if (destination) {
+          // The line reported is where the CONSTRUCT OPENS, which is where an author looks for it,
+          // and is the only stable answer once a construct may span two of them.
+          const line = lineAt(base + start);
           if (isImage) {
             // The alt is plain text in the page, so nothing inside it is a target - but a LINK in
             // there still deactivates an enclosing one, so it is parsed rather than skipped.
-            if (scanInline(inner, line, found, false)) containsLink = true;
+            if (scanInline(inner, base + open + 1, lineAt, found, false)) containsLink = true;
             if (live) found.push({ line, raw: destination.target, kind: 'image' });
             i = destination.end;
             continue;
           }
           /** @type {typeof found} */
           const nested = [];
-          const nestedLink = scanInline(inner, line, nested, live);
+          const nestedLink = scanInline(inner, base + open + 1, lineAt, nested, live);
           found.push(...nested);
           // A link may not contain a link: where one is nested, THAT is the link and this pair is
           // literal text, so this destination is not the page's and is not checked.
@@ -453,20 +590,150 @@ function scanInline(content, line, found, live = true) {
 }
 
 /**
+ * A LINK REFERENCE DEFINITION destination, from just after the `:`.
+ *
+ * Its own parser rather than `parseDestination`'s, because a definition may put its destination on
+ * the LINE AFTER the label and because what follows the destination decides whether this was a
+ * definition at all: anything but a title and whitespace to end of line means the whole thing is an
+ * ordinary paragraph.
+ *
+ * @param {string} text
+ * @param {number} start
+ * @returns {{ target: string, end: number } | null}
+ */
+function parseDefinitionDestination(text, start) {
+  let i = start;
+  let newlines = 0;
+  while (i < text.length && /\s/.test(text[i])) {
+    if (text[i] === '\n') {
+      newlines += 1;
+      if (newlines > 1) return null;
+    }
+    i += 1;
+  }
+  if (i >= text.length) return null;
+  let target = '';
+  if (text[i] === '<') {
+    i += 1;
+    while (i < text.length && text[i] !== '>' && text[i] !== '\n') {
+      if (text[i] === '\\') {
+        target += text[i + 1] ?? '';
+        i += 2;
+        continue;
+      }
+      target += text[i];
+      i += 1;
+    }
+    if (text[i] !== '>') return null;
+    i += 1;
+  } else {
+    for (; i < text.length && !/\s/.test(text[i]); i += 1) {
+      if (text[i] === '\\') {
+        target += text[i + 1] ?? '';
+        i += 1;
+        continue;
+      }
+      target += text[i];
+    }
+  }
+  if (target === '') return null;
+  while (i < text.length && text[i] !== '\n' && /\s/.test(text[i])) i += 1;
+  if (i < text.length && text[i] !== '\n') {
+    const quote = text[i];
+    if (quote !== '"' && quote !== "'" && quote !== '(') return null;
+    const closer = quote === '(' ? ')' : quote;
+    i += 1;
+    while (i < text.length && text[i] !== closer) {
+      if (text[i] === '\\') i += 1;
+      i += 1;
+    }
+    if (text[i] !== closer) return null;
+    i += 1;
+    while (i < text.length && text[i] !== '\n' && /\s/.test(text[i])) i += 1;
+  }
+  if (i < text.length && text[i] !== '\n') return null;
+  return { target, end: i < text.length ? i + 1 : text.length };
+}
+
+/**
+ * Consume the LINK REFERENCE DEFINITIONS a block opens with, and return where they end.
+ *
+ * Definitions sit at the FRONT of a block, one after another, and only there: `Some prose` followed
+ * by `[label]: ./target` is a lazy paragraph continuation and declares nothing. A reference USE
+ * (`[text][label]`) carries no target, so the definition is the one thing checked, once.
+ *
+ * @param {string} text
+ * @param {(index: number) => number} lineAt
+ * @param {{line: number, raw: string, kind: 'link'|'image'|'definition'}[]} found
+ */
+function consumeDefinitions(text, lineAt, found) {
+  let i = 0;
+  for (;;) {
+    const indented = /^ {0,3}\[/.exec(text.slice(i));
+    if (!indented) return i;
+    const open = i + indented[0].length - 1;
+    const close = matchBracket(text, open);
+    if (close === -1 || text[close + 1] !== ':') return i;
+    if (text.slice(open + 1, close).trim() === '') return i;
+    const destination = parseDefinitionDestination(text, close + 2);
+    if (!destination) return i;
+    found.push({ line: lineAt(open), raw: destination.target, kind: 'definition' });
+    i = destination.end;
+  }
+}
+
+/**
+ * Scan ONE BLOCK: its lines, container prefixes already stripped, with the file line each came from.
+ *
+ * @param {{content: string, line: number}[]} block
+ * @param {{line: number, raw: string, kind: 'link'|'image'|'definition'}[]} found
+ */
+function scanBlock(block, found) {
+  if (block.length === 0) return;
+  const text = block.map((entry) => entry.content).join('\n');
+  /** @type {number[]} */
+  const offsets = [];
+  let at = 0;
+  for (const entry of block) {
+    offsets.push(at);
+    at += entry.content.length + 1;
+  }
+  /** @param {number} index */
+  const lineAt = (index) => {
+    let i = offsets.length - 1;
+    while (i > 0 && offsets[i] > index) i -= 1;
+    return block[i].line;
+  };
+  const after = consumeDefinitions(text, lineAt, found);
+  scanInline(text.slice(after), after, lineAt, found);
+}
+
+/**
  * Every in-scope target in a document, by line.
  *
- * The block scan exists for one reason: to know which lines are CODE. Three constructs are excluded
- * and each is measured the way CommonMark measures it rather than by the shorthand:
+ * This walk exists for one reason: to decide which lines belong to the SAME BLOCK, and which are
+ * CODE and belong to no block at all. Everything else is `scanBlock`'s. Each construct is measured
+ * the way CommonMark measures it rather than by the shorthand:
  *
+ *   - A PARAGRAPH is the unit, not the line. Its lines are joined and scanned together, because a
+ *     link, an image or a code span may wrap across a line break and hard-wrapped prose is this
+ *     org's house style. A list item, a heading, a thematic break, a blank line and a code fence
+ *     each start a new block, so no construct is ever read across a boundary the page does not have.
  *   - A FENCED block opens on a run of three or more backticks or tildes and closes only on a run
  *     of the SAME character that is AT LEAST AS LONG. A page that fences a markdown sample with
  *     FOUR backticks so the sample can contain a three-backtick fence is all code; treating the
- *     inner three as the closer turns the next line into prose and reds a working sample.
+ *     inner three as the closer turns the next line into prose and reds a working sample. An
+ *     UNCLOSED fence ends with the CONTAINER that holds it - a line dedented past the list item's
+ *     content column closes it - so a malformed sample inside a bullet cannot hide every link in
+ *     the rest of the file.
  *   - An INDENTED block is four spaces measured from the CONTAINER'S CONTENT COLUMN, not from
  *     column zero. `- Parent` followed by `    - Child, see [the guide](./missing)` is a nested
  *     list and that link is a link; reading it as code is how the Origin incident ships green.
  *   - An indented line cannot interrupt a PARAGRAPH, so a lazily indented continuation line is
  *     prose and its links are links.
+ *   - An HTML COMMENT and an MDX EXPRESSION COMMENT opening a line run to their closer across blank
+ *     lines, exactly as the renderer reads them. Neither renders anything, so nothing inside one is
+ *     a target.
  *
  * @param {string} text
  * @param {number} [startLine] 1-based line of `text` within the file (frontmatter is skipped)
@@ -477,23 +744,51 @@ export function extractTargets(text, startLine = 1) {
   const found = [];
   /** @type {number[]} */
   const containers = [];
-  /** @type {{character: string, length: number} | null} */
+  /** @type {{character: string, length: number, base: number} | null} */
   let fence = null;
-  let inParagraph = false;
+  /** @type {string | null} the closer of a comment block still open */
+  let comment = null;
+  let inQuote = false;
+  /** @type {{content: string, line: number}[]} */
+  let block = [];
+
+  const flush = () => {
+    if (block.length > 0) {
+      scanBlock(block, found);
+      block = [];
+    }
+    inQuote = false;
+  };
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = expandTabs(lines[index]);
     const lineNumber = startLine + index;
+    const trimmed = line.trim();
 
     if (fence) {
-      const trimmed = line.trim();
-      const run = runLength(trimmed, 0, fence.character);
-      if (run >= fence.length && trimmed.length === run) fence = null;
+      if (trimmed === '') continue;
+      if (indentOf(line) >= fence.base) {
+        const run = runLength(trimmed, 0, fence.character);
+        if (run >= fence.length && trimmed.length === run) fence = null;
+        continue;
+      }
+      // Dedented past the container that held it: the list item ended, so the fence ended with it.
+      // This line is then read as the ordinary content it is.
+      fence = null;
+    }
+
+    if (comment !== null) {
+      const end = line.indexOf(comment);
+      if (end === -1) continue;
+      const rest = line.slice(end + comment.length);
+      comment = null;
+      if (rest.trim() === '') continue;
+      block.push({ content: rest, line: lineNumber });
       continue;
     }
 
-    if (line.trim() === '') {
-      inParagraph = false;
+    if (trimmed === '') {
+      flush();
       continue;
     }
 
@@ -505,34 +800,59 @@ export function extractTargets(text, startLine = 1) {
 
     const fenceOpen = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
     if (fenceOpen && !(fenceOpen[1][0] === '`' && fenceOpen[2].includes('`'))) {
-      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length };
-      inParagraph = false;
+      flush();
+      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length, base };
       continue;
     }
 
-    if (relativeIndent >= 4 && !inParagraph) {
+    if (relativeIndent >= 4 && block.length === 0) {
       // An indented code block. Nothing in it is a target.
       continue;
     }
 
     const marker = /^ {0,3}([-+*]|\d{1,9}[.)])( +)/.exec(content);
     if (marker) {
+      // A new list item is a new block: `- [Item one` and `- Item two](./x)` are two items and no
+      // link at all, so they must never be joined.
+      flush();
       containers.push(base + marker[0].length);
       content = content.slice(marker[0].length);
     }
 
-    const definition = !inParagraph ? DEFINITION.exec(content) : null;
-    if (definition) {
-      const destination = parseDestination(`(${definition[2]})`, 1);
-      if (destination) found.push({ line: lineNumber, raw: destination.target, kind: 'definition' });
-      inParagraph = false;
+    const quote = /^ {0,3}>( ?)/.exec(content);
+    if (quote) {
+      // A block quote's own paragraph, which may wrap exactly as any other does.
+      if (!inQuote) flush();
+      inQuote = true;
+      content = content.slice(quote[0].length);
+    }
+
+    const opener = /^ {0,3}(\{\/\*|<!--)/.exec(content);
+    if (opener) {
+      const closer = opener[1] === '<!--' ? '-->' : '*/}';
+      const end = content.indexOf(closer, opener[0].length);
+      if (end === -1) {
+        flush();
+        comment = closer;
+        continue;
+      }
+      content = content.slice(end + closer.length);
+      if (content.trim() === '') continue;
+    }
+
+    if (/^ {0,3}(#{1,6}( |$)|([-*_])( *\3){2,} *$)/.test(content)) {
+      // An ATX heading and a thematic break are each a block of their own: a construct cannot wrap
+      // out of one and into the line below it.
+      flush();
+      block.push({ content, line: lineNumber });
+      flush();
       continue;
     }
 
-    scanInline(content, lineNumber, found);
-    inParagraph = !/^ {0,3}(#{1,6}( |$)|>|([-*_])( *\3){2,} *$)/.test(content);
+    block.push({ content, line: lineNumber });
   }
 
+  flush();
   return found;
 }
 
@@ -813,7 +1133,17 @@ export function collectSidebar(parsed) {
   return { ids, autogenerated, links, unrecognized, malformed };
 }
 
-/** `.`, `./x` and `x/` all name the same subtree. */
+/**
+ * `.`, `./x` and `x/` all name the same subtree; `null` means the name ESCAPES the root.
+ *
+ * The pop is CLAMPED, and that is the whole point of the null: popping past the root silently
+ * turned `".."` into `""`, which reads as the root and so covers - and excuses from the zero-ids
+ * finding - the entire tree. An escaping `dirName` names no directory under `docs-content/`, which
+ * is what B2 asks about, and it covers nothing.
+ *
+ * @param {string} dirName
+ * @returns {string | null}
+ */
 function normalizeDirName(dirName) {
   const segments = String(dirName).split('/');
   /** @type {string[]} */
@@ -821,6 +1151,7 @@ function normalizeDirName(dirName) {
   for (const segment of segments) {
     if (segment === '' || segment === '.') continue;
     if (segment === '..') {
+      if (out.length === 0) return null;
       out.pop();
       continue;
     }
@@ -1087,6 +1418,19 @@ export function checkDocsContent({ repo }) {
   const coveredFiles = new Set();
   for (const entry of sidebar.autogenerated) {
     const dirName = normalizeDirName(entry.dirName);
+    if (dirName === null) {
+      findings.push({
+        code: 'B2',
+        path: sidebarPath,
+        line: null,
+        subject: entry.pointer,
+        detail:
+          `\`{"type": "autogenerated", "dirName": "${entry.dirName}"}\` climbs out of ` +
+          `\`${DOCS_ROOT}/\`, so it names no directory under it and the category would be built ` +
+          'over nothing. It covers no file either: a name that escapes the root is not the root.',
+      });
+      continue;
+    }
     if (dirName !== '' && entries.get(dirName) !== 'dir') {
       findings.push({
         code: 'B2',
@@ -1108,6 +1452,21 @@ export function checkDocsContent({ repo }) {
     coverage.push({ dirName: entry.dirName, files: covered.length });
   }
 
+  // A `.md`/`.mdx` file that IS there but would not READ has an UNKNOWN declared id, and a
+  // frontmatter `id` replaces only the LAST path segment - so an unreadable file could be declaring
+  // any id in its own directory. "No document declares this id" is then a claim this run cannot
+  // make. The run is already red on that file's B6; adding a B2 beside it would name a second
+  // defect that may not exist, which is the same reasoning that keeps such a file out of the orphan
+  // report.
+  /** @param {string} value */
+  const parentOf = (value) => value.split('/').slice(0, -1).join('/');
+  const unreadableParents = new Set([...unreadableFiles].map(parentOf));
+  /** @param {string} id */
+  const couldBeDeclaredByAnUnreadableFile = (id) =>
+    unreadableParents.has(parentOf(id)) ||
+    unreadableFiles.has(`${id}/index.md`) ||
+    unreadableFiles.has(`${id}/index.mdx`);
+
   const referenced = new Set();
   for (const entry of sidebar.ids) {
     const direct = filesById.get(entry.id);
@@ -1123,6 +1482,18 @@ export function checkDocsContent({ repo }) {
     );
     if (fallback) {
       referenced.add(fallback);
+      continue;
+    }
+    if (couldBeDeclaredByAnUnreadableFile(entry.id)) {
+      reports.push({
+        kind: 'unchecked id',
+        path: sidebarPath,
+        line: null,
+        subject: entry.id,
+        detail:
+          'a `.md`/`.mdx` file that would not read could be declaring this id, so whether it ' +
+          'resolves is unknown. That file is named by its own B6 above, and this run is red on it.',
+      });
       continue;
     }
     const shadowed = [`${entry.id}/index.md`, `${entry.id}/index.mdx`].find(
