@@ -363,12 +363,31 @@ const DEFINITION = /^ {0,3}\[((?:[^\]\\]|\\.)*)\]:\s*(\S.*)$/;
 /**
  * Every in-scope target in one line of content, with its kind.
  *
+ * BRACKETS NEST, and which of the nested destinations the published page actually serves is
+ * CommonMark's answer, not the outermost pair's. Three ordinary shapes, all of them targets the
+ * spec puts in scope, and reading only the outer construct gets each one wrong:
+ *
+ *   - `[![Logo](./img/logo.svg)](./intro)`, a clickable badge or logo. BOTH destinations are
+ *     live - an `<img src>` inside an `<a href>` - so BOTH are checked. Scanning only the outer
+ *     one drops the image entirely, and a missing asset behind a linked logo exits ZERO while
+ *     the same image on its own line is a B5.
+ *   - `[a [b](./missing) c](./intro)`. A link may not contain a link, so the INNER definition is
+ *     the link and the outer brackets are literal text: `./missing` is live and `./intro` is NOT.
+ *     Checking the outer one checks a destination the page never serves and misses one it does.
+ *   - `![see [here](./x)](./logo.svg)`. An image's alt renders as PLAIN TEXT, so no destination
+ *     inside it is ever live; the image's own destination is. A link there still deactivates an
+ *     ENCLOSING link, exactly as one directly in the link's text does.
+ *
  * @param {string} content the line with its container prefix stripped
  * @param {number} line 1-based line number in the file
  * @param {{line: number, raw: string, kind: 'link'|'image'|'definition'}[]} found
+ * @param {boolean} [live] false inside an image's alt: constructs there are still parsed, because
+ *   a link in an alt suppresses an enclosing link, but no destination inside one is ever served
+ * @returns {boolean} whether this text IS or CONTAINS a link, which suppresses any enclosing one
  */
-function scanInline(content, line, found) {
+function scanInline(content, line, found, live = true) {
   let i = 0;
+  let containsLink = false;
   while (i < content.length) {
     const character = content[i];
     if (character === '\\') {
@@ -398,21 +417,39 @@ function scanInline(content, line, found) {
         i = open + 1;
         continue;
       }
+      const inner = content.slice(open + 1, close);
       if (content[close + 1] === '(') {
         const destination = parseDestination(content, close + 2);
         if (destination) {
-          found.push({ line, raw: destination.target, kind: isImage ? 'image' : 'link' });
+          if (isImage) {
+            // The alt is plain text in the page, so nothing inside it is a target - but a LINK in
+            // there still deactivates an enclosing one, so it is parsed rather than skipped.
+            if (scanInline(inner, line, found, false)) containsLink = true;
+            if (live) found.push({ line, raw: destination.target, kind: 'image' });
+            i = destination.end;
+            continue;
+          }
+          /** @type {typeof found} */
+          const nested = [];
+          const nestedLink = scanInline(inner, line, nested, live);
+          found.push(...nested);
+          // A link may not contain a link: where one is nested, THAT is the link and this pair is
+          // literal text, so this destination is not the page's and is not checked.
+          if (!nestedLink && live) found.push({ line, raw: destination.target, kind: 'link' });
+          containsLink = true;
           i = destination.end;
           continue;
         }
       }
       // `[see this][label]` and `[label][]` carry no target of their own: the DEFINITION is what
-      // gets checked, once, so the use must not become a second target.
+      // gets checked, once, so the use must not become a second target. The scan resumes INSIDE
+      // the brackets, so an inline construct nested in the label text is still reached.
       i = open + 1;
       continue;
     }
     i += 1;
   }
+  return containsLink;
 }
 
 /**
@@ -876,6 +913,8 @@ export function checkDocsContent({ repo }) {
   const filesById = new Map();
   /** @type {Set<string>} files carrying an explicit frontmatter id */
   const explicitlyIdentified = new Set();
+  /** @type {Set<string>} `.md`/`.mdx` files that ARE regular files but whose contents would not read */
+  const unreadableFiles = new Set();
   /** @type {Map<string, string>} */
   const contents = new Map();
 
@@ -891,6 +930,7 @@ export function checkDocsContent({ repo }) {
         subject: describeError(error),
         detail: 'this file could not be read, so its links and its document id have not been checked.',
       });
+      unreadableFiles.add(relative);
       continue;
     }
     contents.set(relative, text);
@@ -1121,6 +1161,13 @@ export function checkDocsContent({ repo }) {
 
   for (const relative of markdownFiles) {
     if (referenced.has(relative) || coveredFiles.has(relative)) continue;
+    // A file that IS a regular `.md`/`.mdx` file but would not READ is counted in `files` and does
+    // satisfy B3's "at least one `.md`" clause - it exists, which is what those two count. What was
+    // never read is its FRONTMATTER, so the id it declares is unknown and "no sidebar entry
+    // references it" is a claim this run cannot make. It is named once, by the B6 above, rather
+    // than a second time as an orphan whose id prints `undefined`. The broad-B6 reading's "counted
+    // NOWHERE else" governs an entry that is not a regular file, which this one is.
+    if (unreadableFiles.has(relative)) continue;
     reports.push({
       kind: 'orphan',
       path: `${DOCS_ROOT}/${relative}`,

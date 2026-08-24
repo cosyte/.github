@@ -375,6 +375,127 @@ test('a link reference DEFINITION is checked once and its USE is not a second ta
 });
 
 // ---------------------------------------------------------------------------
+// BRACKETS NEST, AND ONLY SOME OF THE NESTED DESTINATIONS ARE THE PAGE'S
+// ---------------------------------------------------------------------------
+
+// THE CLICKABLE BADGE, and the red control that establishes the gate can see it at all. Reading
+// only the outer construct resolves `./intro` and DROPS the image, so a missing asset behind a
+// linked logo prints `0 image(s)` and exits ZERO while the same image on its own line is a B5.
+test('an IMAGE inside a link is a B5 exactly as the same image on its own line is', () => {
+  const nested = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home', 'intro'] }),
+    'docs-content/home.md': '# Home\n\n[![Logo](./img/missing.svg)](./intro)\n',
+    'docs-content/intro.md': '# Intro\n',
+  });
+  const bare = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home', 'intro'] }),
+    'docs-content/home.md': '# Home\n\n![Logo](./img/missing.svg)\n',
+    'docs-content/intro.md': '# Intro\n',
+  });
+
+  const control = run(bare);
+  assert.equal(control.code, 1, control.output);
+  assert.match(control.output, /B5 docs-content\/home\.md:3/);
+
+  const { code, output } = run(nested);
+  assert.match(output, /Checked 2 file\(s\), 1 link\(s\), 1 image\(s\)/, output);
+  assert.equal(code, 1, output);
+  assert.match(output, /B5 docs-content\/home\.md:3/, output);
+  assert.match(output, /\.\/img\/missing\.svg/, output);
+  rmSync(nested, { recursive: true, force: true });
+  rmSync(bare, { recursive: true, force: true });
+
+  // BOTH destinations are live in the page - an `<img src>` inside an `<a href>` - so both are
+  // checked and both must be present for the tree to be green.
+  assert.deepEqual(extractTargets('[![Logo](./img/logo.svg)](./intro)\n'), [
+    { line: 1, raw: './img/logo.svg', kind: 'image' },
+    { line: 1, raw: './intro', kind: 'link' },
+  ]);
+  const green = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home', 'intro'] }),
+    'docs-content/home.md': '# Home\n\n[![Logo](./img/logo.svg)](./intro)\n',
+    'docs-content/img/logo.svg': '<svg/>\n',
+    'docs-content/intro.md': '# Intro\n',
+  });
+  const repaired = run(green);
+  assert.equal(repaired.code, 0, repaired.output);
+  assert.match(repaired.output, /Checked 2 file\(s\), 1 link\(s\), 1 image\(s\)/);
+  rmSync(green, { recursive: true, force: true });
+});
+
+// A LINK MAY NOT CONTAIN A LINK: the inner definition is the link and the outer brackets are
+// literal text, so checking the outer destination checks one the page never serves AND misses one
+// it does. `./intro` here is not a target; `./missing` is.
+test('a link nested in link text is THE link, and the outer destination is not the page\'s', () => {
+  assert.deepEqual(extractTargets('[a [b](./missing) c](./intro)\n'), [
+    { line: 1, raw: './missing', kind: 'link' },
+  ]);
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home', 'intro'] }),
+    'docs-content/home.md': '# Home\n\n[a [b](./missing) c](./intro)\n',
+    'docs-content/intro.md': '# Intro\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 1, output);
+  assert.match(output, /B1 docs-content\/home\.md:3/, output);
+  assert.match(output, /\.\/missing/, output);
+  rmSync(dir, { recursive: true, force: true });
+
+  // And the mirror: the INNER one resolving is green even though the outer text names a file that
+  // does not exist, because that text is not a destination.
+  const inner = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home', 'intro'] }),
+    'docs-content/home.md': '# Home\n\n[a [b](./intro) c](./gone)\n',
+    'docs-content/intro.md': '# Intro\n',
+  });
+  const second = run(inner);
+  assert.equal(second.code, 0, second.output);
+  rmSync(inner, { recursive: true, force: true });
+});
+
+// AN IMAGE'S ALT IS PLAIN TEXT in the page, so no destination inside it is ever served: the image's
+// own destination is the only live one, and a link in the alt still deactivates an ENCLOSING link.
+// The unchecked alt-inner destination is a named residual in README.md, beside the others.
+test('an image ALT carries no live destination, and a link in one deactivates an enclosing link', () => {
+  assert.deepEqual(extractTargets('![see [here](./missing-link)](./img/logo.svg)\n'), [
+    { line: 1, raw: './img/logo.svg', kind: 'image' },
+  ]);
+  assert.deepEqual(extractTargets('[![alt [x](./y)](./img/logo.svg)](./intro)\n'), [
+    { line: 1, raw: './img/logo.svg', kind: 'image' },
+  ]);
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home'] }),
+    'docs-content/home.md': '# Home\n\n![see [here](./missing-link)](./img/logo.svg)\n',
+    'docs-content/img/logo.svg': '<svg/>\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, output);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\), 1 image\(s\)/, output);
+  rmSync(dir, { recursive: true, force: true });
+
+  // The image's OWN destination is still checked at the exact path, nesting or not.
+  const broken = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['home'] }),
+    'docs-content/home.md': '# Home\n\n![see [here](./missing-link)](./img/missing.svg)\n',
+  });
+  const second = run(broken);
+  assert.equal(second.code, 1, second.output);
+  assert.match(second.output, /B5 docs-content\/home\.md:3/, second.output);
+  rmSync(broken, { recursive: true, force: true });
+});
+
+// The nested scan must not become a new false-red route. A code span inside link text is still
+// code, an image inside a REFERENCE use is still reached, and a use is still not a second target.
+test('nesting does not smuggle a code span back in, and a reference use still carries no target', () => {
+  assert.deepEqual(extractTargets('[see `handlers[0](event)` here](./intro)\n'), [
+    { line: 1, raw: './intro', kind: 'link' },
+  ]);
+  assert.deepEqual(extractTargets('[see ![Logo](./img/logo.svg) too][label]\n'), [
+    { line: 1, raw: './img/logo.svg', kind: 'image' },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // CODE IS NOT A LINK, IN EVERY SHAPE A DOCUMENT CAN SPELL IT
 // ---------------------------------------------------------------------------
 
@@ -816,6 +937,30 @@ test('B6: an unreadable FILE is printed BESIDE a B1 from the same tree, and neit
   assert.match(output, /EACCES/);
   assert.match(output, /B1 docs-content\/intro\.md:3/, 'the walk continues over everything it can read');
   execFileSync('chmod', ['644', join(dir, 'docs-content/locked.md')]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// An unreadable file is named ONCE, by its B6. It is a regular `.md` file, so it counts in
+// `files` and satisfies B3's "at least one `.md`" clause; what was never read is its frontmatter,
+// so the id it declares is unknown and no orphan line may claim the site will not show it - least
+// of all one printing that unknown id as `undefined`.
+test('B6: an unreadable file is not ALSO an orphan, and no report line prints an undefined id', {
+  skip: POSIX && process.getuid && process.getuid() !== 0 ? false : 'needs a non-root POSIX user',
+}, () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro', 'secret'] }),
+    'docs-content/intro.md': '# Intro\n\n[Gone](./gone)\n',
+    'docs-content/secret.md': '# Secret\n',
+  });
+  execFileSync('chmod', ['000', join(dir, 'docs-content/secret.md')]);
+  const { code, output } = run(dir);
+  assert.equal(code, 1, output);
+  assert.match(output, /B6 docs-content\/secret\.md/, output);
+  assert.match(output, /B1 docs-content\/intro\.md:3/, output);
+  assert.doesNotMatch(output, /orphan: docs-content\/secret\.md/, output);
+  assert.doesNotMatch(output, /undefined/, output);
+  assert.match(output, /Checked 2 file\(s\)/, 'it is a regular .md file and is counted as one');
+  execFileSync('chmod', ['644', join(dir, 'docs-content/secret.md')]);
   rmSync(dir, { recursive: true, force: true });
 });
 

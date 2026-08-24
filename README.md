@@ -125,7 +125,13 @@ count is the only visibility anyone has into content the site will not show.
 ### What it does NOT claim, stated so nobody reads more into a green run
 
 **Residuals inside the check.** Raw HTML and JSX attributes (`<a href=...>`, `<img src=...>`) and
-MDX expressions are not targets, so a broken one there is invisible. **Duplicate declared ids are
+MDX expressions are not targets, so a broken one there is invisible. A destination inside an
+**image's alt text** (`![see [here](./missing)](./logo.svg)`) is not checked either: the alt renders
+as plain text, so that destination is never live in the page, while the image's own destination is
+checked as any other. Nested brackets otherwise follow CommonMark, which is not a residual but is
+worth saying: `[![Logo](./logo.svg)](./intro)`, the clickable-badge shape, has BOTH destinations
+checked, and where a link is nested in link text (`[a [b](./b) c](./intro)`) the INNER one is the
+link, so the outer text is literal and its destination is not a target. **Duplicate declared ids are
 not even reported**: two files declaring one id is an error Docusaurus raises and this gate does not
 detect. A frontmatter `id:` written twice takes the first; a `sidebars.json` key written twice takes
 the last, which is `JSON.parse`. A code span **opened on one line and closed on the next** is read
