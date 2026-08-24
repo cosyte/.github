@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | Changesets → npm publish **with provenance** → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **the release environment gate** → Changesets → npm publish **with provenance** → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first and refuses the run, before any caller tree is checked out, unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 
@@ -42,6 +42,11 @@ jobs:
     with:
       package-name: "@cosyte/hl7"
     secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
+    permissions: # actions: read is a PREREQUISITE, see below
+      actions: read
+      contents: write
+      id-token: write
+      pull-requests: write
 ```
 
 ## The docs-content gate
@@ -152,6 +157,91 @@ nothing here reads. The red and green controls are fixture trees in
 because the delivery step fetches this file from `raw.githubusercontent.com` with **no credential**,
 which only works because the repository is public. That card is generated, so it stays wrong until
 its generator stops inferring visibility from a missing licence; this paragraph is the record.
+
+## The release environment gate
+
+**Nothing reaches npm from a `@cosyte/*` repository without a human who could have stopped it, and
+this is where that stops being a claim.** `release.yml` puts its one job in `environment: release`,
+and until 2026-08-23 a comment above that key asserted every caller had configured that environment
+with a required reviewer and a main-only deployment branch policy. **Nothing read a caller's actual
+configuration.**
+
+The failure that hides in is quiet in the worst way: a `release` environment carrying **no protection
+rules** produces a run that looks identical to a genuinely gated one. Same environment badge on the
+job, same green steps, no approval prompt, and nothing anywhere saying there was never anything to
+approve. Whether such an environment was created by a maintainer and left unprotected, or came into
+being on first reference, is not a distinction any run can draw: the payload is the same either way.
+So this pipeline does not draw it, and neither does the refusal.
+
+`scripts/environment-gate.mjs` now runs as the **first thing the release job does** and reads the
+calling repository's own environment configuration. It exits non-zero, before any caller tree is on
+disk and long before anything is packed, unless that environment carries **both**:
+
+| rule | what passes | what refuses |
+|---|---|---|
+| at least one required reviewer | a `required_reviewers` protection rule with a non-empty reviewer list | the rule absent, its list empty, or no protection rules at all |
+| a deployment branch policy limited to the default branch | a **custom** policy with exactly **one** branch pattern, equal to the literal `default_branch`, with no wildcard character | no policy (all branches), protected-branches-only, a wildcard that merely matches (`main*`), more than one pattern, or any tag pattern |
+
+The refusal names the calling repository and the **specific** rule that is not there, never a generic
+denial: a caller with a reviewer and no branch policy is told about the branch policy and not about
+the reviewer it already has.
+
+**Protected-branches-only is refused deliberately, not accepted as a near miss.** The set of protected
+branches is caller state this workflow cannot enumerate or bound from the environment payload, and
+GitHub's own documentation is explicit that "if no branch protection rules are defined for any branch
+in the repository, then all branches can deploy". Accepting it would be accepting an unproven claim,
+which is the exact failure this gate closes.
+
+**Unreadable protection is not proof of protection.** A permission denial, a rate limit, a 5xx, a
+transport fault, a body that does not parse, and a paginated list that cannot be walked to the end all
+**fail the run**, naming the repository and the reason. None of them is reported as an unprotected or
+absent environment: a permission error that sends a maintainer to inspect a correctly configured
+environment has cost them the actual diagnosis.
+
+**The behaviour does not depend on the caller's visibility.** Required reviewers on a private
+repository need an Enterprise plan, this org is on Enterprise, and so the rule, the outcome and the
+refusal wording are identical for a public and a private caller. There is no exemption clause and no
+second wording, and `test/environment-gate.test.mjs` proves it by flipping one caller between the two
+and comparing the bytes.
+
+### The caller-side grant, and it is a prerequisite
+
+The gate reads with the automatic `GITHUB_TOKEN`. A reusable workflow's `github` context is always the
+caller's and that token's permissions are limited to the repository containing the workflow, so this
+is a repository reading **its own** environments, not a cross-repository read. The permission it needs
+is **`actions: read`**, which is what `release.yml` declares.
+
+> **Grant `actions: read` in each caller's calling job BEFORE adopting a version of `release.yml` that
+> requests it.** "The `GITHUB_TOKEN` permissions passed from the caller workflow can be only
+> downgraded (not elevated) by the called workflow." A calling job that pins a `permissions:` block
+> without `actions` is granting `actions: none`, and a request for `actions: read` against that is an
+> **elevation**: GitHub rejects the whole workflow at **startup**, before any job or step runs, for
+> every caller in that state at once. The gate's own refusal for a token that lacks the grant is
+> self-explaining and prints the exact block to add, but it can only print it in a run that started.
+> The two failure modes are different and only one of them tells you what to do.
+
+The declaration in `release.yml` is **additive**, and that word is load-bearing rather than
+descriptive: "if you specify the access for any of these permissions, all of those that are not
+specified are set to `none`", so a block whose only key was `actions: read` would not add a
+permission, it would strip `contents` off the job and 403 the very next checkout, on a **fully
+compliant** caller, with none of the fail-closed refusal above. The block therefore names all four
+keys, `contents` stays at `write` because this job creates tags and a GitHub release, and
+`test/install-check.test.mjs` pins the set whole.
+
+The default branch itself is in **neither** environment payload, though four of the refusal wordings
+name it. It comes from `GET /repos/{owner}/{repo}`, which sits under `Metadata: read`: not a
+`permissions:` key at all, always granted, and therefore nothing a caller can withhold by accident.
+`github.event.repository.default_branch` is the fallback, for an event whose payload carries no
+`repository` object. An empty default branch is never **compared**: with both sources empty the run
+fails as unreadable rather than refusing a compliant caller and blaming its branch policy for it.
+
+### What it does not establish
+
+- **That the reviewer is a second person.** It proves a reviewer is *required*. With one credential in
+  this org there is no second-party review to have, and this does not pretend there is.
+- **That a caller stays compliant.** It reads the configuration of the run in front of it. A rule
+  removed after a passing run is caught by the next run and not before.
+- **Anything about how the publish authenticates** once the gate is proven. That is a separate change.
 
 ## What a skipped required context does to a merge
 
@@ -722,11 +812,18 @@ published". That reasoning is right and **it does not reach this gate**:
 
 **The sticky-issue route was the preferred design and is not available.** Opening an issue needs
 `issues: write`, and a called workflow's token can only be equal to or more restrictive than the
-caller's. Every caller pins exactly `contents` + `id-token` + `pull-requests` against a repo default of
-`contents: read`, so requesting more would be an escalation and GitHub rejects the whole workflow at
-startup, one second, no jobs, no logs, for **all thirteen callers at once**. The menu is therefore
-exactly {warn, fail}, and a warning on a green run notifies nobody. `release.yml` already writes that
-residual down for the dispatch and accepts it there **only** because a backstop exists.
+caller's. No caller grants it, so requesting it would be an escalation and GitHub rejects the whole
+workflow at startup, one second, no jobs, no logs, for **all thirteen callers at once**. The menu is
+therefore exactly {warn, fail}, and a warning on a green run notifies nobody. `release.yml` already
+writes that residual down for the dispatch and accepts it there **only** because a backstop exists.
+
+That mechanism is the same one behind [the caller-side `actions: read`
+grant](#the-caller-side-grant-and-it-is-a-prerequisite) the release-environment gate needs. The
+difference is not technical, it is that somebody decided to pay for one and not the other:
+`actions: read` is a **read** that proves the human gate standing in front of a permanent publish,
+and the grant is a one-line change in thirteen calling jobs. `issues: write` is a write that buys a
+notifier. Adding a fourth key to `release.yml`'s `permissions:` block is that same decision again,
+and `test/install-check.test.mjs` pins the set whole so it cannot be made by accident.
 
 ### Fail-closed on proof, fail-open on ambiguity
 
