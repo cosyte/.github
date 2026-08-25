@@ -783,6 +783,31 @@ test('end to end: an unreadable package.json EXITS NON-ZERO rather than assuming
 // A gate that exists and is reached too late is not a gate, and no exit status anywhere would say
 // so. This needs no release, no caller and no network, so it runs on every push to main.
 
+/**
+ * The `release` job's own lines above `steps:`, which is where its `environment:`, `needs:` and
+ * `if:` live. `release.yml` has held TWO jobs since the environment was moved off the version path,
+ * so the predicate this gate runs on is a JOB condition now and not a step condition.
+ */
+export function releaseJobHeader(workflow) {
+  const job = workflow.slice(workflow.indexOf('\n  release:'));
+  return job.slice(0, job.indexOf('\n    steps:'));
+}
+
+/**
+ * The `version` job's lines with comment-only lines dropped.
+ *
+ * The comments here NAME the scripts and keys they explain, so a raw slice says "the un-gated job
+ * mentions `publish-floor.mjs`" about a paragraph whose whole subject is that it does not run it.
+ * Only code answers the questions below.
+ */
+export function versionJobCode(workflow) {
+  return workflow
+    .slice(workflow.indexOf('\n  version:'), workflow.indexOf('\n  release:'))
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .join('\n');
+}
+
 /** Every step of the `release` job, in order, with its comment lines stripped. */
 export function releaseSteps(workflow) {
   const job = workflow.slice(workflow.indexOf('\n  release:'));
@@ -806,9 +831,25 @@ export function releaseSteps(workflow) {
 }
 
 test('the parser still understands release.yml, or every assertion below is vacuous', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  assert.ok(steps.length >= 20, `expected the release job's full step list, parsed ${steps.length}`);
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const steps = releaseSteps(workflow);
+  // A COUNT ALONE IS A WEAK CANARY AND IT MOVED UNDER THIS FILE ONCE ALREADY: `release.yml` was one
+  // job of ~24 steps when this number was written, and the environment split moved the version half
+  // into a job of its own, leaving the publishing job at 18. So the floor is joined by two facts a
+  // drifted slice cannot fake: the slice starts at the publishing job's FIRST step, and every step
+  // the assertions below reach for is in the list under the label they use.
+  assert.ok(steps.length >= 15, `expected the release job's full step list, parsed ${steps.length}`);
+  assert.match(steps[0].body, /actions\/checkout@/, 'the slice must start at the publishing job, not mid-job');
   assert.equal(steps.filter((s) => /publish-floor\.mjs/.test(s.body)).length, 1);
+  assert.equal(steps.filter((s) => /changesets\/action@/.test(s.body)).length, 1);
+  for (const label of ['Resolve the publish path and prove it clears its floor', 'Publish to npm']) {
+    assert.ok(
+      steps.some((s) => s.label === label),
+      `\`${label}\` is not in the parsed step list, so the assertions naming it prove nothing`,
+    );
+  }
+  // And the header the job-level assertions read is the publishing job's own, not the un-gated one's.
+  assert.match(releaseJobHeader(workflow), /^\n {2}release:\n/, 'the job header slice must start at `release:`');
 });
 
 test('A2: the floor gate precedes install, the verify ladder and the publish step', () => {
@@ -831,21 +872,52 @@ test('A2: the floor gate precedes install, the verify ladder and the publish ste
 });
 
 test('A2: the floor gate runs on exactly the runs that publish, on the pipeline own predicate', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  const gate = steps.find((s) => /publish-floor\.mjs/.test(s.body));
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const gate = releaseSteps(workflow).find((s) => /publish-floor\.mjs/.test(s.body));
   assert.equal(gate.fields.id, 'publish-floor', 'three step conditions below read this id');
-  assert.equal(gate.fields.if, "${{ steps.notes.outputs.is-release == 'true' }}");
+
+  // THE PREDICATE IS THE JOB'S, NOT THE STEP'S, AND THAT IS THE SAME PREDICATE ONE LEVEL UP. Before
+  // `release.yml` was split this gate carried `if: steps.notes.outputs.is-release == 'true'` inside
+  // the single job. That step output does not exist in the publishing job, and the publishing job
+  // now runs on exactly the same fact, carried across the boundary as `needs.version.outputs
+  // .is-release`. A step condition here would be a tautology in front of the step that decides the
+  // publish arm, so the assertion moved to where the fact is decided instead of being deleted.
+  assert.equal(gate.fields.if, undefined, 'a tautological step condition in front of the arm decision is not a gate');
+  assert.match(
+    releaseJobHeader(workflow),
+    /\n {4}if: \$\{\{ needs\.version\.outputs\.is-release == 'true' \}\}\n/,
+    'the job holding the floor gate must run on exactly the runs that publish',
+  );
+  // NOT VACUOUS: a run that opens a Version PR reaches neither, because that fact is what starts
+  // this job at all, and the un-gated job carries no floor gate to answer for it.
+  assert.doesNotMatch(versionJobCode(workflow), /publish-floor\.mjs/, 'the un-gated job must not run the floor gate');
 });
 
 test('A1: the publish command is the staged script on the staged arm and unchanged otherwise', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  const action = steps.find((s) => /changesets\/action@/.test(s.body));
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const action = releaseSteps(workflow).find((s) => /changesets\/action@/.test(s.body));
   const publish = /\n {10}publish: (.*)/.exec(action.body)[1];
 
-  assert.match(publish, /steps\.notes\.outputs\.is-release == 'true'/, 'the notes gate still guards it');
   assert.match(publish, /steps\.publish-floor\.outputs\.mode == 'staged'/);
   assert.match(publish, /staged-publish\.mjs stage --package/);
   assert.match(publish, /'pnpm run release'/, 'the direct arm is unchanged');
-  // The shape matters: `A && '' || B` would hand the command back on the run that must not have it.
-  assert.ok(publish.trimEnd().endsWith("|| '' }}"), `withholding must stay the outer default: ${publish}`);
+
+  // WHERE THE WITHHOLDING WENT, AND WHY THIS IS NOT A WEAKER ASSERTION. It used to be the outer
+  // `|| ''` on this very line, guarded by `steps.notes.outputs.is-release == 'true'`, and the shape
+  // mattered because `A && '' || B` hands the command back on the run that must not have it. There
+  // is no expression left to get backwards: the un-gated job declares NO `publish:` key at all, so
+  // there is nothing there to evaluate, and this job does not start unless the notes gate said a
+  // release is pending. Both halves are asserted here rather than assumed, and both are stronger
+  // than the string they replace.
+  assert.doesNotMatch(
+    versionJobCode(workflow),
+    /\n\s*publish:/,
+    'the un-gated job must declare no publish input, in any form',
+  );
+  assert.match(
+    releaseJobHeader(workflow),
+    /\n {4}if: \$\{\{ needs\.version\.outputs\.is-release == 'true' \}\}\n/,
+    'the notes gate still guards it, at the job that holds the command',
+  );
+  assert.match(releaseJobHeader(workflow), /\n {4}environment: release\n/, 'and a human still holds that job');
 });

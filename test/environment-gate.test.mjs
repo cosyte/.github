@@ -683,171 +683,483 @@ test('the two rules are reported independently, so a satisfied one is never name
   assert.deepEqual(compliant, []);
 });
 
-// ── THE WIRING (task 7): asserted by parsing release.yml, with no release pending ───────────────
+// ── THE WIRING: asserted by parsing release.yml into JOBS, and then into each job's steps ───────
 //
-// This is AC1's "before any package is packed" half and AC6, proven by something other than an exit
-// status: it needs no release, no caller and no network, so it runs on every push to main. A gate
-// that exists and is reached too late is not a gate, and nothing else in this repository would say
-// so.
+// This needs no release, no caller and no network, so it runs on every push to main. A gate that
+// exists and is reached too late is not a gate, and nothing else in this repository would say so.
+//
+// WHY THIS PARSES INTO JOBS RATHER THAN SCANNING THE FILE. `release.yml` used to be one job, and
+// these assertions used to work by byte offset in the whole file: slice from the literal
+// `\n  release:`, count occurrences, compare `String.indexOf` positions. That reads a two-job
+// workflow as one long file, and every ordering claim it makes is then an accident of which job the
+// author happened to write first. The properties below are per-job facts (which job holds the
+// environment, which job is handed the npm credential, what precedes the gate INSIDE its own job)
+// plus one cross-job fact (`needs:`), and they are asserted as such.
 
-/** Every step of the `release` job, in order, with its comment lines stripped. */
-function releaseSteps(workflow) {
-  const job = workflow.slice(workflow.indexOf('\n  release:'));
-  const chunks = job.slice(job.indexOf('\n    steps:')).split(/\n {6}- (?=\S)/).slice(1);
-  return chunks.map((chunk, index) => {
-    const body = chunk
-      .split('\n')
-      .filter((line) => !line.trim().startsWith('#'))
-      .join('\n');
-    /** @type {Record<string, string>} */
-    const fields = {};
-    const lines = body.split('\n');
-    const first = /^([\w-]+):\s?(.*)$/.exec(lines[0]);
-    if (first) fields[first[1]] = first[2];
-    for (const line of lines.slice(1)) {
-      const match = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
-      if (match) fields[match[1]] = match[2];
-    }
-    return { index, body, fields, label: fields.name || fields.uses || `step ${index}` };
-  });
+/** Drop whole-line comments. A `#` inside a shell heredoc goes too, which no assertion here reads. */
+function decomment(text) {
+  return text.split('\n').filter((line) => !/^\s*#/.test(line));
 }
 
-/** The permissions in force on the `release` job: its own block if it has one, else the workflow's. */
-function effectivePermissions(workflow) {
-  const readBlock = (text, indent) => {
-    const start = text.indexOf(`\n${' '.repeat(indent)}permissions:\n`);
-    if (start < 0) return null;
-    /** @type {Record<string, string>} */
-    const out = {};
-    for (const line of text.slice(start + 1).split('\n').slice(1)) {
-      const match = new RegExp(`^ {${indent + 2}}([\\w-]+): *([a-z]+)`).exec(line);
-      if (!match) break;
-      out[match[1]] = match[2];
-    }
-    return out;
-  };
-  const code = workflow
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('#'))
-    .join('\n');
-  const job = code.slice(code.indexOf('\n  release:'));
-  return readBlock(job.slice(0, job.indexOf('\n    steps:')), 4) ?? readBlock(code.slice(0, code.indexOf('\njobs:')), 0);
+/** `write # create tags` -> `write`. Only ` # ` counts, so a `${{ }}` expression is never cut. */
+function stripTrailingComment(value) {
+  return value.replace(/\s+#\s.*$/, '').trim();
 }
 
-test('the parser still understands release.yml, or every assertion below is vacuous', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  assert.ok(steps.length >= 15, `expected the release job's full step list, parsed ${steps.length}`);
-  for (const step of steps) {
-    assert.ok(
-      step.fields.name !== undefined || step.fields.uses !== undefined || step.fields.run !== undefined,
-      `step ${step.index} parsed as neither a name, a uses nor a run: ${JSON.stringify(step.body.slice(0, 80))}`,
+/**
+ * Parse ONE step from the raw lines of a `- ` list entry under a job's `steps:`.
+ *
+ * `fields` are the step's own keys; `with` and `env` are their nested maps, read only while the
+ * parser is positioned inside those two blocks, so a `run: |` script line can never be mistaken for
+ * an input or a variable.
+ */
+function parseStep(index, jobId, rawLines) {
+  const lines = [`        ${rawLines[0]}`, ...rawLines.slice(1)];
+  /** @type {Record<string, string>} */
+  const fields = {};
+  const blocks = { with: {}, env: {} };
+  let open = null;
+  for (const line of lines) {
+    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
+    if (key) {
+      fields[key[1]] = stripTrailingComment(key[2]);
+      open = fields[key[1]] === '' && (key[1] === 'with' || key[1] === 'env') ? key[1] : null;
+      continue;
+    }
+    if (!open) continue;
+    const child = /^ {10}([\w-]+):\s?(.*)$/.exec(line);
+    if (child) blocks[open][child[1]] = stripTrailingComment(child[2]);
+    else open = null;
+  }
+  const label = fields.name ?? fields.uses ?? `${jobId} step ${index}`;
+  if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
+    throw new Error(
+      `parse failure: step ${index} of job \`${jobId}\` has neither a name, a uses nor a run: ` +
+        JSON.stringify(lines.join('\n').slice(0, 120)),
     );
   }
-});
+  return { index, job: jobId, fields, with: blocks.with, env: blocks.env, label, body: lines.join('\n') };
+}
 
-test('the protection gate runs inside the job that holds `environment: release`, and it is the gate', () => {
-  const workflow = readFileSync(WORKFLOW, 'utf8');
-  const job = workflow.slice(workflow.indexOf('\n  release:'), workflow.indexOf('\n    steps:'));
-  assert.match(job, /^ {4}environment: release$/m, 'the gate has to be in the job the environment holds');
+/**
+ * Parse release.yml into its jobs, each with its own keys, its nested blocks and its ordered steps.
+ *
+ * NOT a general YAML parser, deliberately: this repository has no dependencies and no install step
+ * on purpose, so `node:test` and `node:assert` are the whole toolbox. What it IS, is a parser that
+ * THROWS, naming what it could not read, rather than returning an empty list. An empty job list or
+ * an empty step list makes every assertion in this section pass while asserting nothing, and a suite
+ * whose subject is workflow composition has to fail loudly the moment the composition stops being
+ * legible to it.
+ */
+function parseWorkflow(text) {
+  const lines = decomment(text);
+  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
 
-  const steps = releaseSteps(workflow);
-  const gate = steps.filter((s) => /environment-gate\.mjs/.test(s.body));
-  assert.equal(gate.length, 1, 'exactly one step runs the environment gate');
-  assert.match(gate[0].body, /node \.cosyte-release-tooling\/scripts\/environment-gate\.mjs/);
-  assert.equal(gate[0].fields.if, undefined, 'a gate behind a condition is a gate that can be skipped');
-});
+  const jobs = [];
+  let job = null;
+  let openBlock = null;
+  let inSteps = false;
+  /** @type {string[][]} */
+  let rawSteps = [];
 
-test('AC1 and AC6: the gate precedes every checkout, pack, registry auth and publish step', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  const gate = steps.findIndex((s) => /environment-gate\.mjs/.test(s.body));
-  assert.ok(gate >= 0);
-
-  const isCheckout = (s) => /uses: actions\/checkout@/.test(s.body);
-  const isToolingCheckout = (s) => isCheckout(s) && / {10}repository: cosyte\/\.github$/m.test(s.body);
-  const categories = {
-    'checks out a caller tree': (s) => isCheckout(s) && !isToolingCheckout(s),
-    'authenticates to the registry': (s) =>
-      (/uses: actions\/setup-node@/.test(s.body) && / {10}registry-url:/.test(s.body)) || /NODE_AUTH_TOKEN:/.test(s.body),
-    'packs': (s) => /PACK_DOCS_CMD|pack:docs|npm pack|pnpm pack/.test(s.body),
-    'publishes': (s) => /uses: changesets\/action@/.test(s.body) || /pnpm run release/.test(s.body),
+  const closeJob = () => {
+    if (!job) return;
+    job.steps = rawSteps.map((raw, index) => parseStep(index, job.id, raw));
+    if (job.steps.length === 0) throw new Error(`parse failure: job \`${job.id}\` parsed to zero steps`);
   };
 
-  for (const [label, matches] of Object.entries(categories)) {
-    const found = steps.filter(matches);
-    assert.ok(found.length > 0, `no step ${label}, so this assertion proves nothing`);
-    for (const step of found) {
-      assert.ok(step.index > gate, `"${step.label}" ${label} and must run AFTER the protection gate`);
+  for (const line of lines.slice(jobsAt + 1)) {
+    if (line.trim() === '') continue;
+    if (/^\S/.test(line)) break; // a new top-level key closes the jobs block
+
+    const jobStart = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (jobStart) {
+      closeJob();
+      job = { id: jobStart[1], keys: {}, blocks: {}, steps: [] };
+      jobs.push(job);
+      openBlock = null;
+      inSteps = false;
+      rawSteps = [];
+      continue;
+    }
+    if (!job) throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`jobs:\` but inside no job`);
+
+    if (!inSteps) {
+      if (/^ {4}steps:\s*$/.test(line)) {
+        inSteps = true;
+        openBlock = null;
+        continue;
+      }
+      const key = /^ {4}([\w-]+):\s?(.*)$/.exec(line);
+      if (key) {
+        job.keys[key[1]] = stripTrailingComment(key[2]);
+        if (job.keys[key[1]] === '') {
+          job.blocks[key[1]] = {};
+          openBlock = key[1];
+        } else {
+          openBlock = null;
+        }
+        continue;
+      }
+      const child = /^ {6}([\w-]+):\s?(.*)$/.exec(line);
+      if (child && openBlock) {
+        job.blocks[openBlock][child[1]] = stripTrailingComment(child[2]);
+        continue;
+      }
+      throw new Error(`parse failure: unreadable line in job \`${job.id}\`: ${JSON.stringify(line)}`);
+    }
+
+    const stepStart = /^ {6}- (.*)$/.exec(line);
+    if (stepStart) {
+      rawSteps.push([stepStart[1]]);
+      continue;
+    }
+    if (rawSteps.length === 0) {
+      throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`${job.id}.steps:\` but inside no step`);
+    }
+    rawSteps[rawSteps.length - 1].push(line);
+  }
+  closeJob();
+
+  if (jobs.length === 0) throw new Error('parse failure: release.yml declares `jobs:` but no job under it');
+  return { jobs, byId: Object.fromEntries(jobs.map((j) => [j.id, j])) };
+}
+
+/** Every step of every job, in file order, so a whole-workflow property is asserted over all of it. */
+function allSteps(workflow) {
+  return workflow.jobs.flatMap((job) => job.steps);
+}
+
+/** The permissions in force on a job: its own block if it has one, else the workflow's. */
+function effectivePermissions(text, job) {
+  if (job.blocks.permissions) return job.blocks.permissions;
+  const lines = decomment(text);
+  const at = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  if (at < 0) return null;
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const line of lines.slice(at + 1)) {
+    const match = /^ {2}([\w-]+):\s?(.*)$/.exec(line);
+    if (!match) break;
+    out[match[1]] = stripTrailingComment(match[2]);
+  }
+  return out;
+}
+
+/** Does `jobId` transitively depend on `targetId` through `needs:`? */
+function dependsOn(workflow, jobId, targetId, seen = new Set()) {
+  if (jobId === targetId) return true;
+  if (seen.has(jobId)) return false;
+  seen.add(jobId);
+  const raw = workflow.byId[jobId]?.keys.needs ?? '';
+  const parents = raw
+    .replace(/^\[|\]$/g, '')
+    .split(',')
+    .map((name) => name.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+  return parents.some((parent) => dependsOn(workflow, parent, targetId, seen));
+}
+
+const isCheckout = (step) => /uses: actions\/checkout@/.test(step.body);
+const isToolingCheckout = (step) => isCheckout(step) && step.with.repository === 'cosyte/.github';
+const isGate = (step) => /environment-gate\.mjs/.test(step.body);
+
+/**
+ * The four things that must never precede the gate, kept as an over-approximation on purpose: a step
+ * that merely COULD publish counts as publishing. `changesets/action` is the whole publish mechanism
+ * whether or not the invocation in front of us supplies a publish command, so every appearance of it
+ * is treated as one.
+ */
+const CATEGORIES = {
+  'checks out a caller tree': (step) => isCheckout(step) && !isToolingCheckout(step),
+  'authenticates to the registry': (step) =>
+    step.with['registry-url'] !== undefined ||
+    step.env.NODE_AUTH_TOKEN !== undefined ||
+    step.env.NPM_TOKEN !== undefined,
+  packs: (step) => /PACK_DOCS_CMD|pack:docs|npm pack|pnpm pack/.test(step.body),
+  publishes: (step) => /uses: changesets\/action@/.test(step.body) || /pnpm run release/.test(step.body),
+};
+
+/** Can this step actually reach the registry, as opposed to merely being able to in another wiring? */
+const reachesRegistry = (step) =>
+  step.with.publish !== undefined ||
+  step.with['registry-url'] !== undefined ||
+  step.env.NPM_TOKEN !== undefined ||
+  step.env.NODE_AUTH_TOKEN !== undefined ||
+  /pnpm run release|changeset publish|npm publish|pnpm publish/.test(step.body);
+
+test('AC12: the parser still understands release.yml, or every assertion below is vacuous', () => {
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+
+  // THE TOPOLOGY ITSELF IS THE CANARY NOW. One job is the shape this file had before the split and
+  // three is a shape nobody has reasoned about, so either is a change that has to come here first.
+  assert.deepEqual(
+    workflow.jobs.map((job) => job.id),
+    ['version', 'release'],
+    'release.yml is two jobs: the un-gated version-PR job, and the environment-held publish job',
+  );
+  for (const job of workflow.jobs) {
+    assert.ok(job.steps.length >= 6, `job \`${job.id}\` parsed to ${job.steps.length} steps`);
+    for (const step of job.steps) {
+      assert.ok(
+        step.fields.name !== undefined || step.fields.uses !== undefined || step.fields.run !== undefined,
+        `${step.label} parsed as neither a name, a uses nor a run`,
+      );
     }
   }
+  assert.ok(allSteps(workflow).length >= 24, 'the two jobs together should carry the full step list');
 
-  // What is allowed to precede the gate is exactly one thing: this repo's own script arriving. A
-  // caller tree, a package manager or a registry credential ahead of the gate would each be a step
-  // taken on the strength of a human gate nobody had checked.
-  for (const step of steps.slice(0, gate)) {
+  // AND THE PARSER REFUSES RATHER THAN RETURNING NOTHING. A parser that answers "no jobs" or "no
+  // steps" turns every assertion above into a tautology, so the failure mode is proved here rather
+  // than assumed: each of these is a real way release.yml could be edited into illegibility.
+  assert.throws(() => parseWorkflow('name: Release\non:\n  workflow_call:\n'), /no top-level `jobs:` key/);
+  assert.throws(() => parseWorkflow('jobs:\n'), /declares `jobs:` but no job under it/);
+  assert.throws(() => parseWorkflow('jobs:\n  release:\n    steps:\n'), /parsed to zero steps/);
+  assert.throws(
+    () => parseWorkflow('jobs:\n  release:\n    steps:\n      - with:\n          foo: bar\n'),
+    /has neither a name, a uses nor a run/,
+  );
+  assert.throws(() => parseWorkflow('jobs:\n    release:\n'), /sits under `jobs:` but inside no job/);
+});
+
+test('AC1: the "Version Packages" job references no deployment environment and cannot publish', () => {
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const version = workflow.byId.version;
+  assert.ok(version, 'release.yml must keep a job that opens the Version PR without an approval');
+
+  // NO ENVIRONMENT AND NO CONDITION. An environment here would put the Version PR itself behind an
+  // approval, which is the defect this split exists to remove: a run that opens no Version PR
+  // publishes nothing, and asking a human to approve it bought nothing and expired in 30 days.
+  assert.equal(version.keys.environment, undefined, 'the version job must reference no environment');
+  assert.equal(version.keys.if, undefined, 'the version job runs on every path, so it carries no condition');
+  assert.equal(version.keys.needs, undefined, 'nothing may run ahead of the job that holds the gate');
+
+  // It is the job that runs changesets/action's version arm, and the step is unconditional: a repo
+  // that has never released lands on `is-release=false` and STILL needs this step to run, or the
+  // version never moves off its scaffold value and the deadlock is permanent.
+  const action = version.steps.filter((step) => /uses: changesets\/action@/.test(step.body));
+  assert.equal(action.length, 1, 'exactly one changesets/action step in the version job');
+  assert.equal(action[0].fields.if, undefined, 'the version-PR step must run unconditionally');
+  assert.equal(action[0].with.version, 'pnpm run version');
+
+  // AND IT IS HANDED NO PUBLISH COMMAND AT ALL. Not an expression that evaluates to the empty
+  // string: no `publish:` key. `changesets/action` runs the publish command itself, so the absence
+  // of the input is the absence of the capability, and there is no condition left to get wrong.
+  assert.equal(
+    action[0].with.publish,
+    undefined,
+    'the version job must not declare a publish input in any form, not even a withheld one',
+  );
+});
+
+test('AC2 and AC10: every step that can reach the registry is in the job named `release`, which holds the environment', () => {
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const release = workflow.byId.release;
+
+  // THE JOB ID IS THE CHECK CONTEXT. A caller's context for a reusable workflow is
+  // `<caller job id> / <called job id>`, so every caller's required-check configuration names
+  // `release`. Renaming this job leaves those contexts reporting nothing at all, and a required
+  // context that never reports leaves a pull request pending and unmergeable by anyone.
+  assert.ok(release, 'the environment-held publishing job must keep the identifier `release`');
+  assert.equal(release.keys.environment, 'release', 'the publish job must sit in the caller\'s release environment');
+  assert.equal(release.keys.needs, 'version');
+  assert.match(release.keys.if, /needs\.version\.outputs\.is-release == 'true'/);
+
+  const reaching = allSteps(workflow).filter(reachesRegistry);
+  assert.ok(reaching.length >= 2, 'no step reaches the registry, so this assertion proves nothing');
+  for (const step of reaching) {
+    assert.equal(
+      workflow.byId[step.job].keys.environment,
+      'release',
+      `"${step.label}" can reach the registry and must run in the environment-held job, not \`${step.job}\``,
+    );
+  }
+  // And the environment is on exactly one job: an environment on the version job would restore the
+  // approval-per-merge this change removes.
+  assert.deepEqual(
+    workflow.jobs.filter((job) => job.keys.environment !== undefined).map((job) => job.id),
+    ['release'],
+  );
+});
+
+test('AC3: the protection gate runs unconditionally, on every path, ahead of everything', () => {
+  const text = readFileSync(WORKFLOW, 'utf8');
+  const workflow = parseWorkflow(text);
+
+  const gates = allSteps(workflow).filter(isGate);
+  assert.equal(gates.length, 1, 'exactly one step runs the environment gate');
+  const gate = gates[0];
+  assert.match(gate.body, /node \.cosyte-release-tooling\/scripts\/environment-gate\.mjs --environment release/);
+
+  // NOTHING ABOVE IT, AT EITHER LEVEL. A step-level `if:` skips the gate; a job-level `if:` skips
+  // the job that holds it, and a skipped job concludes `skipped`, which a required context counts as
+  // SUCCESS. Both are the same failure and it is silent, which is why both are pinned.
+  const gateJob = workflow.byId[gate.job];
+  assert.equal(gate.fields.if, undefined, 'a gate behind a step condition is a gate that can be skipped');
+  assert.equal(gateJob.keys.if, undefined, 'a gate in a conditional job is a gate that can be skipped');
+  assert.equal(gateJob.keys.environment, undefined, 'the gate runs on every path, so its job waits on no approval');
+
+  // What is allowed to precede it INSIDE ITS OWN JOB is exactly one thing: this repo's own script
+  // arriving. A caller tree, a package manager or a registry credential ahead of the gate would each
+  // be a step taken on the strength of a human gate nobody had checked.
+  for (const step of gateJob.steps.slice(0, gate.index)) {
     assert.ok(isToolingCheckout(step), `"${step.label}" runs before the gate and is not the tooling checkout`);
+  }
+
+  // And ACROSS JOBS: every step in any job that checks out a caller tree, authenticates to a
+  // registry, packs or publishes is either below the gate in the gate's own job, or in a job that
+  // cannot start until the gate's job has succeeded. A third job added without a `needs:` would fail
+  // here rather than quietly running unguarded.
+  for (const [label, matches] of Object.entries(CATEGORIES)) {
+    const found = allSteps(workflow).filter(matches);
+    assert.ok(found.length > 0, `no step ${label}, so this assertion proves nothing`);
+    for (const step of found) {
+      if (step.job === gate.job) {
+        assert.ok(step.index > gate.index, `"${step.label}" ${label} and must run AFTER the protection gate`);
+      } else {
+        assert.ok(
+          dependsOn(workflow, step.job, gate.job),
+          `"${step.label}" ${label} in job \`${step.job}\`, which does not need the job holding the gate`,
+        );
+      }
+    }
   }
 });
 
-test('AC7: no packing or publishing step is reachable past a failed gate', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  const gate = steps.findIndex((s) => /environment-gate\.mjs/.test(s.body));
+test('AC6: the npm publish credential never reaches the un-gated job', () => {
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const version = workflow.byId.version;
 
-  // A failed step fails the job and skips every step below it, UNLESS that step opts back in with
+  for (const step of version.steps) {
+    assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to the un-approved job`);
+    assert.equal(step.env.NODE_AUTH_TOKEN, undefined, `"${step.label}" hands NODE_AUTH_TOKEN to the un-approved job`);
+    // `registry-url` is what makes setup-node write `_authToken=${NODE_AUTH_TOKEN}` into an npmrc
+    // and point NPM_CONFIG_USERCONFIG at it. A registry credential FILE in a job no human approved
+    // is the same defect as the variable, one indirection out.
+    assert.equal(
+      step.with['registry-url'],
+      undefined,
+      `"${step.label}" writes a registry credential file in the un-approved job`,
+    );
+    assert.doesNotMatch(step.body, /secrets\.NPM_TOKEN/, `"${step.label}" reads the npm secret in the un-approved job`);
+  }
+
+  // NOT VACUOUS: the credential still exists, and it is in the job the environment holds.
+  const publisher = workflow.byId.release.steps.filter((step) => step.env.NODE_AUTH_TOKEN !== undefined);
+  assert.equal(publisher.length, 1, 'exactly one step is handed the npm credential');
+  assert.equal(publisher[0].env.NPM_TOKEN, '${{ secrets.NPM_TOKEN }}');
+  assert.equal(publisher[0].env.NODE_AUTH_TOKEN, '${{ secrets.NPM_TOKEN }}');
+  // The publish command itself, pinned WHOLE rather than matched, because this is the string the
+  // credential above is spent on. Two arms, both non-empty: the staged one when `publish-floor`
+  // reported that the package already exists on the registry, and the direct one otherwise. There
+  // is no third arm and no empty arm; withholding is the job-level `if:`, pinned in AC2/AC10.
+  assert.equal(
+    publisher[0].with.publish,
+    "${{ steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/" +
+      "staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release' }}",
+  );
+});
+
+test('AC9: no packing, registry authentication or publishing is reachable past a failed gate', () => {
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+
+  // A failed step fails its job and skips every step below it, UNLESS that step opts back in with
   // `always()`, `failure()` or `!cancelled()`. Those three are the only way a step can run after the
-  // gate has refused, so the set of steps carrying them is pinned by name, and none of them may
-  // pack, authenticate or publish.
-  const optsBackIn = steps.filter((s) => /always\(|failure\(|cancelled\(/.test(s.fields.if ?? ''));
-  assert.deepEqual(
-    optsBackIn.map((s) => s.label),
-    [
+  // gate has refused, so the set of steps carrying them is pinned by name, PER JOB, and none of them
+  // may pack, authenticate or publish.
+  const expected = {
+    version: ['Drop the release credentials from disk'],
+    release: [
       'Drop the release credentials from disk',
       'Report the staged version for a maintainer',
       'The published package must be installable from the registry',
       'Collect the npm debug log',
       'Upload the npm debug log',
     ],
-    'a new step that runs after a failure has to be considered against AC7 rather than added quietly',
-  );
-  for (const step of optsBackIn) {
-    assert.ok(step.index > gate);
-    assert.doesNotMatch(step.body, /uses: changesets\/action@|PACK_DOCS_CMD|pnpm run release|NODE_AUTH_TOKEN:/, step.label);
+  };
+  for (const job of workflow.jobs) {
+    const optsBackIn = job.steps.filter((step) => /always\(|failure\(|cancelled\(/.test(step.fields.if ?? ''));
+    assert.deepEqual(
+      optsBackIn.map((step) => step.label),
+      expected[job.id],
+      `a new step in \`${job.id}\` that runs after a failure has to be considered against AC9 rather than added quietly`,
+    );
+    for (const step of optsBackIn) {
+      for (const [label, matches] of Object.entries(CATEGORIES)) {
+        if (label === 'checks out a caller tree') continue;
+        assert.equal(matches(step), false, `"${step.label}" ${label} and runs after a failure`);
+      }
+    }
   }
+
   // And each one that runs on `!cancelled()` is additionally conditioned on a step output that
-  // CANNOT hold in a run this gate refused, because the step that would have set it never ran.
+  // CANNOT hold in a run this gate refused, because the step that would have set it never ran. Both
+  // live in the environment-held job, which `needs:` the job the gate is in, so a refused gate
+  // means that job never starts at all and neither output is ever written.
   //
   //   the install gate   `changesets/action` never ran, so `published` is empty, not `true`.
-  //   the stage report   `publish-floor` sits below this gate, so `mode` is empty, not `staged`. It
-  //                      also runs no tool: `staged-publish.mjs report` reads a file and prints.
-  const installGate = optsBackIn.find((s) => s.label === 'The published package must be installable from the registry');
+  //   the stage report   `publish-floor` runs in the same job, below the gate by job order, so
+  //                      `mode` is empty, not `staged`. It also runs no tool: `staged-publish.mjs
+  //                      report` reads a file and prints.
+  const publishing = workflow.byId.release.steps;
+  const installGate = publishing.find(
+    (step) => step.label === 'The published package must be installable from the registry',
+  );
   assert.match(installGate.fields.if, /steps\.changesets\.outputs\.published == 'true'/);
-  const stageReport = optsBackIn.find((s) => s.label === 'Report the staged version for a maintainer');
+  const stageReport = publishing.find((step) => step.label === 'Report the staged version for a maintainer');
   assert.match(stageReport.fields.if, /steps\.publish-floor\.outputs\.mode == 'staged'/);
-  const floorGate = steps.findIndex((s) => /publish-floor\.mjs/.test(s.body));
-  assert.ok(floorGate > gate, 'the floor gate is itself below the protection gate, so it cannot speak first');
+
+  // THE FLOOR GATE IS BELOW THE PROTECTION GATE ACROSS THE JOB BOUNDARY, which is what the split
+  // turned this assertion into: a step index cannot compare two jobs. It is IN the environment-held
+  // job (its `mode` is a STEP output, and a step output does not cross a job boundary, so the three
+  // conditions that read it have to be its job-mates) and it is in NO other job, and that job
+  // `needs:` the one carrying the protection gate. AC3's own test owns the `needs:` half; this
+  // pins the placement the reasoning rests on.
+  assert.equal(
+    publishing.filter((step) => /publish-floor\.mjs/.test(step.body)).length,
+    1,
+    'the floor gate belongs to the job that publishes, whose runner is the one it measures',
+  );
+  assert.equal(
+    workflow.byId.version.steps.filter((step) => /publish-floor\.mjs/.test(step.body)).length,
+    0,
+    'a floor gate in the un-gated job would leave `steps.publish-floor.outputs.mode` empty in the job that reads it',
+  );
+  assert.equal(workflow.byId.release.keys.needs, 'version');
   assert.match(stageReport.body, /staged-publish\.mjs report/, 'it reports; it does not stage or publish');
 });
 
-test('AC10: the permissions in force on that job name `contents` as well as `actions: read`', () => {
-  const permissions = effectivePermissions(readFileSync(WORKFLOW, 'utf8'));
-  assert.ok(permissions, 'the release job must carry a permissions declaration');
+test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => {
+  const text = readFileSync(WORKFLOW, 'utf8');
+  const workflow = parseWorkflow(text);
 
   // THE LITERAL ONE-KEY READING, KILLED BY A MANDATED TEST RATHER THAN BY A CALLER'S FIRST RELEASE.
   // "If you specify the access for any of these permissions, all of those that are not specified are
   // set to `none`", so a block whose only key is `actions: read` does not ADD a permission: it strips
-  // `contents` off this job, and `actions/checkout` 403s on the very next step, on a FULLY COMPLIANT
-  // caller, with none of the fail-closed refusal this gate exists to produce.
-  assert.equal(permissions.actions, 'read', 'the gate needs `actions: read`');
-  assert.ok(
-    permissions.contents === 'read' || permissions.contents === 'write',
-    `\`contents\` must be named and must grant read, got ${JSON.stringify(permissions.contents)}`,
-  );
+  // `contents` off that job, and `actions/checkout` 403s on the very next step, on a FULLY COMPLIANT
+  // caller, with none of the fail-closed refusal this gate exists to produce. The split doubled the
+  // number of ways to get this wrong, so both jobs are checked, not just the one with the gate in it.
+  for (const job of workflow.jobs) {
+    const permissions = effectivePermissions(text, job);
+    assert.ok(permissions, `job \`${job.id}\` must have permissions in force`);
+    assert.equal(permissions.actions, 'read', `job \`${job.id}\` needs \`actions: read\``);
+    assert.ok(
+      permissions.contents === 'read' || permissions.contents === 'write',
+      `\`contents\` must be named in \`${job.id}\` and must grant read, got ${JSON.stringify(permissions.contents)}`,
+    );
+  }
 
-  // ADDITIVE, in both directions. The three the job already held are all still here at the level
-  // they were at, and `actions` is the only key that joined them. `contents` in particular stays at
-  // `write`: this job creates tags and a GitHub release, so downgrading it to `read` to match the
-  // letter of the criterion would displace a permission the run needs and fail the publish it is
-  // supposed to protect.
-  assert.deepEqual(permissions, {
+  // Pinned whole, in both directions. `contents` stays at `write` in both: the version job pushes
+  // the changeset-release branch, the release job creates tags and a GitHub release. `id-token` is
+  // npm provenance and is deliberately ABSENT from the version job, which cannot publish: a
+  // publish-signing token on a runner no human approved is a permission nobody asked for.
+  assert.deepEqual(effectivePermissions(text, workflow.byId.version), {
+    contents: 'write',
+    'pull-requests': 'write',
+    actions: 'read',
+  });
+  assert.deepEqual(effectivePermissions(text, workflow.byId.release), {
     contents: 'write',
     'id-token': 'write',
     'pull-requests': 'write',
@@ -856,15 +1168,83 @@ test('AC10: the permissions in force on that job name `contents` as well as `act
 });
 
 test('the gate is handed the credential and the default-branch fallback the script expects', () => {
-  const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  const gate = steps.find((s) => /environment-gate\.mjs/.test(s.body));
+  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const gate = allSteps(workflow).find(isGate);
   // The AUTOMATIC token, handed over under the name this file already uses for it. `GITHUB_TOKEN` in
   // release.yml means the credential `changesets/action` opens the Version PR with, which is
   // `RELEASE_PR_TOKEN` where a caller has one: an org-scoped PAT, which is not what should be reading
   // a caller's environments and is not scoped to the calling repository the way this read needs.
-  assert.match(gate.body, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
-  assert.ok(!/GITHUB_TOKEN:/.test(gate.body), 'the gate must not claim the version-PR credential');
-  assert.match(gate.body, /DEFAULT_BRANCH_HINT: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.equal(gate.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}');
+  assert.equal(gate.env.GITHUB_TOKEN, undefined, 'the gate must not claim the version-PR credential');
+  assert.equal(gate.env.DEFAULT_BRANCH_HINT, '${{ github.event.repository.default_branch }}');
+});
+
+// ── AC11: the contract with thirteen repositories that pin `@main` ──────────────────────────────
+//
+// `workflow_call` inputs and secrets are the only thing a caller writes down about this workflow. A
+// new REQUIRED input or secret breaks all thirteen on merge, with no adoption step and no rollback
+// window, so the whole contract is pinned rather than sampled: anything added has to be optional and
+// carry a default, and this assertion is where that is enforced.
+
+/** The `on.workflow_call` inputs and secrets, each as its own map of declared keys. */
+function parseCallContract(text) {
+  const lines = decomment(text);
+  const at = lines.findIndex((line) => /^ {2}workflow_call:\s*$/.test(line));
+  if (at < 0) throw new Error('parse failure: release.yml no longer declares `on.workflow_call`');
+  const body = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === '') continue;
+    if (/^ {0,2}\S/.test(line)) break;
+    body.push(line);
+  }
+  const section = (name) => {
+    const start = body.findIndex((line) => new RegExp(`^ {4}${name}:\\s*$`).test(line));
+    if (start < 0) throw new Error(`parse failure: \`on.workflow_call.${name}\` is no longer declared`);
+    /** @type {Record<string, Record<string, string>>} */
+    const out = {};
+    let current = null;
+    for (const line of body.slice(start + 1)) {
+      const entry = /^ {6}([\w-]+):\s*$/.exec(line);
+      if (entry) {
+        current = {};
+        out[entry[1]] = current;
+        continue;
+      }
+      const kv = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
+      if (kv && current) {
+        current[kv[1]] = kv[2].trim();
+        continue;
+      }
+      if (/^ {0,4}\S/.test(line)) break;
+    }
+    if (Object.keys(out).length === 0) throw new Error(`parse failure: \`${name}\` parsed to zero entries`);
+    return out;
+  };
+  return { inputs: section('inputs'), secrets: section('secrets') };
+}
+
+test('AC11: no caller has to change anything, so every input and secret is the one it already had', () => {
+  const { inputs, secrets } = parseCallContract(readFileSync(WORKFLOW, 'utf8'));
+
+  assert.deepEqual(Object.keys(inputs), ['package-name', 'dispatch-docs', 'pack-docs-cmd', 'expect-unpublished-deps']);
+  assert.deepEqual(Object.keys(secrets), ['NPM_TOKEN', 'DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
+
+  // Exactly one required input and exactly one required secret, and they are the two every caller
+  // already passes. The rule for anything new is in the loop below rather than in this list.
+  assert.equal(inputs['package-name'].required, 'true');
+  assert.equal(secrets.NPM_TOKEN.required, 'true');
+  assert.equal(secrets.DOCS_REPO_DISPATCH_TOKEN.required, 'false');
+  assert.equal(secrets.RELEASE_PR_TOKEN.required, 'false');
+
+  for (const [name, declared] of Object.entries(inputs)) {
+    if (name === 'package-name') continue;
+    assert.equal(declared.required, undefined, `input \`${name}\` must not be required: thirteen callers pin @main`);
+    assert.ok(declared.default !== undefined, `input \`${name}\` must carry a default`);
+  }
+  for (const [name, declared] of Object.entries(secrets)) {
+    if (name === 'NPM_TOKEN') continue;
+    assert.equal(declared.required, 'false', `secret \`${name}\` must be optional: thirteen callers pin @main`);
+  }
 });
 
 // The caller-side precondition is the one thing about this change that cannot be enforced from this

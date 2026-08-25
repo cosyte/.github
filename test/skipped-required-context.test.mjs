@@ -160,6 +160,44 @@ const survives = (condition) => SURVIVES_A_FAILED_DEPENDENCY.some((pattern) => p
 const declaresDependency = (block) => under(block, 'needs') !== null;
 
 /**
+ * Does this job reference a deployment environment, in either of `environment:`'s two spellings
+ * (the scalar shorthand, and the mapping carrying `name:`/`url:`)?
+ */
+const holdsAnEnvironment = (block) => scalar(block, 'environment') !== null || under(block, 'environment') !== null;
+
+/**
+ * THE ONE PLACE THE REMEDY IS FORBIDDEN RATHER THAN MERELY UNNECESSARY, AND WHY THE RULE INVERTS
+ * THERE INSTEAD OF TAKING AN EXEMPTION.
+ *
+ * `always()` works by making the dependent job RUN whatever the dependency did. On a job that
+ * references a deployment environment that is not a remedy, it is the accident the environment
+ * exists to prevent: `release.yml`'s `release` job publishes to npm, and it depends on `version`,
+ * which is where the release-environment gate, the release-notes gate and the changelog gate all
+ * live. Give it `always()` or `!cancelled()` and one of two things happens, and neither is the
+ * thing the source's remedy was for.
+ *
+ *   Either the dependency's job outputs survive its failure, in which case the deployment runs on a
+ *   commit whose verification, changelog gate or publish-floor check has just failed, and an npm
+ *   publish is permanent.
+ *
+ *   Or they do not, in which case the condition reading them is false, the job skips exactly as it
+ *   does today, and the only thing the remedy changed is that the file now LOOKS compliant.
+ *
+ * So for a job that holds an environment the rule asks for the opposite and asks for it in the same
+ * breath: it must NOT survive a failed dependency. That is checkable, it names no file, and it
+ * refuses a shape nothing refused before.
+ *
+ * THE RESIDUAL IS REAL AND IS WRITTEN DOWN RATHER THAN TRADED AWAY. When such a dependency fails,
+ * the dependent job still concludes `skipped`, and a caller ruleset naming only that context still
+ * counts it as a pass. What answers it is that the failure is loud somewhere a ruleset can see: the
+ * run itself is red, and the job that failed emits its own check-run context, which fails. README.md
+ * under "What a skipped required context does to a merge" owns the statement of it.
+ */
+const ENVIRONMENT_HELD_REASON = (condition) =>
+  `declares \`needs:\` and references a deployment environment under \`if: ${condition}\`, which ` +
+  'runs the deployment when the dependency fails';
+
+/**
  * Every job in this workflow that depends on another job without surviving its failure.
  *
  * A reusable with no `jobs:` block at all is a finding rather than zero findings: it publishes a
@@ -174,6 +212,20 @@ function dependencyFindings(flow) {
     const block = under(flow.jobs, job);
     if (!declaresDependency(block)) continue;
     const condition = scalar(block, 'if');
+    // A job holding an environment is asked the opposite question, above. No condition at all is
+    // the safe answer there (the implicit `success()` on `needs:` skips it), so only a surviving
+    // condition is a finding.
+    if (holdsAnEnvironment(block)) {
+      if (condition !== null && survives(condition)) {
+        findings.push({
+          file: flow.name,
+          job,
+          reason: ENVIRONMENT_HELD_REASON(condition),
+          consequence: CONSEQUENCE_OF_A_DEPLOYMENT,
+        });
+      }
+      continue;
+    }
     if (condition === null) {
       findings.push({
         file: flow.name,
@@ -193,11 +245,21 @@ function dependencyFindings(flow) {
   return findings;
 }
 
+/** What a finding costs, and what to do about it. The default is the source's own remedy. */
+const CONSEQUENCE_OF_A_SKIP =
+  'A dependent job is skipped when its dependency fails, `skipped` is a successful check status, and ' +
+  'the required context then reports a pass over a job that never ran. Use `always()` with `needs`.';
+
+/** The inverted rule's, because telling a maintainer to add `always()` here would be the defect. */
+const CONSEQUENCE_OF_A_DEPLOYMENT =
+  'A job that references a deployment environment must NOT run when the job it depends on failed: ' +
+  'that dependency is what proves the deployment is safe to make, and a deployment is not undone by ' +
+  'a red run afterwards. Remove the condition that survives the failure; do not add one.';
+
 /** A finding as a maintainer reads it: the workflow file and the job id, always both. */
 const describe = (finding) =>
-  `${WORKFLOWS}/${finding.file}: job \`${finding.job ?? '(none)'}\` ${finding.reason}. A dependent ` +
-  'job is skipped when its dependency fails, `skipped` is a successful check status, and the ' +
-  'required context then reports a pass over a job that never ran. Use `always()` with `needs`.';
+  `${WORKFLOWS}/${finding.file}: job \`${finding.job ?? '(none)'}\` ${finding.reason}. ` +
+  (finding.consequence ?? CONSEQUENCE_OF_A_SKIP);
 
 // ---------------------------------------------------------------------------
 // The examination, which refuses to measure nothing
@@ -488,6 +550,41 @@ test('AC-5: the rule accepts exactly the conditions that run when the dependency
   }
 });
 
+test('AC-5: on a job that holds a deployment environment the rule inverts, and it refuses the remedy', () => {
+  const held = (extra) => reusable(`${JOB('first')}${JOB('second', `    environment: release\n${extra}`)}`);
+
+  // THE EXEMPTION, and it is the only shape it covers: `needs:` plus an environment, under a
+  // condition that does NOT survive a failed dependency. `release.yml`'s publishing job is this.
+  for (const condition of ["    if: ${{ needs.first.outputs.is-release == 'true' }}\n", '']) {
+    const flow = parseWorkflow('probe.yml', held(`    needs: first\n${condition}`));
+    assert.deepEqual(dependencyFindings(flow), [], `an environment-held job was refused under ${JSON.stringify(condition)}`);
+  }
+
+  // AND THE REFUSAL IT ADDS, which nothing refused before this rule inverted: the source's own
+  // remedy, applied to a job that deploys, runs the deployment on a failed dependency.
+  for (const condition of ['${{ always() }}', '${{ !cancelled() }}', "${{ always() && needs.first.outputs.go == 'y' }}"]) {
+    const findings = dependencyFindings(parseWorkflow('probe.yml', held(`    needs: first\n    if: ${condition}\n`)));
+    assert.equal(findings.length, 1, `${condition} on a deploying job was accepted`);
+    assert.match(describe(findings[0]), /must NOT run when the job it depends on failed/);
+    assert.doesNotMatch(describe(findings[0]), /Use `always\(\)` with `needs`/, 'that advice would be the defect here');
+  }
+
+  // THE INVERSION IS KEYED ON THE ENVIRONMENT AND ON NOTHING ELSE. The same job without one is
+  // still refused for the reason it always was, so the exemption cannot be reached by any job that
+  // is not making a deployment.
+  const bare = parseWorkflow('probe.yml', reusable(`${JOB('first')}${JOB('second', "    needs: first\n    if: ${{ needs.first.outputs.is-release == 'true' }}\n")}`));
+  assert.equal(dependencyFindings(bare).length, 1, 'a job with no environment still has to survive its dependency');
+  assert.match(describe(dependencyFindings(bare)[0]), /Use `always\(\)` with `needs`/);
+
+  // Both spellings of `environment:` reach it, so the flow-mapping form is not a way around the
+  // refusal above.
+  const mapping = parseWorkflow(
+    'probe.yml',
+    reusable(`${JOB('first')}${JOB('second', '    environment:\n      name: release\n    needs: first\n    if: ${{ always() }}\n')}`),
+  );
+  assert.equal(dependencyFindings(mapping).length, 1, 'the mapping spelling of `environment:` must reach the rule too');
+});
+
 test('AC-5: `needs:` is found in every spelling, so a flow or block sequence is not read as no dependency', () => {
   const spellings = ['    needs: first\n', '    needs: [first]\n', '    needs:\n      - first\n'];
   for (const needs of spellings) {
@@ -588,19 +685,28 @@ test('AC-8: a reusable with no `jobs:` block is a finding, not zero findings', (
   ]);
 });
 
-test('AC-9: the tree as this change leaves it passes, and no job here declares a dependency at all', () => {
+test('AC-9: the tree as this change leaves it passes, and every job that declares a dependency is named', () => {
   const result = examine(join(REPO, WORKFLOWS));
   assertExamination(result, WORKFLOWS);
-  // The guard introduces no red on a compliant tree, and the reason it is compliant is stated rather
-  // than assumed: nothing here carries `needs:`, so the rule above is an invariant held going
-  // forward and not a repair.
+  // The guard introduces no red on the tree, and the reason it is compliant is stated rather than
+  // assumed. THE SET IS PINNED WHOLE rather than asserted empty: it was empty when this rule
+  // landed, and `release.yml`'s environment split then added the first and only member, so an
+  // empty-set assertion would have had to be deleted while a pinned set makes the next one visible.
   const withDependencies = [];
   for (const flow of result.flows) {
     for (const job of keysOf(flow.jobs)) {
       if (declaresDependency(under(flow.jobs, job))) withDependencies.push(`${flow.name}:${job}`);
     }
   }
-  assert.deepEqual(withDependencies, []);
+  assert.deepEqual(withDependencies, ['release.yml:release']);
+
+  // AND IT PASSES THROUGH THE INVERTED RULE, NOT THROUGH THE ORDINARY ONE. Said out loud because
+  // the two answers are indistinguishable from a green test: this job holds a deployment
+  // environment and carries a condition that does not survive a failed dependency, which is the
+  // one shape the rule above exempts and the one it requires of a job that deploys.
+  const release = under(parseWorkflow('release.yml', read(join(WORKFLOWS, 'release.yml'))).jobs, 'release');
+  assert.equal(holdsAnEnvironment(release), true, 'the exemption is keyed on the environment, so it has to be there');
+  assert.equal(survives(scalar(release, 'if') ?? ''), false, 'a publishing job must not run past a failed gate job');
 });
 
 // ---------------------------------------------------------------------------
@@ -612,6 +718,14 @@ test('AC-9: the tree as this change leaves it passes, and no job here declares a
 // caller ruleset entry that names it: no error anywhere, and no re-run that undoes it. Thirteen
 // repositories call these at `@main`. The two assertions below are pinned WHOLE, at
 // 56ce4c7504ab6bf2f7ec8ce5397afd828bda2daa, so a later rename has to be made on purpose.
+//
+// ONE ENTRY HAS MOVED SINCE THAT PIN, AND IT MOVED THE SAFE WAY. `release.yml` was split so the
+// caller's `release` environment holds the publish path alone: `version` was ADDED and `release`,
+// the id every caller's required-check configuration was written against, is unchanged and still
+// belongs to the job that publishes. An added job id is a NEW context that no caller requires, so
+// it detaches nothing; a renamed or removed one is what this pin exists to catch, and neither
+// happened. Recorded here rather than in the diff, because the next reader of this table has to be
+// able to tell an addition from a rename without going to the history.
 
 /** Every job id of every published reusable, at the pin. */
 const PUBLISHED_JOB_IDS = {
@@ -619,7 +733,7 @@ const PUBLISHED_JOB_IDS = {
   'codeql.yml': ['analyze'],
   'drift-check.yml': ['drift'],
   'nightly-fuzz.yml': ['fuzz'],
-  'release.yml': ['release'],
+  'release.yml': ['version', 'release'],
   'scorecard.yml': ['analysis'],
 };
 

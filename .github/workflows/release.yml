@@ -44,6 +44,57 @@ name: Release
 # bumps versions and publishes to npm WITH PROVENANCE, uploads the docs artifacts, and fires a
 # repository_dispatch to cosyte/docs so the site rebuilds. Actions are pinned to SHAs.
 #
+# ▶ TWO JOBS, AND THE CALLER'S `release` ENVIRONMENT HOLDS EXACTLY ONE OF THEM. READ THIS BEFORE
+#   MOVING A STEP BETWEEN THEM.
+#
+#   A GitHub environment attaches to a JOB, never to a step: "when a workflow job references an
+#   environment, the job won't start until all of the environment's protection rules pass". Until
+#   2026-08-25 this file had ONE job, `release`, and that job did two unrelated things: it either
+#   opened or refreshed the "Version Packages" pull request, or it published to npm. Putting the
+#   environment on it therefore asked a human to approve EVERY merge to a caller's default branch,
+#   including the overwhelming majority that would never touch a registry. The measured result was
+#   not extra safety, it was no releases at all: the approval request that would OPEN a Version PR
+#   was itself unapproved, so the queue of unshipped changesets grew while the approvals people were
+#   asked for bought nothing. GitHub also cancels a job nobody approves within 30 days, so those
+#   requests do not merely wait, they expire.
+#
+#   So the job is split on the one line that matters, which is reversibility:
+#
+#     `version`   NO environment. Runs the protection gate, checks out, verifies, derives the release
+#                 notes, and hands `changesets/action` NO publish command at all, so it can open or
+#                 refresh the Version PR and CANNOT publish. Never sees `NPM_TOKEN`.
+#     `release`   `needs: version`, `if:` the version job's `is-release` output, `environment:
+#                 release`. Resolves the publish path, publishes, cuts the GitHub release, dispatches
+#                 the docs rebuild, and runs the post-publish install gate. This is the whole of the
+#                 irreversible half.
+#
+#   ONE APPROVAL PER RELEASE, ON THE HALF THAT CANNOT BE UNDONE. Merging the Version PR is the human
+#   decision to release; the environment approval is that same decision confirmed on the runner that
+#   is about to make it permanent. Nothing is skipped and no approval is traded away.
+#
+#   THE JOB ID `release` IS LOAD-BEARING AND IS NOT AN AESTHETIC CHOICE. A caller's check context for
+#   a reusable workflow is `<caller job id> / <called job id>`, so every caller's required-check
+#   configuration names `release`. Renaming the publishing job would leave those contexts reporting
+#   nothing, which is the one failure mode that BLOCKS a pull request forever rather than passing it
+#   (see "What a skipped required context does to a merge" in README.md, measured on this repo).
+#   On a run that opens a Version PR the `release` job is skipped by its job-level `if:`, which the
+#   same measurement shows concludes `skipped` and SATISFIES a required context.
+#
+#   WHAT DOES NOT MOVE INTO THE SECOND JOB: the protection gate. It stays in `version`,
+#   unconditional, so it runs on EVERY path including the ones that publish nothing. A gate that only
+#   runs on the publish arm stops proving anything on the arm that runs every day, and it stops
+#   silently. `release` needs `version`, so the gate is still ahead of every publish, twice over: it
+#   is ahead in job order, and the environment it proves is the one holding the second job.
+#
+#   ▶ THE OTHER DIRECTION, AND IT IS WHY `release` MUST NOT BE GIVEN `always()` OR `!cancelled()`.
+#     `test/skipped-required-context.test.mjs` refuses a published job that declares `needs:` and
+#     skips when its dependency fails, because `skipped` satisfies a required context. That remedy
+#     is forbidden HERE and the exemption is recorded in that file rather than assumed: a version
+#     job that fails AFTER the notes gate still reports `is-release=true` as a job output, so a
+#     `release` job opting back in would publish to npm on a run whose verification, changelog gate
+#     or publish-floor check had just failed. The residual is answered by the `version` context,
+#     which fails in its own right, and by AC4's refusal reaching the run as a failure.
+#
 # STAGED PUBLISHING, AND THE ONE SENTENCE THAT EXPLAINS EVERY STEP CONDITION MENTIONING `mode`.
 # npm registry data is immutable: `package@version`, once used, can never be used again, an unpublish
 # included. So the last reversible moment this pipeline had was BEFORE `changesets/action` ran. A
@@ -51,9 +102,10 @@ name: Release
 # instead of being promoted to it, where a maintainer can download the exact tarball, inspect it, and
 # approve it or simply walk away. An unapproved stage leaves the live registry exactly as it was.
 #
-#   `publish-floor.mjs`   before anything is packed: which tool performs the publish for THIS caller,
-#                         whether it clears the floor that tool's staging mode needs, and whether the
-#                         package exists on the registry at all. Every unknown is a refusal.
+#   `publish-floor.mjs`   in the `release` job, before anything is packed there: which tool performs
+#                         the publish for THIS caller, whether it clears the floor that tool's
+#                         staging mode needs, and whether the package exists on the registry at all.
+#                         Every unknown is a refusal.
 #   `staged-publish.mjs`  the publish command itself on the staged arm, in place of the caller's
 #                         `pnpm run release`. It stages and stops, and never falls back to a publish.
 #
@@ -151,21 +203,23 @@ name: Release
 #     that step with the token in the environment. Visible in the real hl7 0.0.3 publish (run
 #     30354998951, 2026-07-28): ~55s inside the action between "is being published" and "packages
 #     published successfully", which is not a 50 kB tarball upload.
-#   - It CLOSES at the `Drop the release credentials from disk` step below, which is why that step
-#     sits immediately after the action rather than at the end of the job. Past it, `~/.netrc` and
-#     the `~/.npmrc` the action writes with the raw NPM_TOKEN are expected to be gone, the caller's
-#     `pack:docs` and the post-publish install gate included; that step warns rather than fails if a
-#     removal does not take, so read its log rather than assuming. The gate's entry probe
-#     additionally gets an environment built from nothing (`probeChildEnv`).
+#   - It CLOSES at the `Drop the release credentials from disk` step, which BOTH jobs carry
+#     immediately after their `changesets/action` step rather than at the end of the job. Past it,
+#     `~/.netrc` and the `~/.npmrc` the action writes with the raw NPM_TOKEN are expected to be gone,
+#     the caller's `pack:docs` and the post-publish install gate included; that step warns rather
+#     than fails if a removal does not take, so read its log rather than assuming. The gate's entry
+#     probe additionally gets an environment built from nothing (`probeChildEnv`).
 #   - NEITHER OF THOSE REACHES INSIDE THE `changesets/action` STEP ITSELF. That window is real, it
-#     is the widest one in this job, and nothing here has narrowed it.
+#     is the widest one in either job, and nothing here has narrowed it.
 #
 # Note that on the publish arm the PAT buys nothing at all: with `createGithubReleases: false` the
-# action neither pushes nor opens a PR there, so its octokit goes unused. Narrowing it to the
-# version-PR arm is therefore tempting and is NOT done, because the only predicate available here,
-# `steps.notes.outputs.is-release`, is not the action's own arm predicate, and a disagreement would
-# hand `GITHUB_TOKEN` back to the Version PR, which is the one thing this change exists to prevent.
-# The exposure is accepted and written down rather than traded for that risk.
+# action neither pushes nor opens a PR there, so its octokit goes unused. Handing it to the version
+# job alone is therefore tempting and is NOT done, because the action picks its arm from ITS OWN
+# reading of the pending changesets, not from the job it is in: a changeset landing on main between
+# the two jobs puts the publish job on the version arm, and a job without the token would then open
+# a Version PR authored by `GITHUB_TOKEN`, which is the exact trap this token exists to close. The
+# exposure is accepted and written down rather than traded for that risk. What the SPLIT removed is
+# the other credential: `NPM_TOKEN` is now handed to the environment-held job and to nothing else.
 #
 # IF THE NETRC FALLBACK DOES NOT APPLY, the push fails loudly and the run goes red with npm
 # untouched, because the publish arm does not push at all: `createGithubReleases: false` means
@@ -255,10 +309,16 @@ on:
 # THIS BLOCK IS ADDITIVE, AND THE WORD IS LOAD-BEARING RATHER THAN DESCRIPTIVE. "If you specify the
 # access for any of these permissions, all of those that are not specified are set to `none`", so a
 # declaration whose only key is `actions: read` would not add a permission, it would STRIP `contents`
-# off this job and 403 the very next checkout, on a fully compliant caller, with none of the
+# off the jobs below and 403 the very next checkout, on a fully compliant caller, with none of the
 # fail-closed refusal below. `actions: read` therefore JOINS the three that were already here and
-# displaces none of them. `contents` stays at `write`: this job creates tags and a GitHub release,
-# and `write` is what grants the read `actions/checkout` needs as well as those writes.
+# displaces none of them. `contents` stays at `write`: the publish job creates tags and a GitHub
+# release, and `write` is what grants the read `actions/checkout` needs as well as those writes.
+#
+# WHAT THIS BLOCK IS, NOW THAT EVERY JOB DECLARES ITS OWN. It is the workflow-level default and the
+# whole of what this file REQUESTS from a caller, which is the set the elevation rule below is
+# checked against. Each job then narrows it: the version job drops `id-token`, because provenance is
+# a publish-time concern and that job cannot publish. A job block replaces this one rather than
+# adding to it, so each job names every key it needs.
 #
 # ▶ `actions: read` IS THE ONE THING IN THIS FILE A CALLER HAS TO GRANT FIRST. See "THE CALLER-SIDE
 #   PRECONDITION" at the top of this file. A called workflow's token can only be equal to or more
@@ -270,36 +330,46 @@ permissions:
   contents: write # create tags / GitHub release
   id-token: write # npm provenance
   pull-requests: write # open the "Version Packages" PR
-  actions: read # read the caller's `release` environment protection (the gate in the job below)
+  actions: read # read the caller's `release` environment protection (the gate in the version job)
 
 jobs:
-  release:
+  # THE UN-GATED HALF, AND EVERY WORD OF THAT IS DELIBERATE. This job references NO deployment
+  # environment, so it never waits on an approval, and it is handed NO publish command and NO
+  # `NPM_TOKEN`, so there is nothing here for an approval to protect. What it does is open or refresh
+  # the "Version Packages" pull request, which is the pull request whose MERGE is the human decision
+  # to release. See "TWO JOBS" at the top of this file.
+  #
+  # It also carries the protection gate, unconditionally, for every path this workflow has.
+  version:
     runs-on: ubuntu-latest
-    # THE HUMAN GATE ON npm publish, AND IT IS NOW ENFORCED RATHER THAN ASSERTED.
+    # NAMED IN FULL, BECAUSE NAMING ONE KEY SETS EVERY OTHER TO `none`. "If you specify the access for
+    # any of these permissions, all of those that are not specified are set to `none`", so a block
+    # that asked only for what a reader thinks this job needs would strip `contents` and 403 the very
+    # next checkout. `actions: read` is the gate's read of the caller's environment protection;
+    # `contents: write` is the checkout plus the branch `changesets/action` pushes; `pull-requests:
+    # write` is the Version PR itself. `id-token: write` is deliberately ABSENT: npm provenance is a
+    # publish-time concern and this job cannot publish, so the token that signs a publish has no
+    # business existing on a runner no human approved.
+    permissions:
+      contents: write # checkout + push the changeset-release branch
+      pull-requests: write # open the "Version Packages" PR
+      actions: read # read the caller's `release` environment protection (the gate below)
+    # WHAT CROSSES THE JOB BOUNDARY. `is-release` is the discriminator: it is the predicate this
+    # pipeline already derives, already tests and already trusted to withhold the publish command, so
+    # promoting it from a step output to a job output moves no decision, it moves where the decision
+    # is enforced. (`changesets/action`'s own `has-changesets` output was considered and is NOT used:
+    # it does not exist until the action has already run, so it can never gate the job that runs it,
+    # and this pipeline has never derived a release from it.)
     #
-    # This key puts the job in the caller's `release` environment, so a caller that has configured a
-    # required reviewer holds this job until a human approves it: nothing reaches npm unattended.
-    # THAT SENTENCE USED TO BE THE WHOLE CONTROL, and it asserted something no run ever checked. A
-    # `release` environment carrying NO protection rules produces a run that looks IDENTICAL to a
-    # genuinely gated one: same environment badge, same green steps, no approval prompt, and nothing
-    # anywhere saying there was never anything to approve. Whether such an environment was created by
-    # a maintainer and left unprotected, or came into being on first reference, is not a distinction
-    # any run can make: the payload is the same either way, so this pipeline does not pretend to draw
-    # it and neither does the refusal below.
-    #
-    # `The caller's release environment must be a proven human gate` below now READS the calling
-    # repository's environment configuration and refuses the run, before any caller tree is on disk,
-    # unless it carries at least one required reviewer AND a deployment branch policy limited to the
-    # literal default branch. Unreadable protection is not proof of protection: that refuses too,
-    # naming the repository and why. `scripts/environment-gate.mjs` holds the classification and the
-    # wordings; README.md, "The release environment gate", holds the reasoning.
-    #
-    # Required reviewers on a PRIVATE repository need an Enterprise plan (they are a public-repo
-    # feature on Free, Pro and Team). This org is on Enterprise, so the requirement is configurable on
-    # every caller and the gate has one rule and one wording for all of them, whatever a caller's
-    # visibility. Configure the environment in a caller BEFORE it calls this workflow, or its first
-    # release run refuses and says exactly which rule is not there.
-    environment: release
+    # `release-notes-b64` is the release body itself, and it travels because it CANNOT be re-derived
+    # on the other side. `RUNNER_TEMP` does not cross a job boundary, and re-deriving after the
+    # publish is not a workaround: `changeset publish` creates the `v<version>` tag locally, and "is a
+    # release pending" is answered by whether that tag exists, so a second derivation after the
+    # publish always finds nothing. Derived once, here, carried whole.
+    outputs:
+      is-release: ${{ steps.notes.outputs.is-release }}
+      version: ${{ steps.notes.outputs.version }}
+      release-notes-b64: ${{ steps.notes-transfer.outputs.release-notes-b64 }}
     steps:
       # THE GATE RUNS FIRST, AND WHAT IS AHEAD OF IT IS ONLY THIS REPO'S OWN SCRIPT ARRIVING.
       #
@@ -323,16 +393,42 @@ jobs:
           ref: ${{ github.job_workflow_sha }}
           path: .cosyte-release-tooling
           persist-credentials: false
-      # THE GATE. It reads the CALLING repository's `release` environment with the automatic
-      # `GITHUB_TOKEN` (a reusable workflow's `github` context is the caller's, and that token is
-      # scoped to the caller's repository, so this is a repository reading its own environments) and
-      # exits non-zero when the human gate is not provably there.
+      # THE GATE, AND IT IS THE HUMAN GATE ON npm ENFORCED RATHER THAN ASSERTED. It reads the CALLING
+      # repository's `release` environment with the automatic `GITHUB_TOKEN` (a reusable workflow's
+      # `github` context is the caller's, and that token is scoped to the caller's repository, so this
+      # is a repository reading its own environments) and exits non-zero when the human gate is not
+      # provably there: at least one required reviewer AND a deployment branch policy limited to the
+      # literal default branch. Unreadable protection is not proof of protection and refuses too,
+      # naming the repository and why. `scripts/environment-gate.mjs` holds the classification and the
+      # wordings; README.md, "The release environment gate", holds the reasoning.
+      #
+      # An unprotected `release` environment produces a run that looks IDENTICAL to a genuinely gated
+      # one: same environment badge on the publish job, same green steps, no approval prompt, and
+      # nothing anywhere saying there was never anything to approve. Whether such an environment was
+      # created by a maintainer and left unprotected or came into being on first reference is not a
+      # distinction any run can make, so this pipeline does not pretend to draw it and neither does
+      # the refusal.
+      #
+      # ▶ IT LIVES IN THE UN-GATED JOB ON PURPOSE, AND IT IS UNCONDITIONAL HERE. This job runs on
+      #   every path this workflow has, publish or not, so the gate does too. Moving it into the
+      #   `release` job below, or putting any `if:` above it, would leave it proving nothing on the
+      #   path that runs every day: a job or step skipped by a conditional concludes `skipped`, which
+      #   a required context counts as SUCCESS (measured on this repo; README.md, "What a skipped
+      #   required context does to a merge"). Running it here costs nothing it needs: the gate reads
+      #   the environment through the API with `actions: read`, and a job does not have to be IN an
+      #   environment to read that environment's configuration. The PUBLISH does have to be in it,
+      #   and it is.
       #
       # IT FAILS THE STEP AND NOTHING ELSE. It does not cancel the run: a cancelled run concludes
       # `cancelled`, and a caller's required-check reading of that is not the FAILED conclusion a
-      # refusal has to be. A failed step fails this job, and this job is the only one that packs or
-      # publishes, so the refusal reaches the caller as a failure and every packing and publishing
-      # step below is skipped rather than skipped-and-green.
+      # refusal has to be. A failed step fails this job, the `release` job below `needs:` this one so
+      # it never starts, and the refusal reaches the caller as a failure rather than as a skip.
+      #
+      # Required reviewers on a PRIVATE repository need an Enterprise plan (they are a public-repo
+      # feature on Free, Pro and Team). This org is on Enterprise, so the requirement is configurable
+      # on every caller and the gate has one rule and one wording for all of them, whatever a caller's
+      # visibility. Configure the environment in a caller BEFORE it calls this workflow, or its first
+      # release run refuses and says exactly which rule is not there.
       #
       # It runs on the runner's preinstalled Node rather than after `actions/setup-node`, deliberately:
       # `setup-node` is the step that writes the registry `.npmrc`, and the gate has to precede
@@ -381,38 +477,21 @@ jobs:
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-      # `registry-url` makes setup-node write an .npmrc holding
-      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it.
-      #
-      # WHAT THE v6 -> v7 MAJOR CHANGED HERE, AND WHY IT IS SAFE, MEASURED 2026-08-03 RATHER THAN
-      # ASSUMED. v6 exported a DUMMY `NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX` job-wide whenever the
-      # caller had not set one; v7 (actions/setup-node#1558) exports it only when it is already set.
-      # So in every step below that does not set it, that `${NODE_AUTH_TOKEN}` no longer resolves.
-      #
-      # The effect is a WARNING, not a failure, and it is bigger than the token line: pnpm's
-      # env-replace throws, and pnpm catches it at FILE scope and discards the WHOLE userconfig,
-      # `registry=` included. Measured on pnpm 10.0.0, 10.34.5 and 11.17.0 (the `packageManager`
-      # versions pinned across the callers): `pnpm install --frozen-lockfile` prints
-      # "Failed to replace env in config" on STDERR and exits 0, and dropping `registry=` is a no-op
-      # because it is restating pnpm's default. `pnpm attw` shells out to `npm pack`, and npm's own
-      # env-replace does not throw at all: it leaves the literal `${NODE_AUTH_TOKEN}` and exits 0
-      # (checked on npm 10.9.8 and 11.16.0).
-      #
-      # ▶ THE LATENT HALF, so it is not rediscovered: this is benign ONLY because the discarded
-      # `registry=` equals pnpm's default. ADD A `scope:` INPUT HERE AND THE DISCARDED LINE BECOMES A
-      # SCOPED REGISTRY THAT SILENTLY STOPS APPLYING to every step that lacks the token. If a scope
-      # is ever needed, set `NODE_AUTH_TOKEN` at JOB level too, not just on the publish step.
-      #
-      # The publish path is unaffected either way: the `changesets/action` step below sets
-      # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
-      # to a registry.
+      # NO `registry-url` IN THIS JOB, AND THE OMISSION IS THE POINT. `registry-url` is the input that
+      # makes setup-node write an `.npmrc` holding `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+      # and point `NPM_CONFIG_USERCONFIG` at it. This job publishes nothing and is handed no
+      # `NPM_TOKEN`, so asking for that file would create a registry credential file on a runner no
+      # human approved, for no consumer: `pnpm install --frozen-lockfile` and `pnpm attw` both read
+      # the public registry anonymously, and `registry=https://registry.npmjs.org` is a restatement of
+      # pnpm's and npm's own default. The publish job below sets it, because that is the job that
+      # authenticates.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
           cache: pnpm
       # THE GATE. The notes are derived exactly ONCE, here, before anything is published, and the
-      # publish step below reuses this file. Two reasons, and the second one is not obvious:
+      # publish job reuses these exact bytes rather than deriving its own. Two reasons, and the second
+      # one is not obvious:
       #
       #   1. The ordinary failure then costs nothing. If the notes cannot be derived (no changesets
       #      were consumed, one has an empty summary, the body says nothing, or banned content
@@ -454,6 +533,42 @@ jobs:
         run: |
           node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
             --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
+      # THE BYTES CROSS THE JOB BOUNDARY HERE, AND THIS STEP EXISTS BECAUSE `RUNNER_TEMP` DOES NOT.
+      #
+      # `$RUNNER_TEMP` is per-job. The publish job runs on a different runner with a different temp
+      # directory, so the file the step above wrote is simply not there. The alternative to carrying
+      # it is re-deriving it after the approval, and that is not an alternative: `prepare` answers "is
+      # a release pending" by whether `v<version>` is already tagged, `changeset publish` creates that
+      # tag, and so a second derivation on the far side of the publish always reports nothing pending
+      # and every successful release would end red with no release body created. Derived once,
+      # carried whole, asserted on both sides of the publish.
+      #
+      # WHY A JOB OUTPUT AND NOT AN UPLOADED ARTIFACT. Both are "the bytes travel"; the job output
+      # adds no action to this file's pinned dependency set, and every action here is pinned to a
+      # commit SHA that a human has read. An artifact round trip would add `actions/download-artifact`
+      # as a fourteenth pinned third-party step for a payload of a few kilobytes that is never read by
+      # anything outside this run.
+      #
+      # BASE64, AND IT IS NOT DECORATION. A job output is a single string, the body is multi-line
+      # markdown written by humans, and the release body is the thing being protected: a transport
+      # that silently eats a trailing newline, or that a body line beginning with a chosen heredoc
+      # delimiter can terminate early, would corrupt exactly the bytes two `assert` calls exist to
+      # prove. Base64 has neither failure mode, and it is byte-exact by construction. A malformed
+      # payload fails `base64 -d` on the far side, which fails that step, which fails the publish job
+      # BEFORE npm is reached.
+      - name: Carry the release notes across the job boundary
+        id: notes-transfer
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        shell: bash
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::The release-notes gate reported a pending release but wrote no body to" \
+                 "$notes. Refusing to hand the publish job an empty release body."
+            exit 1
+          fi
+          printf 'release-notes-b64=%s\n' "$(base64 -w0 < "$notes")" >> "$GITHUB_OUTPUT"
+          echo "Carrying $(wc -c < "$notes") bytes of release notes to the publish job."
       # Say plainly, in the log of the run that is about to open the PR, whether the PR it opens will
       # be mergeable. Without the token this is not a degraded fix, it is no fix, and the symptom
       # (a PR sitting at zero checks) reads like a slow queue rather than a permanent block.
@@ -487,9 +602,302 @@ jobs:
           else
             echo "::warning title=Version PR will land with zero checks::RELEASE_PR_TOKEN is not set, so if this run opens a Version Packages PR it will be authored by GITHUB_TOKEN. GitHub does not start workflow runs for that token's events, required checks that never report count as PENDING rather than failing, and with bypass_actors empty the PR cannot be merged by anyone, an admin included. Set RELEASE_PR_TOKEN to fix it."
           fi
-      # THE PUBLISH PATH IS RESOLVED HERE, BEFORE ANYTHING IS PACKED, AND IT DECIDES THE ARM BELOW.
+      # THE PUBLISH PATH IS NOT RESOLVED IN THIS JOB, AND THAT IS THE SPLIT SPEAKING RATHER THAN AN
+      # OMISSION. `publish-floor.mjs` answers "which tool publishes for this caller, does it clear
+      # that tool's staging floor, and does this package exist on the registry at all", and its
+      # answer is read by three step conditions in the `release` job below. A step output does not
+      # cross a job boundary, and the tool it measures is the one on the runner that PUBLISHES, so
+      # the step lives there, ahead of that job's `pnpm install` and its `Verify` ladder. This job's
+      # own ladder does pack, in `pnpm attw`, and that tarball is read by attw and thrown away: this
+      # job is handed no publish command and no `NPM_TOKEN`, so nothing it packs can be promoted
+      # anywhere and there is no floor for it to owe.
+      - run: pnpm install --frozen-lockfile
+      - name: Verify
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+          pnpm build
+          pnpm attw
+      # THE ONLY STEP IN THIS PIPELINE THAT OPENS `CHANGELOG.md`, AND IT IS HERE BECAUSE CHANGESETS
+      # SWALLOWS A FAILED CHANGELOG WRITE WITH `console.warn`.
       #
-      # Two questions, one step, both answered before a single byte is packed:
+      # `changeset version` bumps `package.json`, consumes the changesets, and writes the release
+      # section into `CHANGELOG.md`. Only the third of those may fail quietly: when the changelog
+      # generator throws -- a declared Prettier config that cannot be resolved is the case that was
+      # reproduced -- Changesets catches it, warns, and completes. The version is bumped, the
+      # changesets are gone, and NO changelog is written at all. The Version PR then looks ordinary,
+      # merges, and this workflow publishes a tarball whose own `CHANGELOG.md` does not mention the
+      # version inside it. Nothing above notices: `format:check` reads valid markdown, and
+      # `release-notes.mjs` composes the release body from `.changeset/*.md` and never opens the
+      # changelog. The run reports success. A published version is permanent (ADR 0001).
+      #
+      # IT RUNS IN THE UN-GATED JOB, WHICH IS WHAT MAKES IT A GATE RATHER THAN A REPORT: at this point
+      # npm is untouched, the publish job has not been asked for, and the cost of being wrong is a
+      # re-run rather than a human's approval spent on a release that was never going to be correct.
+      # It reads the version from the notes gate above rather than re-deriving it, so the two cannot
+      # disagree.
+      #
+      # IT IS A NO-OP FOR A CALLER THAT HAND-MAINTAINS ITS CHANGELOG, decided from that caller's own
+      # `.changeset/config.json` rather than from a list of repo names kept here. Repos move onto the
+      # generator one at a time and a list would be stale in the direction that matters: a repo that
+      # has just turned it on is exactly the repo this gate should now cover. Census on 2026-08-06,
+      # over all thirteen callers: seven have the generator on, six off, and NONE goes red, because
+      # twelve are already tagged (the gate is skipped on `is-release != 'true'`) and the thirteenth,
+      # `fhir`, has the generator off and reports `not-applicable`. That is a dated measurement, not
+      # a standing guarantee.
+      - name: The changelog must carry a section for the version being released
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        env:
+          NOTES_VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          node .cosyte-release-tooling/scripts/changelog-check.mjs \
+            --repo . --version "$NOTES_VERSION"
+      # ▶ THE VERSION-PR ARM, AND THE PUBLISH COMMAND IS NOT WITHHELD HERE, IT DOES NOT EXIST HERE.
+      #
+      #   `changesets/action` runs the publish command itself, so the ONLY place a publish can be
+      #   prevented is the input that supplies it. This step declares no `publish:` key at all, which
+      #   is a stronger statement than an expression that evaluates to the empty string: there is no
+      #   edit to a condition, no output that can disagree with itself, and no secret in this job's
+      #   environment that a publish could authenticate with. The whole publish path is in the
+      #   `release` job below, behind the caller's environment.
+      #
+      #   Read against the action's own source at the SHA pinned below, because the behaviour of this
+      #   step rests on how it branches. It publishes on exactly one arm, `!hasChangesets &&
+      #   hasPublishScript`, and `hasPublishScript` is false here forever. With pending changesets it
+      #   takes `case hasChangesets` and opens or force-pushes the "Version Packages" PR whether or
+      #   not a publish command is set, which is exactly the arm this job exists for. With neither
+      #   (the version commit itself) it logs and returns, having set `published=false`, which is the
+      #   no-op it has always been on that commit.
+      #
+      #   THE STEP IS UNCONDITIONAL, and that is the precondition the first-release fix rests on. A
+      #   `never-versioned` repo lands on `is-release=false` and is USEFUL anyway, because this step
+      #   still runs and opens the Version PR that moves the version off its scaffold value. An
+      #   `if:` here would look like tightening a gate and would silently restore a deadlock: a green
+      #   run that opens no PR, forever.
+      #
+      #   ONE KNOWN CONSEQUENCE, recorded rather than hidden, and it is not cosmetic. The action
+      #   passes hasPublishScript into the "Version Packages" PR body, so with no publish command the
+      #   body reads "publish to npm yourself or setup this action to publish automatically". That
+      #   does not merely understate what merging does: it invites a reader to publish by hand, which
+      #   is the one route around everything here. It is left alone because the alternative is worse.
+      #   Changing it means re-deriving "are there pending changesets" against the action's own
+      #   readChangesetState, and a predicate that disagrees with it by a single empty changeset file
+      #   is a predicate that hands a publish command to the wrong arm. A misleading sentence is
+      #   recoverable; that is not.
+      - name: Create or refresh the "Version Packages" pull request
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        with:
+          # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
+          version: pnpm run version
+          # Defaults to TRUE, which cuts a GitHub release from this un-gated job. Nothing here has
+          # published anything for a release to describe, and the release job below is the one that
+          # creates the single release, at the tag, with the docs artifacts and the derived notes.
+          createGithubReleases: false
+        env:
+          # The other half of the version-PR fix: this is the token the action opens the PR with.
+          # It MUST be set here rather than via the `github-token` input, which this env var takes
+          # precedence over in the action's own source at the sha pinned above.
+          #
+          # NO `NPM_TOKEN` AND NO `NODE_AUTH_TOKEN`, WHICH IS THE POINT OF THE SPLIT. Before the
+          # split this step held both, in the one job the environment gated, so the npm credential
+          # was reachable only after an approval. A version job that inherited them would be a new
+          # window on a write credential that no human ever approved, and it would be a new window
+          # even though nothing in this job can publish. There is nothing to leak here because there
+          # is nothing here.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
+      # DELETE THE RELEASE CREDENTIAL FROM DISK AS SOON AS ITS LAST CONSUMER HAS FINISHED.
+      #
+      # `changesets/action` writes `~/.netrc` itself, in the step above, unconditionally
+      # (src/index.ts:49-52 at the sha pinned above) and before its arm switch, and it removes it
+      # never. Left alone it survives to job end, readable by every step below. Its only reader is
+      # the `git push` the action makes inside its own step, so there is no consumer from here.
+      #
+      # `~/.npmrc` is swept too, and in THIS job it is expected to be absent: the action writes it
+      # only on the publish arm (src/index.ts:79-107), which needs a publish command this job does
+      # not supply and an `NPM_TOKEN` this job is not handed. The sweep is written the same way in
+      # both jobs on purpose: a step that only removes what it expects to find stops removing the
+      # thing nobody expected. The line numbers are read out of the action at that sha, and a bump
+      # can move them while this step still exits 0 and still prints "Removed";
+      # `test/install-check.test.mjs` pins the sha for exactly that reason.
+      #
+      # `rm` is safe on a hosted runner specifically because `runs-on` is pinned to `ubuntu-latest`
+      # in this file, so there is no persistent user npmrc to destroy. It warns rather than fails,
+      # with `always()` rather than `!cancelled()` so a cancelled run is scrubbed too; it is two
+      # `rm`s and cannot hang.
+      - name: Drop the release credentials from disk
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          left=""
+          for f in "$HOME/.netrc" "$HOME/.npmrc"; do
+            [ -e "$f" ] || continue
+            # `|| true` IS LOAD-BEARING, not defensive noise. GitHub runs `shell: bash` as
+            # `bash --noprofile --norc -eo pipefail`, so a bare failing `rm` exits the step at
+            # once and the warn branch below, which is the whole reason this step does not fail,
+            # never runs. Measured: an `.npmrc` that is a directory, and an unwritable `$HOME`,
+            # both exit 1 without it. Neither is reachable on a hosted runner today.
+            rm -f "$f" || true
+            if [ -e "$f" ]; then left="$left $f"; else echo "Removed $f."; fi
+          done
+          if [ -n "$left" ]; then
+            echo "::warning title=Release credential still on disk::Could not remove:$left. A credential changesets/action wrote stays readable for the rest of this job."
+          fi
+
+  # ▶ THE IRREVERSIBLE HALF, AND THE ONLY JOB THE CALLER'S `release` ENVIRONMENT HOLDS.
+  #
+  #   THE JOB ID IS `release` AND MUST STAY `release`. A caller's check context for a reusable
+  #   workflow is `<caller job id> / <called job id>`, so this identifier is the one every caller's
+  #   required-check configuration was written against. Renaming it would leave those contexts
+  #   reporting nothing at all, and a required context that never reports leaves a pull request
+  #   PENDING and unmergeable by anyone, an admin included. That is the loud failure; the quiet one
+  #   is worse and is why the gate above is not in here.
+  #
+  #   `needs: version` is what makes the protection gate above load-bearing for this job: this job
+  #   cannot start until that one has succeeded, and that one refuses the run unless the caller's
+  #   `release` environment is a proven human gate. So the environment on this job is both proven
+  #   and enforced, in that order.
+  #
+  #   `if:` IS THE DISCRIMINATOR, AND IT IS `is-release`, DERIVED IN THE JOB ABOVE. It is the same
+  #   predicate that used to withhold the publish command inside the single job, so nothing about
+  #   WHEN this pipeline publishes has changed; only where the decision is enforced has. On a run
+  #   that opens a Version PR this job is skipped, its check run concludes `skipped`, and a required
+  #   context counts that as success (README.md, "What a skipped required context does to a merge",
+  #   measured on this repository rather than reasoned about).
+  release:
+    needs: version
+    if: ${{ needs.version.outputs.is-release == 'true' }}
+    runs-on: ubuntu-latest
+    # THE HUMAN GATE ON npm publish. This key puts THIS job, and only this job, in the caller's
+    # `release` environment: "when a workflow job references an environment, the job won't start
+    # until all of the environment's protection rules pass", and "a job also cannot access secrets
+    # that are defined in an environment until all the deployment protection rules pass". Everything
+    # that can reach the registry is inside it. Nothing that merely proposes a release is.
+    #
+    # A job nobody approves within 30 days fails automatically, which is a real cost and the reason
+    # the version job is not in here: an approval request that buys nothing still expires, and the
+    # measured effect of asking for one on every merge was a pipeline that released nothing at all.
+    environment: release
+    # NAMED IN FULL for the same reason as the version job: one named key sets every unnamed key to
+    # `none`. `contents: write` creates the tag and the GitHub release; `id-token: write` is npm
+    # provenance; `pull-requests: write` is there because `changesets/action` can still take its
+    # version arm if a changeset lands between the two jobs, and a 403 on that arm would be a
+    # confusing failure of a run that has already been approved; `actions: read` keeps this job's
+    # token shaped like the version job's, so a caller grants one set for both.
+    permissions:
+      contents: write # create tags / GitHub release
+      id-token: write # npm provenance
+      pull-requests: write # the action's version arm, if a changeset lands between the jobs
+      actions: read # keep both jobs' token requests identical for the caller
+    steps:
+      # The tooling arrives first here as well, and for the same reason: a reusable workflow runs
+      # against the CALLER's checkout, so `scripts/` is not on disk until it is fetched.
+      # `job_workflow_sha` is the commit of THIS workflow file, so every script this job runs comes
+      # from one commit of this file's own tree even though every caller pins `@main`.
+      - name: Check out the shared release tooling (for the release-notes gate)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ github.job_workflow_sha }}
+          path: .cosyte-release-tooling
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # `changeset publish` runs `git push` for the tag out of this checkout. Left at its
+          # default, `actions/checkout` persists an `http.<host>.extraheader` Authorization into the
+          # local git config that outranks the `~/.netrc` the action writes, which is the same trap
+          # documented at the top of this file. Nothing else in this job pushes over git: `gh` uses
+          # the API, and the tag is created by `gh release create --target` below.
+          persist-credentials: false
+      # The tooling, RESTORED: the caller checkout above deleted it, because `actions/checkout`
+      # clears a workspace root that is not already the repository it is about to clone.
+      - name: Check out the shared release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ github.job_workflow_sha }}
+          path: .cosyte-release-tooling
+          persist-credentials: false
+      # changesets/action stages the whole tree (`git add .`) on its version arm, so the tooling
+      # checkout has to be invisible to the caller's git or it lands in a commit.
+      - name: Hide the tooling checkout from the caller's git
+        run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      # `registry-url` makes setup-node write an .npmrc holding
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it.
+      # It is declared in THIS job and nowhere else, because this is the only job that authenticates
+      # to a registry.
+      #
+      # WHAT THE v6 -> v7 MAJOR CHANGED HERE, AND WHY IT IS SAFE, MEASURED 2026-08-03 RATHER THAN
+      # ASSUMED. v6 exported a DUMMY `NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX` job-wide whenever the
+      # caller had not set one; v7 (actions/setup-node#1558) exports it only when it is already set.
+      # So in every step below that does not set it, that `${NODE_AUTH_TOKEN}` no longer resolves.
+      #
+      # The effect is a WARNING, not a failure, and it is bigger than the token line: pnpm's
+      # env-replace throws, and pnpm catches it at FILE scope and discards the WHOLE userconfig,
+      # `registry=` included. Measured on pnpm 10.0.0, 10.34.5 and 11.17.0 (the `packageManager`
+      # versions pinned across the callers): `pnpm install --frozen-lockfile` prints
+      # "Failed to replace env in config" on STDERR and exits 0, and dropping `registry=` is a no-op
+      # because it is restating pnpm's default. `pnpm attw` shells out to `npm pack`, and npm's own
+      # env-replace does not throw at all: it leaves the literal `${NODE_AUTH_TOKEN}` and exits 0
+      # (checked on npm 10.9.8 and 11.16.0).
+      #
+      # ▶ THE LATENT HALF, so it is not rediscovered: this is benign ONLY because the discarded
+      # `registry=` equals pnpm's default. ADD A `scope:` INPUT HERE AND THE DISCARDED LINE BECOMES A
+      # SCOPED REGISTRY THAT SILENTLY STOPS APPLYING to every step that lacks the token. If a scope
+      # is ever needed, set `NODE_AUTH_TOKEN` at JOB level too, not just on the publish step.
+      #
+      # The publish path is unaffected either way: the `changesets/action` step below sets
+      # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
+      # to a registry.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: pnpm
+      # THE RELEASE NOTES ARRIVE, THEY ARE NOT RE-DERIVED. These are the exact bytes the version job
+      # derived before anyone was asked to approve anything, carried across the job boundary as a
+      # base64 job output because `RUNNER_TEMP` is per-job and a second derivation on this side of
+      # the publish is impossible (see "THE BYTES CROSS THE JOB BOUNDARY HERE" in the version job).
+      #
+      # It fails closed three ways: an empty output, a payload `base64 -d` will not decode, and a
+      # decoded file with no bytes in it all fail this step, and this step is ahead of everything
+      # that authenticates to a registry or publishes.
+      - name: Restore the release notes derived before the approval
+        env:
+          RELEASE_NOTES_B64: ${{ needs.version.outputs.release-notes-b64 }}
+        shell: bash
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          if [ -z "$RELEASE_NOTES_B64" ]; then
+            echo "::error::No release notes arrived from the version job. This job publishes the" \
+                 "body that job derived and derives none of its own; refusing to publish without it."
+            exit 1
+          fi
+          printf '%s' "$RELEASE_NOTES_B64" | base64 -d > "$notes"
+          if [ ! -s "$notes" ]; then
+            echo "::error::The release notes carried from the version job decoded to an empty file."
+            exit 1
+          fi
+          echo "Restored $(wc -c < "$notes") bytes of release notes derived by the version job."
+      # PROVE THE BYTES BEFORE npm SEES ANYTHING. `prepare` validated the body it rendered in memory,
+      # in the other job; this reads the finished file back through the entry point that knows
+      # nothing about how it was produced, and it runs while npm is still untouched. It is
+      # unconditional in this job because this job only exists when a release is pending.
+      - name: Release notes must be fit to publish
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          NOTES_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node .cosyte-release-tooling/scripts/release-notes.mjs assert \
+            --file "$RUNNER_TEMP/release-notes.md" \
+            --expect-version "$NOTES_VERSION" --expect-package "$PACKAGE_NAME"
+      # THE PUBLISH PATH IS RESOLVED HERE, BEFORE ANYTHING IS PACKED IN THE JOB THAT PUBLISHES, AND
+      # IT DECIDES THE ARM BELOW.
+      #
+      # Two questions, one step, both answered before a single byte is packed on this runner:
       #
       #   WHICH TOOL PUBLISHES, AND DOES IT CLEAR ITS OWN FLOOR. There is no single floor and
       #   asserting `npm --version >= 11.15.0` here would be wrong. Since pnpm 11, `pnpm publish` is
@@ -510,22 +918,32 @@ jobs:
       #   belongs in the CALLING repository; nothing here can or should make it. The refusal names the
       #   version found and the floor needed so the caller does not have to come and read this file.
       #
-      # IT RUNS ONLY WHEN THIS COMMIT ACTUALLY PUBLISHES, on the same predicate the notes and
-      # changelog gates above already use. A run that opens a Version PR has no publish mode in use,
-      # so there is no floor for it to owe, and redding it would take a caller's release pipeline down
-      # one commit earlier than the thing it is warning about.
+      # ▶ IT IS IN THIS JOB AND CARRIES NO `if:` OF ITS OWN, AND BOTH HALVES OF THAT ARE THE SPLIT.
+      #   It measures the tool on the runner that PUBLISHES, and its answer is read by three step
+      #   conditions below through `steps.publish-floor.outputs.mode`, which is a STEP output and
+      #   does not cross a job boundary; so it belongs here and nowhere else. Before the split it
+      #   carried `if: steps.notes.outputs.is-release == 'true'`, which is now this JOB's own
+      #   condition, pinned whole a few lines above: this job exists only on the runs that publish,
+      #   so the step condition would be a tautology, and a tautology in front of the step that
+      #   decides the publish arm is an invitation to edit it. A run that opens a Version PR never
+      #   reaches this job, so there is still no floor owed on that path.
       #
       # IT PRECEDES `pnpm install` DELIBERATELY, which puts it ahead of the `Verify` ladder below.
       # `pnpm attw` shells out to `npm pack`, so "before anything is packed" is only true on this side
-      # of that step.
+      # of that step. The un-gated job's own ladder packs for `attw` and throws the tarball away; it
+      # is handed no publish command and no `NPM_TOKEN`, so nothing it packs can be promoted.
       - name: Resolve the publish path and prove it clears its floor
         id: publish-floor
-        if: ${{ steps.notes.outputs.is-release == 'true' }}
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
         run: |
           node .cosyte-release-tooling/scripts/publish-floor.mjs --package "$PACKAGE_NAME" --repo .
       - run: pnpm install --frozen-lockfile
+      # RUN IN FULL AGAIN, ON THE RUNNER THAT ACTUALLY PUBLISHES. The version job ran this ladder
+      # too, on the same commit, and that is not a reason to skip it here: this job builds the tree
+      # that `changeset publish` packs and that `pack:docs` reads, and a published version is
+      # permanent. The cost is a few minutes; the alternative is publishing a tree nothing in this
+      # job ever verified.
       - name: Verify
         run: |
           pnpm typecheck
@@ -533,84 +951,21 @@ jobs:
           pnpm test
           pnpm build
           pnpm attw
-      # Prove the BYTES before npm sees anything. `prepare` above validated the body it rendered in
-      # memory; this reads the finished file back through the entry point that knows nothing about
-      # how it was produced, and it runs while npm is still untouched. It used to run only after the
-      # publish step, which put an irreversible act ahead of a check.
-      - name: Release notes must be fit to publish
-        if: ${{ steps.notes.outputs.is-release == 'true' }}
-        env:
-          PACKAGE_NAME: ${{ inputs.package-name }}
-          NOTES_VERSION: ${{ steps.notes.outputs.version }}
-        run: |
-          node .cosyte-release-tooling/scripts/release-notes.mjs assert \
-            --file "$RUNNER_TEMP/release-notes.md" \
-            --expect-version "$NOTES_VERSION" --expect-package "$PACKAGE_NAME"
-      # THE ONLY STEP IN THIS PIPELINE THAT OPENS `CHANGELOG.md`, AND IT IS HERE BECAUSE CHANGESETS
-      # SWALLOWS A FAILED CHANGELOG WRITE WITH `console.warn`.
+      # ▶ THE PUBLISH, AND EVERY STEP THAT CAN REACH THE REGISTRY IS INSIDE THIS ENVIRONMENT-HELD JOB.
       #
-      # `changeset version` bumps `package.json`, consumes the changesets, and writes the release
-      # section into `CHANGELOG.md`. Only the third of those may fail quietly: when the changelog
-      # generator throws -- a declared Prettier config that cannot be resolved is the case that was
-      # reproduced -- Changesets catches it, warns, and completes. The version is bumped, the
-      # changesets are gone, and NO changelog is written at all. The Version PR then looks ordinary,
-      # merges, and this workflow publishes a tarball whose own `CHANGELOG.md` does not mention the
-      # version inside it. Nothing above notices: `format:check` reads valid markdown, and
-      # `release-notes.mjs` composes the release body from `.changeset/*.md` and never opens the
-      # changelog. The run reports success. A published version is permanent (ADR 0001).
+      #   The action publishes on exactly one arm, `!hasChangesets && hasPublishScript`. It reaches
+      #   this job only when the version job derived a release, so the changesets are consumed and
+      #   the publish command below is what it takes. If a new changeset landed on main between the
+      #   two jobs the action takes its version arm instead and opens a PR: no publish, which is the
+      #   correct answer to "the tree moved under the approval".
       #
-      # IT RUNS BEFORE `changesets/action`, which is what makes it a gate rather than a report: at
-      # this point npm is untouched and the cost of being wrong is a re-run. It reads the version
-      # from the notes gate above rather than re-deriving it, so the two cannot disagree.
-      #
-      # IT IS A NO-OP FOR A CALLER THAT HAND-MAINTAINS ITS CHANGELOG, decided from that caller's own
-      # `.changeset/config.json` rather than from a list of repo names kept here. Repos move onto the
-      # generator one at a time and a list would be stale in the direction that matters: a repo that
-      # has just turned it on is exactly the repo this gate should now cover. Census on 2026-08-06,
-      # over all thirteen callers: seven have the generator on, six off, and NONE goes red, because
-      # twelve are already tagged (the gate is skipped on `is-release != 'true'`) and the thirteenth,
-      # `fhir`, has the generator off and reports `not-applicable`. That is a dated measurement, not
-      # a standing guarantee.
-      - name: The changelog must carry a section for the version being released
-        if: ${{ steps.notes.outputs.is-release == 'true' }}
-        env:
-          NOTES_VERSION: ${{ steps.notes.outputs.version }}
-        run: |
-          node .cosyte-release-tooling/scripts/changelog-check.mjs \
-            --repo . --version "$NOTES_VERSION"
-      - name: Create release PR or publish
+      #   `version: pnpm run version` is declared for exactly that arm, and it is `pnpm run version`
+      #   rather than `pnpm version`, which is pnpm's built-in and shadows the script.
+      - name: Publish to npm
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
-          # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
-          # THE ORDERING GATE, and the reason it is an input rather than a step condition: this is
-          # the only place the publish can be prevented, because `changesets/action` runs the publish
-          # command itself. Supplying it ONLY when the notes gate above derived a body and proved it
-          # fit means npm is unreachable until the check that guards it has passed. Before this, the
-          # workflow published first and then complained; a published version is permanent, so a
-          # complaint is not a gate.
-          #
-          # Read against the action's own source at the SHA pinned above, because the whole gate
-          # rests on how it branches. It publishes on exactly one arm, `!hasChangesets &&
-          # hasPublishScript`. With pending changesets it takes `case hasChangesets` and opens the
-          # "Version Packages" PR whether or not a publish command is set, so that path is untouched.
-          # With neither it logs and returns, having already set `published=false`, so the release
-          # step below is skipped: the same outcome as the `changeset publish` that used to run there
-          # and find nothing, since the notes gate reports no release pending precisely when
-          # `v<version>` is already tagged, and this pipeline creates that tag only after a publish
-          # has succeeded.
-          #
-          # ONE KNOWN CONSEQUENCE, recorded rather than hidden, and it is not cosmetic. The action
-          # passes hasPublishScript into the "Version Packages" PR body, so on the version-PR run,
-          # where it is now false, the body reads "publish to npm yourself or setup this action to
-          # publish automatically". That does not merely understate what merging does: it invites a
-          # reader to publish by hand, which is the one route around everything above. It is left
-          # alone because the alternative is worse. Keeping the prose means re-deriving "are there
-          # pending changesets" in bash against the action's own readChangesetState, and a predicate
-          # that disagrees with it by a single empty changeset file hands the publish command back on
-          # the arm that actually publishes. A misleading sentence is recoverable; that is not.
-          #
           # ▶ THE STAGED ARM IS SELECTED ON THIS LINE, AND THAT IS THE WHOLE REASON IT CAN BE
           #   SELECTED WITHOUT EDITING A SINGLE CALLER. The command that publishes lives in each
           #   caller's `package.json` (`release` is `changeset publish`), but the STRING handed to
@@ -623,28 +978,34 @@ jobs:
           #   published still takes `pnpm run release` and behaves exactly as it always has, because
           #   npm cannot stage a brand-new package and demanding it would red a correct first release.
           #
-          #   `mode` is `staged`, `direct`, `refused`, or EMPTY when the step above was skipped. Only
-          #   the literal `staged` selects the staged command, so every other value, an unrecognised
-          #   one included, lands on the path this pipeline has been running all along.
+          #   `mode` is `staged`, `direct` or `refused`, and a refusal never reaches this line at all
+          #   because it exits the step above non-zero. Only the literal `staged` selects the staged
+          #   command, so every other value, an unrecognised one included, lands on the path this
+          #   pipeline has been running all along.
           #
-          #   THE `A && B || C` SHAPE IS LOAD-BEARING AND CANNOT BE REWRITTEN AS `A && '' || B`. An
-          #   empty string is falsy in an Actions expression, so the negated form falls through to its
-          #   own right-hand side and hands the publish command BACK on the run that must not have it.
-          #   Both branches of the inner expression are non-empty strings for exactly that reason.
-          publish: ${{ steps.notes.outputs.is-release == 'true' && (steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release') || '' }}
-          # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
-          # below creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also
-          # the wrong release: it carries no docs artifacts, and because every caller sets
-          # `"changelog": false` and hand-maintains CHANGELOG.md, the action finds no `## <version>`
-          # heading and dumps the WHOLE file, `## [Unreleased]` and all, into the release body.
-          # `changeset publish` still creates and pushes the `v<version>` git tag; the step below
-          # attaches the artifacts to it.
+          #   WHERE THE WITHHOLDING WENT, because it is no longer on this line and that is deliberate.
+          #   Before the split this input read `is-release == 'true' && (...) || ''`, and the empty
+          #   string was the only thing standing between an ordinary merge and npm. It is now the
+          #   job-level `if:` above, which is stronger in two ways: the un-gated job declares no
+          #   `publish:` key AT ALL, so there is no expression there to weaken, and this job does not
+          #   start on a non-release run, so there is nothing here to withhold from. Both halves are
+          #   pinned whole by `test/release-notes.test.mjs` and `test/environment-gate.test.mjs`.
+          publish: ${{ steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release' }}
+          # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the step below
+          # creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also the wrong
+          # release: it carries no docs artifacts, and because every caller sets `"changelog": false`
+          # and hand-maintains CHANGELOG.md, the action finds no `## <version>` heading and dumps the
+          # WHOLE file, `## [Unreleased]` and all, into the release body. `changeset publish` still
+          # creates and pushes the `v<version>` git tag; the step below attaches the artifacts to it.
           createGithubReleases: false
         env:
-          # The other half of the version-PR fix: this is the token the action opens the PR with.
-          # It MUST be set here rather than via the `github-token` input, which this env var takes
+          # Same credential as the version job's step, for the version arm described above, and it
+          # MUST be set here rather than via the `github-token` input, which this env var takes
           # precedence over in the action's own source at the sha pinned above.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          # THE npm CREDENTIAL, AND THIS IS THE ONLY JOB IN THIS FILE THAT IS EVER HANDED IT. It is
+          # reachable here only because the caller's `release` environment let this job start, which
+          # is the whole of what the split bought.
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
@@ -653,7 +1014,8 @@ jobs:
           # looks for it. Named in one place so the two cannot drift onto different paths; the script
           # defaults to the same file when the variable is absent, so a hand run still works.
           STAGED_PUBLISH_REPORT: ${{ runner.temp }}/staged-publish.json
-      # DELETE THE RELEASE CREDENTIALS FROM DISK AS SOON AS THEIR LAST CONSUMER HAS FINISHED.
+      # DELETE THE RELEASE CREDENTIALS FROM DISK AS SOON AS THEIR LAST CONSUMER HAS FINISHED, which
+      # is why this step sits immediately after the action rather than at the end of the job.
       #
       # WHICH TWO FILES, AND THE LINE NUMBERS BELOW, ARE READ OUT OF `changesets/action` AT THE SHA
       # PINNED ABOVE. A bump can move them, and this step would still exit 0 and still print
@@ -753,7 +1115,7 @@ jobs:
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
           PACK_DOCS_CMD: ${{ inputs.pack-docs-cmd }}
           DISPATCH_DOCS: ${{ inputs.dispatch-docs }}
-          IS_RELEASE_COMMIT: ${{ steps.notes.outputs.is-release }}
+          IS_RELEASE_COMMIT: ${{ needs.version.outputs.is-release }}
         shell: bash
         run: |
           version=$(node -e "const p=JSON.parse(process.env.PUBLISHED_PACKAGES); const m=p.find(x=>x.name===process.env.PACKAGE_NAME)||p[0]; process.stdout.write(m.version)")

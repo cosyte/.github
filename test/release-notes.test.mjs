@@ -44,8 +44,122 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, '../scripts/release-notes.mjs');
+const WORKFLOW = resolve(HERE, '../.github/workflows/release.yml');
 const FIXTURE_DIR = join(HERE, 'fixtures/hl7-v0.0.2/changeset');
 const EXPECTED_BODY = join(HERE, 'fixtures/hl7-v0.0.2/expected-release-body.md');
+
+// ── Reading release.yml as JOBS, because the notes now cross a job boundary ─────────────────────
+//
+// The wiring assertions in this file used to work by byte offset over the whole file: count the
+// `prepare` calls, count the `assert` calls, and order them against `String.indexOf('uses:
+// changesets/action@')`. That was sound while `release.yml` was ONE job. It is not sound now: the
+// derivation happens in the un-gated `version` job and the publish happens in the environment-held
+// `release` job, so "before the publish step" is a fact about which JOB a step is in and where it
+// sits inside it, and a byte offset answers a different question that happens to agree by accident.
+//
+// This parser is deliberately small and deliberately LOUD: it throws, naming what it could not read,
+// rather than handing back an empty list that would make every assertion below pass while asserting
+// nothing. It is duplicated in `test/environment-gate.test.mjs` rather than shared, because this
+// repository has no package.json, no install step and no test helper directory on purpose, and both
+// suites are meant to be readable on their own.
+
+/** Drop whole-line comments. */
+function decommentLines(text) {
+  return text.split('\n').filter((line) => !/^\s*#/.test(line));
+}
+
+/** `write # create tags` -> `write`. Only ` # ` counts, so a `${{ }}` expression is never cut. */
+function stripInlineComment(value) {
+  return value.replace(/\s+#\s.*$/, '').trim();
+}
+
+function parseWorkflowStep(index, jobId, rawLines) {
+  const lines = [`        ${rawLines[0]}`, ...rawLines.slice(1)];
+  /** @type {Record<string, string>} */
+  const fields = {};
+  const blocks = { with: {}, env: {} };
+  let open = null;
+  for (const line of lines) {
+    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
+    if (key) {
+      fields[key[1]] = stripInlineComment(key[2]);
+      open = fields[key[1]] === '' && (key[1] === 'with' || key[1] === 'env') ? key[1] : null;
+      continue;
+    }
+    if (!open) continue;
+    const child = /^ {10}([\w-]+):\s?(.*)$/.exec(line);
+    if (child) blocks[open][child[1]] = stripInlineComment(child[2]);
+    else open = null;
+  }
+  if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
+    throw new Error(
+      `parse failure: step ${index} of job \`${jobId}\` has neither a name, a uses nor a run: ` +
+        JSON.stringify(lines.join('\n').slice(0, 120)),
+    );
+  }
+  return {
+    index,
+    job: jobId,
+    fields,
+    with: blocks.with,
+    env: blocks.env,
+    label: fields.name ?? fields.uses ?? `${jobId} step ${index}`,
+    body: lines.join('\n'),
+  };
+}
+
+/** Parse release.yml into its jobs, in file order, each with its ordered step list. */
+function parseWorkflowJobs(text) {
+  const lines = decommentLines(text);
+  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
+
+  const jobs = [];
+  let job = null;
+  let inSteps = false;
+  let rawSteps = [];
+  const closeJob = () => {
+    if (!job) return;
+    job.steps = rawSteps.map((raw, index) => parseWorkflowStep(index, job.id, raw));
+    if (job.steps.length === 0) throw new Error(`parse failure: job \`${job.id}\` parsed to zero steps`);
+  };
+
+  for (const line of lines.slice(jobsAt + 1)) {
+    if (line.trim() === '') continue;
+    if (/^\S/.test(line)) break;
+    const jobStart = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (jobStart) {
+      closeJob();
+      job = { id: jobStart[1], keys: {}, steps: [] };
+      jobs.push(job);
+      inSteps = false;
+      rawSteps = [];
+      continue;
+    }
+    if (!job) throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`jobs:\` but inside no job`);
+    if (!inSteps) {
+      if (/^ {4}steps:\s*$/.test(line)) {
+        inSteps = true;
+        continue;
+      }
+      const key = /^ {4}([\w-]+):\s?(.*)$/.exec(line);
+      if (key) job.keys[key[1]] = stripInlineComment(key[2]);
+      continue;
+    }
+    const stepStart = /^ {6}- (.*)$/.exec(line);
+    if (stepStart) {
+      rawSteps.push([stepStart[1]]);
+      continue;
+    }
+    if (rawSteps.length === 0) {
+      throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`${job.id}.steps:\` but inside no step`);
+    }
+    rawSteps[rawSteps.length - 1].push(line);
+  }
+  closeJob();
+  if (jobs.length === 0) throw new Error('parse failure: release.yml declares `jobs:` but no job under it');
+  return { jobs, byId: Object.fromEntries(jobs.map((j) => [j.id, j])) };
+}
 
 /** The exact body every cosyte release carried before this change. */
 const PRODUCTION_STUB = 'Automated release of v0.0.2.';
@@ -573,29 +687,75 @@ test('the gate sees the wreckage a cut leaves in the bytes', () => {
   }
 });
 
-test('release.yml derives the notes once, and asserts them on both sides of the publish step', () => {
-  // The composition test below proves the CLI supports this shape. This proves the workflow
-  // actually uses it: re-introducing a second `prepare` after the publish would otherwise pass.
+test('AC7: release.yml derives the notes once, carries them across the job boundary, and asserts them on both sides of the publish', () => {
+  // The composition test below proves the CLI supports this shape. This proves the workflow actually
+  // uses it: re-introducing a second `prepare` on the publish side would otherwise pass.
   //
   // TWO asserts, and which side of the publish each one sits on is the whole of the ordering fix.
   // The first proves the finished bytes while npm is still untouched, so a body that is unfit costs
   // a re-run and nothing else. The second reconciles those same bytes against the version Changesets
   // reported publishing, which does not exist any earlier and is the only check that legitimately
-  // follows the publish. A single assert on the far side, which is what this workflow had, makes the
-  // check a report on an irreversible act rather than a gate in front of it.
-  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
-  const prepares = [...workflow.matchAll(/release-notes\.mjs prepare\b/g)];
-  assert.equal(prepares.length, 1, 'the notes must be derived exactly once');
-  const asserts = [...workflow.matchAll(/release-notes\.mjs assert\b/g)];
-  assert.equal(asserts.length, 2, 'the bytes must be proved before the publish and reconciled after it');
+  // follows the publish. A single assert on the far side, which is what this workflow once had,
+  // makes the check a report on an irreversible act rather than a gate in front of it.
+  const text = readFileSync(WORKFLOW, 'utf8');
+  const workflow = parseWorkflowJobs(text);
+  const version = workflow.byId.version;
+  const release = workflow.byId.release;
+  assert.ok(version && release, 'release.yml is the un-gated version job plus the environment-held publish job');
 
-  const changesetsAction = workflow.indexOf('uses: changesets/action@');
-  assert.ok(changesetsAction > 0);
-  assert.ok(prepares[0].index < changesetsAction, 'prepare must run BEFORE the publish step');
-  assert.ok(asserts[0].index < changesetsAction, 'the body must be proved fit before npm is reached');
-  assert.ok(asserts[1].index > changesetsAction, 'the published version must still be reconciled after');
-  // Every one of the three steps must name the same file, or the asserts guard nothing.
-  assert.equal([...workflow.matchAll(/\$RUNNER_TEMP\/release-notes\.md/g)].length, 3);
+  const NOTES_FILE = '$RUNNER_TEMP/release-notes.md';
+  const derives = (step) => /release-notes\.mjs prepare\b/.test(step.body);
+  const proves = (step) => /release-notes\.mjs assert\b/.test(step.body);
+  const publishes = (step) => /uses: changesets\/action@/.test(step.body) && step.with.publish !== undefined;
+
+  // DERIVED EXACTLY ONCE, IN THE JOB THAT DOES NOT PUBLISH. Deriving again on the far side of the
+  // publish cannot work at all: `changeset publish` creates the `v<version>` tag locally and "is a
+  // release pending" is answered by whether that tag exists, so a second derivation always finds
+  // nothing and every successful release would end red with no release created.
+  const prepares = [...text.matchAll(/release-notes\.mjs prepare\b/g)];
+  assert.equal(prepares.length, 1, 'the notes must be derived exactly once');
+  const preparing = version.steps.filter(derives);
+  assert.equal(preparing.length, 1, 'the notes are derived in the version job, before anyone is asked to approve');
+  assert.ok(preparing[0].body.includes(NOTES_FILE), 'prepare must write the file both asserts read');
+
+  // AND THE BYTES TRAVEL, BECAUSE `RUNNER_TEMP` DOES NOT CROSS A JOB BOUNDARY. The version job
+  // exports them and declares them as a job output; the publish job reads that output back to the
+  // same path. Without both halves the publish job would be asserting an absent file, or worse,
+  // silently publishing a body nothing had proved.
+  const carries = version.steps.filter((step) => /base64 -w0/.test(step.body));
+  assert.equal(carries.length, 1, 'exactly one step carries the derived notes out of the version job');
+  assert.ok(carries[0].body.includes(NOTES_FILE), 'the carried bytes must be the file `prepare` wrote');
+  assert.ok(carries[0].index > preparing[0].index, 'the notes cannot be carried before they are derived');
+  assert.match(
+    text,
+    /^ {6}release-notes-b64: \$\{\{ steps\.notes-transfer\.outputs\.release-notes-b64 \}\}$/m,
+    'the carried notes must be declared as a job output or nothing downstream can read them',
+  );
+  const restores = release.steps.filter((step) => /base64 -d/.test(step.body));
+  assert.equal(restores.length, 1, 'exactly one step restores the notes in the publish job');
+  assert.match(restores[0].env.RELEASE_NOTES_B64, /needs\.version\.outputs\.release-notes-b64/);
+  assert.ok(restores[0].body.includes(NOTES_FILE), 'the restored bytes must land where both asserts read');
+
+  // TWO ASSERTS, ONE ON EACH SIDE OF THE PUBLISH, BOTH IN THE PUBLISH JOB, both reading the same
+  // file. Ordering here is a step index inside one job rather than a byte offset across the file.
+  const asserts = [...text.matchAll(/release-notes\.mjs assert\b/g)];
+  assert.equal(asserts.length, 2, 'the bytes must be proved before the publish and reconciled after it');
+  const proving = release.steps.filter(proves);
+  assert.equal(proving.length, 2, 'both asserts belong to the job that publishes');
+  const publish = release.steps.filter(publishes);
+  assert.equal(publish.length, 1, 'exactly one step is handed a publish command');
+  assert.ok(proving[0].index > restores[0].index, 'the body cannot be proved before it has arrived');
+  assert.ok(proving[0].index < publish[0].index, 'the body must be proved fit before npm is reached');
+  assert.ok(proving[1].index > publish[0].index, 'the published version must still be reconciled after');
+  for (const step of proving) {
+    assert.ok(step.body.includes(NOTES_FILE), `"${step.label}" must assert the file prepare wrote, or it guards nothing`);
+  }
+
+  // THE PRE-PUBLISH ASSERT CARRIES NO CONDITION. It sits in a job that only exists when a release is
+  // pending, so an `if:` here could only ever subtract: it would be a way for the publish to happen
+  // with the proof skipped.
+  assert.equal(proving[0].fields.if, undefined, 'the pre-publish proof must not be skippable');
+  assert.equal(restores[0].fields.if, undefined, 'the notes must arrive on every path this job takes');
 });
 
 test('a single short but genuine change is a publishable release', () => {
@@ -1346,55 +1506,75 @@ test('hasPriorVersion answers a question about history alone', () => {
 // release.yml hands it to `changesets/action` as the publish command, and that wiring lives in a
 // file the script cannot see. Six gates in this org have shipped green while unable to observe their
 // subject; this assertion is one line and it is the one that would have caught a seventh.
-test('release.yml withholds the publish command unless the notes gate derived notes', () => {
-  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
-  const publishInput = /^\s*publish:\s*(.+)$/m.exec(workflow);
-  assert.ok(publishInput, 'release.yml no longer passes a publish input to changesets/action');
-  // The WHOLE expression, not a substring of it. Merely requiring the condition to appear somewhere
-  // passes on `is-release == 'true' && '' || 'pnpm run release'`, which contains exactly the same
-  // text and publishes precisely when the gate says not to. This is one line, it decides whether npm
-  // can be reached, and there is no edit to it that should be anything other than deliberate.
-  //
-  // THE INNER TERNARY IS THE STAGED-PUBLISHING ARM, ADDED WITH `publish-floor.mjs`, AND IT DOES NOT
-  // WEAKEN THIS GATE. The outer `is-release` test is unchanged and still decides whether ANY publish
-  // command is handed over; the inner one only chooses WHICH, and both of its branches are non-empty
-  // strings, so the outer `|| ''` remains the sole route to withholding. A package that has never
-  // been published takes `pnpm run release` exactly as before. `test/publish-floor.test.mjs` and
-  // `test/staged-publish.test.mjs` own the staged arm's own behaviour; what is asserted HERE is that
-  // it did not become a second way to reach npm behind the notes gate's back.
-  assert.equal(
-    publishInput[1].trim(),
-    "${{ steps.notes.outputs.is-release == 'true' && (steps.publish-floor.outputs.mode == 'staged' " +
-      "&& format('node .cosyte-release-tooling/scripts/staged-publish.mjs stage --package {0}', " +
-      "inputs.package-name) || 'pnpm run release') || '' }}",
-    'the publish command must be the notes gate and nothing else',
-  );
-  // The version-PR half must NOT be conditional. changesets/action opens the "Version Packages" PR
-  // whenever pending changesets exist, whether or not a publish command is set, so gating `version`
-  // as well would stop releases from ever starting.
-  assert.match(workflow, /^\s*version:\s*pnpm run version\s*$/m);
+test('release.yml keeps the publish command out of the un-gated job, and gates the job that has it', () => {
+  const text = readFileSync(WORKFLOW, 'utf8');
+  const workflow = parseWorkflowJobs(text);
+  const version = workflow.byId.version;
+  const release = workflow.byId.release;
 
-  // AND NEITHER MAY THE STEP ITSELF BE. This is the precondition the first-release fix rests on:
-  // a `never-versioned` run sets `is-release=false` and is USEFUL anyway, because the step still
-  // runs and opens the Version PR that moves the version off its scaffold value. Adding
-  // `if: steps.notes.outputs.is-release == 'true'` here would look like tightening the gate, would
-  // pass every other test in this file, and would silently restore the deadlock: a green run that
-  // opens no PR, forever. Verified against the action's source at the sha pinned above, where
-  // `case hasChangesets:` calls runVersion regardless of whether a publish command was supplied.
+  const actionIn = (job) => {
+    const found = job.steps.filter((step) => /uses: changesets\/action@/.test(step.body));
+    assert.equal(found.length, 1, `job \`${job.id}\` must run changesets/action exactly once`);
+    return found[0];
+  };
+  const versionArm = actionIn(version);
+  const publishArm = actionIn(release);
+
+  // THE PUBLISH COMMAND IS NOT WITHHELD IN THE VERSION JOB, IT IS ABSENT FROM IT. `changesets/action`
+  // runs the publish command itself, so the input IS the capability. This used to be an expression,
+  // `is-release == 'true' && 'pnpm run release' || ''`, evaluated inside the one job that both
+  // opened the PR and published; the whole gate then rested on one line that could be edited into
+  // `is-release == 'true' && '' || 'pnpm run release'` and still contain every word a substring
+  // match looks for. There is no expression to get backwards now: the un-gated job declares no
+  // publish input at all, and the job that declares one cannot start until the caller's `release`
+  // environment has let it.
+  assert.equal(versionArm.with.publish, undefined, 'the un-gated job must declare no publish input, in any form');
+  assert.equal(version.keys.environment, undefined, 'the un-gated job must reference no environment');
+
+  // THE PUBLISH JOB'S COMMAND, PINNED WHOLE RATHER THAN MATCHED. Merely requiring a substring passes
+  // on an expression that contains every word and publishes when it must not, which is why the
+  // pre-split spelling of this assertion pinned its whole line too.
   //
-  // Split on the step boundary rather than matching up to the NEXT `- name:`, so the assertion still
-  // holds if this is ever the last step in the job, and so a step introduced without a `name:` does
-  // not read as part of this one. A refuter got two forms past an earlier version of this: `if :`
-  // with a space before the colon, and a quoted `"if":`. Both are valid YAML, actionlint typechecks
-  // the expression inside each of them, so both are real conditions rather than noise. The key
-  // pattern below sees all three spellings.
-  const steps = workflow.split(/^ {6}- (?=name:|uses:|run:|if:)/m);
-  const step = steps.find((s) => s.startsWith('name: Create release PR or publish'));
-  assert.ok(step, 'release.yml no longer has the "Create release PR or publish" step, or it is now conditional');
+  // THE TERNARY IS THE STAGED-PUBLISHING ARM, ADDED WITH `publish-floor.mjs`, AND IT IS NOT A SECOND
+  // ROUTE TO npm. It only chooses WHICH command, and both branches are non-empty strings: the staged
+  // one when the package already exists on the registry, `pnpm run release` otherwise, exactly as
+  // before. What decides whether ANY publish command exists is no longer an expression at all - the
+  // un-gated job declares no `publish:` key (asserted above) and this job does not start unless the
+  // notes discriminator says a release is pending (asserted below). `test/publish-floor.test.mjs`
+  // and `test/staged-publish.test.mjs` own the staged arm's own behaviour.
+  assert.equal(
+    publishArm.with.publish,
+    "${{ steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/" +
+      "staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release' }}",
+    'the publish command must be the direct arm or the staged arm and nothing else',
+  );
+  assert.equal(release.keys.environment, 'release', 'the publish command must live in the environment-held job');
+  assert.match(release.keys.if ?? '', /needs\.version\.outputs\.is-release == 'true'/, 'gated on the notes discriminator');
+
+  // The version arm must NOT be conditional in either job. changesets/action opens the "Version
+  // Packages" PR whenever pending changesets exist, whether or not a publish command is set, so
+  // gating `version` would stop releases from ever starting.
+  assert.equal(versionArm.with.version, 'pnpm run version');
+  assert.equal(publishArm.with.version, 'pnpm run version');
+
+  // AND NEITHER MAY THE STEP ITSELF BE, in the un-gated job. This is the precondition the
+  // first-release fix rests on: a `never-versioned` run sets `is-release=false` and is USEFUL anyway,
+  // because the step still runs and opens the Version PR that moves the version off its scaffold
+  // value. Adding a condition here would look like tightening a gate, would pass every other test in
+  // this file, and would silently restore the deadlock: a green run that opens no PR, forever.
+  // Verified against the action's source at the sha pinned below, where `case hasChangesets:` calls
+  // runVersion regardless of whether a publish command was supplied.
+  //
+  // The parser reads a step's own keys rather than matching text up to the next `- name:`, so the
+  // three spellings a refuter got past an earlier version of this assertion (`if:`, `if :` with a
+  // space before the colon, and a quoted `"if":`) are all either read as the key they are or are not
+  // a key at all. The quoted form is the one still worth naming: it is valid YAML, actionlint
+  // typechecks the expression inside it, and it is a real condition rather than noise.
+  assert.equal(versionArm.fields.if, undefined, 'the version-PR step must run unconditionally');
   assert.doesNotMatch(
-    step,
-    /^\s*["']?if["']?\s*:/m,
-    'the version-PR step must run unconditionally, or a repo that has never released can never start',
+    versionArm.body,
+    /^\s*["'](if)["']\s*:/m,
+    'a quoted `"if":` is still a condition; the version-PR step must carry none',
   );
 });
 
@@ -1406,7 +1586,8 @@ test('release.yml withholds the publish command unless the notes gate derived no
 // is a live Version PR, which is exactly what nothing in this repo is allowed to merge. So what is
 // provable here is the wiring, and the wiring is where all three ways to get this wrong live.
 test('release.yml authors the version PR with a credential that is not GITHUB_TOKEN', () => {
-  const workflow = readFileSync(resolve(HERE, '../.github/workflows/release.yml'), 'utf8');
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const jobs = parseWorkflowJobs(workflow);
   const EXPECTED = '${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}';
 
   // Declared, and OPTIONAL. Required would take every caller's release pipeline down on the first
@@ -1432,25 +1613,27 @@ test('release.yml authors the version PR with a credential that is not GITHUB_TO
   // the caller checkout is identified by the thing that makes it the CALLER's: it is the checkout
   // with no `repository:` input, so it owns the workspace root. That is a stronger anchor than a
   // position, and it survives the next step that lands above it.
-  const decomment = (chunk) =>
-    chunk
-      .split('\n')
-      .filter((line) => !line.trim().startsWith('#'))
-      .join('\n');
-  const steps = workflow
-    .slice(workflow.indexOf('\n    steps:'))
-    .split(/\n      - (?=\S)/)
-    .map(decomment);
-  const checkouts = steps.filter((step) => /^ *uses: actions\/checkout@/m.test(step));
-  assert.ok(checkouts.length >= 2, 'the release job checks out the caller tree and this repo\'s tooling');
-  const callerCheckout = checkouts.find((step) => !/^\s*repository:/m.test(step));
-  assert.ok(callerCheckout, 'the release job must check out the caller tree');
-  assert.match(
-    callerCheckout,
-    /^\s*persist-credentials: false$/m,
-    'the caller checkout must set persist-credentials: false, or its GITHUB_TOKEN extraheader wins over the netrc and the version commit push stays bot-authored',
-  );
-  assert.match(callerCheckout, /^\s*fetch-depth: 0$/m, 'the caller checkout still needs full history');
+  //
+  // AND IT IS ASSERTED IN EVERY JOB THAT HAS ONE, not once for the file. Both jobs check the caller
+  // tree out now, and the property is a property of each checkout: the version job's owns the push
+  // of the version commit, and the publish job's owns the tag `changeset publish` pushes. A file-wide
+  // `assert.match` would be satisfied by whichever one happened to be compliant.
+  for (const job of jobs.jobs) {
+    const checkouts = job.steps.filter((step) => /uses: actions\/checkout@/.test(step.body));
+    assert.ok(checkouts.length >= 2, `job \`${job.id}\` checks out the caller tree and this repo's tooling`);
+    const callerCheckouts = checkouts.filter((step) => step.with.repository === undefined);
+    assert.equal(callerCheckouts.length, 1, `job \`${job.id}\` must check out the caller tree exactly once`);
+    assert.equal(
+      callerCheckouts[0].with['persist-credentials'],
+      'false',
+      `the caller checkout in \`${job.id}\` must set persist-credentials: false, or its GITHUB_TOKEN extraheader wins over the netrc and the version commit push stays bot-authored`,
+    );
+    assert.equal(
+      callerCheckouts[0].with['fetch-depth'],
+      '0',
+      `the caller checkout in \`${job.id}\` still needs full history`,
+    );
+  }
 
   // WRONG WAY 1b, the tempting shortcut: handing the PAT to actions/checkout instead. It works, and
   // it puts an org-scoped credential in .git/config from step one, through `pnpm install` (no caller
@@ -1464,12 +1647,21 @@ test('release.yml authors the version PR with a credential that is not GITHUB_TO
   );
 
   // WRONG WAY 2: leaving the action's env at GITHUB_TOKEN. This is the token it opens the PR with.
+  //
+  // BOTH ARMS CARRY IT, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT. The action picks its arm
+  // from ITS OWN reading of the pending changesets, not from the job it is in: if a changeset lands
+  // on main between the two jobs, the publish job takes the version arm and opens a PR. A publish job
+  // holding only `GITHUB_TOKEN` would then author that PR with the token that gives it zero checks,
+  // which is the exact trap this credential exists to close. So the assertion is that EVERY
+  // changesets/action step in the file opens a PR with the release-PR token, and that the only
+  // `GITHUB_TOKEN:` env keys in the file are those.
   const envTokens = [...workflow.matchAll(/^\s*GITHUB_TOKEN:\s*(.+)$/gm)].map((m) => m[1].trim());
-  assert.deepEqual(
-    envTokens,
-    [EXPECTED],
-    'changesets/action must open the PR with the release-PR token',
-  );
+  assert.deepEqual(envTokens, [EXPECTED, EXPECTED], 'changesets/action must open the PR with the release-PR token');
+  for (const job of jobs.jobs) {
+    const action = job.steps.find((step) => /uses: changesets\/action@/.test(step.body));
+    assert.ok(action, `job \`${job.id}\` must run changesets/action`);
+    assert.equal(action.env.GITHUB_TOKEN, EXPECTED, `the action in \`${job.id}\` must use the release-PR token`);
+  }
 
   // WRONG WAY 3, and the quiet one: setting the action's `github-token` INPUT and considering it
   // done. Read against the action's source at the sha pinned in the workflow, it resolves

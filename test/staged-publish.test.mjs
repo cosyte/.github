@@ -441,7 +441,11 @@ function releaseSteps(workflow) {
 
 test('the parser still understands release.yml, or every assertion below is vacuous', () => {
   const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
-  assert.ok(steps.length >= 20, `expected the release job's full step list, parsed ${steps.length}`);
+  // The floor moved with the file: `release.yml` was one job of ~24 steps when this number was
+  // written, and the environment split left the PUBLISHING job at 18. The count is joined by the
+  // start-of-job check below, which a drifted slice cannot satisfy by accident.
+  assert.ok(steps.length >= 15, `expected the release job's full step list, parsed ${steps.length}`);
+  assert.match(steps[0].body, /actions\/checkout@/, 'the slice must start at the publishing job, not mid-job');
   assert.equal(steps.filter((s) => /changesets\/action@/.test(s.body)).length, 1);
   // Two sites, and they are different things: the publish input that SELECTS the staged command,
   // and the step that reports what it staged.
