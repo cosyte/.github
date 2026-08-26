@@ -706,30 +706,82 @@ function stripTrailingComment(value) {
   return value.replace(/\s+#\s.*$/, '').trim();
 }
 
+/** A step's own keys sit here, one level under the `- ` that opens the list entry. */
+const STEP_KEY_INDENT = 8;
+
 /**
  * Parse ONE step from the raw lines of a `- ` list entry under a job's `steps:`.
  *
  * `fields` are the step's own keys; `with` and `env` are their nested maps, read only while the
  * parser is positioned inside those two blocks, so a `run: |` script line can never be mistaken for
  * an input or a variable.
+ *
+ * IT REFUSES A LINE IT CANNOT READ, WHICH IS THE WHOLE POINT AND WAS NOT TRUE OF THE FIRST VERSION.
+ * That version dropped a line at step-key level that its key pattern did not match, and the pattern
+ * requires the colon to touch the key: `        if : ${{ ... }}` - one space before the colon - is
+ * valid YAML, a real condition GitHub acts on and actionlint typechecks, and it went straight onto
+ * the floor. `fields.if` then came back `undefined` for a step that carries a condition, and every
+ * step-condition assertion in this file (AC1's version arm, AC3's gate, AC9's opt-back-in set) read
+ * such a step as unconditional and stayed green. That is the asymmetry this now removes: the JOB
+ * reader below has always thrown on the same class of input, and AC12 states the principle in as
+ * many words - a parser that cannot read its subject must fail explicitly rather than assert over
+ * what it managed to salvage. A dropped line is exactly that, one line at a time.
+ *
+ * SO EVERY LINE HANDED TO THIS FUNCTION IS ACCOUNTED FOR, at one of three levels:
+ *
+ *   - at `STEP_KEY_INDENT`, it is a step key or it is a parse failure naming the job and the step;
+ *   - inside an open `with:`/`env:` block, at whatever indent that block's FIRST child established
+ *     (ten spaces here, but discovered rather than hardcoded, so a block written at nine is read
+ *     rather than skipped), it is a child key or it is a parse failure;
+ *   - deeper than either, it is the body of a block scalar (`run: |` and friends) or the wrapped
+ *     continuation of a plain one, and it carries no key this file asserts on.
+ *
+ * Shallower than a step key means the step list has ended and something this parser does not model
+ * has begun, so that refuses too. `run:` bodies in release.yml sit at ten spaces or more, verified
+ * rather than assumed by `probe_0161_eight_space_indent.mjs` beside the spec, so the eight-space
+ * rule cannot fire on a script line.
+ *
+ * A `with:` or `env:` carrying a value instead of opening a block (a flow mapping, `env: {A: b}`)
+ * refuses for the same reason: this parser cannot read one, and returning an empty map for it would
+ * report "no such input" about inputs that are there.
  */
 function parseStep(index, jobId, rawLines) {
   const lines = [`        ${rawLines[0]}`, ...rawLines.slice(1)];
   /** @type {Record<string, string>} */
   const fields = {};
   const blocks = { with: {}, env: {} };
+  const unreadable = (line, where) =>
+    new Error(
+      `parse failure: unreadable line in step ${index} of job \`${jobId}\`${where}: ${JSON.stringify(line)}`,
+    );
+
+  /** `null` at step-key level; otherwise the open block and the indent its children were found at. */
   let open = null;
   for (const line of lines) {
-    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
-    if (key) {
-      fields[key[1]] = stripTrailingComment(key[2]);
-      open = fields[key[1]] === '' && (key[1] === 'with' || key[1] === 'env') ? key[1] : null;
+    if (line.trim() === '') continue;
+    const indent = line.length - line.replace(/^ */, '').length;
+
+    if (open && open.indent === null && indent > STEP_KEY_INDENT) open.indent = indent;
+    if (open && open.indent !== null && indent >= open.indent) {
+      if (indent > open.indent) continue; // the body of a child's own scalar
+      const child = new RegExp(`^ {${open.indent}}([\\w-]+):\\s?(.*)$`).exec(line);
+      if (!child) throw unreadable(line, `, inside \`${open.key}:\``);
+      blocks[open.key][child[1]] = stripTrailingComment(child[2]);
       continue;
     }
-    if (!open) continue;
-    const child = /^ {10}([\w-]+):\s?(.*)$/.exec(line);
-    if (child) blocks[open][child[1]] = stripTrailingComment(child[2]);
-    else open = null;
+    open = null; // anything shallower than the children closes the block
+
+    if (indent > STEP_KEY_INDENT) continue; // a block scalar's body, or a wrapped plain scalar
+    if (indent < STEP_KEY_INDENT) throw unreadable(line, ', shallower than this step');
+    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
+    if (!key) throw unreadable(line, '');
+    fields[key[1]] = stripTrailingComment(key[2]);
+    if (key[1] === 'with' || key[1] === 'env') {
+      if (fields[key[1]] !== '') throw unreadable(line, `, a \`${key[1]}:\` this parser cannot read`);
+      open = { key: key[1], indent: null };
+    } else {
+      open = null;
+    }
   }
   const label = fields.name ?? fields.uses ?? `${jobId} step ${index}`;
   if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
@@ -739,6 +791,33 @@ function parseStep(index, jobId, rawLines) {
     );
   }
   return { index, job: jobId, fields, with: blocks.with, env: blocks.env, label, body: lines.join('\n') };
+}
+
+/**
+ * A step-level condition spelled as TEXT, in every spelling of the key, restored from `origin/main`.
+ *
+ * `["']?` optional and `\s*` before the colon: that sees `if:`, `if :` and `"if":`, which are the
+ * three spellings a refuter has already got past a version of these suites. It lived in
+ * `test/release-notes.test.mjs` before the split, with a comment recording why it had to, and this
+ * branch replaced it with a parser read plus a pattern requiring the quotes. The parser could not
+ * answer for the middle spelling, so the coverage the comment claimed was gone.
+ *
+ * IT IS BACK BESIDE THE PARSER FIX RATHER THAN INSTEAD OF IT, and the redundancy is the point. The
+ * parser refusing an unreadable line is the guarantee; this is the backstop that keeps biting if a
+ * later edit loosens the parser again, which is exactly the edit that already happened once. A guard
+ * this repository's own history says it needed is not removed on the strength of the mechanism it
+ * exists to check. Constraints 7 of the spec asks for MORE assertion here, not the minimum that
+ * closes today's finding.
+ *
+ * It does NOT match `if-no-files-found:` or a shell `if [ ... ]; then` in a `run:` body: the colon
+ * has to follow the key, with only quotes and blanks between.
+ */
+const STEP_CONDITION_LINE = /^\s*["']?if["']?\s*:/m;
+
+/** The same, as a scan: every condition a step spells, however it spells the key. */
+function conditionsOf(step) {
+  const spelled = [...step.body.matchAll(/^[ \t]*["']?if["']?[ \t]*:(.*)$/gm)].map((match) => match[1]);
+  return [step.fields.if ?? '', ...spelled].join(' ');
 }
 
 /**
@@ -1055,6 +1134,45 @@ test('AC12: the parser still understands release.yml, or every assertion below i
     /has neither a name, a uses nor a run/,
   );
   assert.throws(() => parseWorkflow('jobs:\n    release:\n'), /sits under `jobs:` but inside no job/);
+
+  // AND IT REFUSES INSIDE A STEP, which is where it used to fail OPEN one line at a time. A step-key
+  // line the reader cannot parse was silently discarded, so `        if : ${{ ... }}` - valid YAML, a
+  // real condition, typechecked by actionlint - left `fields.if` undefined and every assertion above
+  // that a step "runs unconditionally" passed over a conditional step. Vacuity does not only arrive
+  // as an empty list; a field that answers `undefined` about a key that is there is the same failure
+  // at field granularity, and AC12's subject is both.
+  const step = (body) => `jobs:\n  release:\n    steps:\n      - name: x\n${body}`;
+  assert.throws(() => parseWorkflow(step("        if : ${{ always() }}\n")), /unreadable line in step 0 of job `release`/);
+  assert.throws(() => parseWorkflow(step('        "if": ${{ always() }}\n')), /unreadable line in step 0 of job `release`/);
+  assert.throws(
+    () => parseWorkflow(step('        with:\n          publish : pnpm run release\n')),
+    /unreadable line in step 0 of job `release`, inside `with:`/,
+  );
+  assert.throws(
+    () => parseWorkflow(step('        env: { NODE_AUTH_TOKEN: x }\n')),
+    /unreadable line in step 0 of job `release`, a `env:` this parser cannot read/,
+  );
+  assert.throws(() => parseWorkflow(step('    outputs:\n')), /unreadable line in step 0 of job `release`, shallower/);
+
+  // AND THE TEXT BACKSTOP RECOGNISES WHAT IT CLAIMS TO. `assert.doesNotMatch` over a step that never
+  // carried a condition passes whether or not its pattern is any good, which is how the spaced
+  // spelling survived in the first place: the pattern that replaced `origin/main`'s guard REQUIRED
+  // the quotes, and nothing ever asked it what it matched. It is asked here, in both directions.
+  for (const spelling of [
+    '        if: ${{ always() }}',
+    '        if : ${{ always() }}',
+    '        "if": ${{ always() }}',
+    "        'if' : ${{ always() }}",
+  ]) {
+    assert.match(spelling, STEP_CONDITION_LINE, `${JSON.stringify(spelling)} is a real condition`);
+  }
+  for (const near of [
+    '        if-no-files-found: ignore',
+    '          if [ -z "$NOTES" ]; then',
+    '        name: publish if: ready',
+  ]) {
+    assert.doesNotMatch(near, STEP_CONDITION_LINE, `${JSON.stringify(near)} is not a step condition`);
+  }
 });
 
 test('AC1: the "Version Packages" job references no deployment environment and cannot publish', () => {
@@ -1075,6 +1193,11 @@ test('AC1: the "Version Packages" job references no deployment environment and c
   const action = version.steps.filter((step) => /uses: changesets\/action@/.test(step.body));
   assert.equal(action.length, 1, 'exactly one changesets/action step in the version job');
   assert.equal(action[0].fields.if, undefined, 'the version-PR step must run unconditionally');
+  assert.doesNotMatch(
+    action[0].body,
+    STEP_CONDITION_LINE,
+    'the version-PR step must run unconditionally in every spelling of the key: `if:`, `if :`, `"if":`',
+  );
   assert.equal(action[0].with.version, 'pnpm run version');
 
   // AND IT IS HANDED NO PUBLISH COMMAND AT ALL. Not an expression that evaluates to the empty
@@ -1145,6 +1268,11 @@ test('AC3: the protection gate runs unconditionally, on every path, ahead of eve
   // SUCCESS. Both are the same failure and it is silent, which is why both are pinned.
   const gateJob = workflow.byId[gate.job];
   assert.equal(gate.fields.if, undefined, 'a gate behind a step condition is a gate that can be skipped');
+  assert.doesNotMatch(
+    gate.body,
+    STEP_CONDITION_LINE,
+    'a gate behind a step condition is a gate that can be skipped, in every spelling of the key',
+  );
   assert.equal(gateJob.keys.if, undefined, 'a gate in a conditional job is a gate that can be skipped');
   assert.equal(gateJob.keys.environment, undefined, 'the gate runs on every path, so its job waits on no approval');
 
@@ -1512,8 +1640,12 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
       'Upload the npm debug log',
     ],
   };
+  // The set is derived from the condition a step SPELLS, not only from the one the parser read, so a
+  // step opting back in through `if :` or `"if":` joins the set and has to be accounted for here
+  // like any other. The parser refuses those spellings outright now; `conditionsOf` is what keeps
+  // this list honest if that ever stops being true.
   for (const job of workflow.jobs) {
-    const optsBackIn = job.steps.filter((step) => /always\(|failure\(|cancelled\(/.test(step.fields.if ?? ''));
+    const optsBackIn = job.steps.filter((step) => /always\(|failure\(|cancelled\(/.test(conditionsOf(step)));
     assert.deepEqual(
       optsBackIn.map((step) => step.label),
       expected[job.id],
