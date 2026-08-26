@@ -421,8 +421,18 @@ jobs:
       #
       # IT FAILS THE STEP AND NOTHING ELSE. It does not cancel the run: a cancelled run concludes
       # `cancelled`, and a caller's required-check reading of that is not the FAILED conclusion a
-      # refusal has to be. A failed step fails this job, the `release` job below `needs:` this one so
-      # it never starts, and the refusal reaches the caller as a failure rather than as a skip.
+      # refusal has to be. A failed step fails this job, and the `release` job below `needs:` this
+      # one, so it never starts.
+      #
+      # WHERE THE REFUSAL SURFACES, EXACTLY, because "it reaches the caller as a failure" is true of
+      # the RUN and not of every context in it. The run concludes FAILURE, and the failure is
+      # reported on THIS job's context, `<caller job id> / version`. The `release` context concludes
+      # `skipped` instead, because a job whose `needs:` failed is skipped, and a required context
+      # counts a skip as success (README.md, "What a skipped required context does to a merge"). So
+      # `version` is the context a refusal lands on, and it is also the one that runs on every path;
+      # a caller wiring a required context for this workflow wants that one. Nothing about the
+      # refusal itself is softened by this: the run fails, no Version PR is opened, and the registry
+      # is never reached.
       #
       # Required reviewers on a PRIVATE repository need an Enterprise plan (they are a public-repo
       # feature on Free, Pro and Team). This org is on Enterprise, so the requirement is configurable

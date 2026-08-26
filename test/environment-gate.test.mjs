@@ -964,7 +964,21 @@ test('AC2 and AC10: every step that can reach the registry is in the job named `
   assert.ok(release, 'the environment-held publishing job must keep the identifier `release`');
   assert.equal(release.keys.environment, 'release', 'the publish job must sit in the caller\'s release environment');
   assert.equal(release.keys.needs, 'version');
-  assert.match(release.keys.if, /needs\.version\.outputs\.is-release == 'true'/);
+
+  // THE WHOLE EXPRESSION, NOT A SUBSTRING OF IT. After the split this one line is the only thing
+  // keeping the caller's `release` environment off the every-merge path, so it is pinned the way its
+  // predecessor was. Merely requiring the condition to APPEAR somewhere passes on
+  // `... == 'true' || true`, which contains every character a substring match looks for and starts
+  // the environment-held job on every push to a caller's default branch: that is the
+  // approval-per-merge defect this split exists to remove, restored under thirteen callers at once,
+  // with the suites green. The pre-split suite pinned the `publish:` input whole for exactly this
+  // reason and said so; the decision moved to this line, so the whole-expression pin moves with it.
+  // There is no edit to this line that should be anything other than deliberate.
+  assert.equal(
+    release.keys.if,
+    "${{ needs.version.outputs.is-release == 'true' }}",
+    'the publish job\'s condition is pinned whole: no extra disjunct, no negation, no second term',
+  );
 
   const reaching = allSteps(workflow).filter(reachesRegistry);
   assert.ok(reaching.length >= 2, 'no step reaches the registry, so this assertion proves nothing');
@@ -1027,9 +1041,48 @@ test('AC3: the protection gate runs unconditionally, on every path, ahead of eve
   }
 });
 
+/**
+ * The npm write credential must not be reachable from a job's OWN `env:` block.
+ *
+ * A job-level `env:` reaches every step of that job without appearing in any of them, so it is
+ * exactly AC6's "in that job's environment" and is the one spelling a step-by-step sweep cannot see.
+ * Split out of the test below so the check can be shown to bite: the delivered `version` job carries
+ * no `env:` block at all, and an absence assertion over an empty map proves nothing on its own.
+ */
+function assertNoJobLevelNpmCredential(job) {
+  for (const [name, value] of Object.entries(job.blocks.env ?? {})) {
+    assert.ok(
+      name !== 'NPM_TOKEN' && name !== 'NODE_AUTH_TOKEN',
+      `job \`${job.id}\` hands ${name} to every step it has, through its own job-level env:`,
+    );
+    assert.doesNotMatch(
+      value,
+      /secrets\.NPM_TOKEN/,
+      `job \`${job.id}\`'s job-level \`${name}\` reads the npm secret in the un-approved job`,
+    );
+  }
+}
+
 test('AC6: the npm publish credential never reaches the un-gated job', () => {
   const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
   const version = workflow.byId.version;
+
+  // THE JOB'S OWN `env:` BLOCK FIRST, because it is the spelling that reaches every step at once.
+  assertNoJobLevelNpmCredential(version);
+  // ... and the check is not vacuous: planted at job level, it is caught. This is asserted against a
+  // synthetic job rather than the real one precisely because the real one is clean.
+  const planted = parseWorkflow(
+    'jobs:\n' +
+      '  version:\n' +
+      '    env:\n' +
+      "      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n" +
+      '    steps:\n' +
+      '      - run: echo "no step of mine names it, and all of them can read it"\n',
+  );
+  assert.throws(
+    () => assertNoJobLevelNpmCredential(planted.byId.version),
+    /hands NODE_AUTH_TOKEN to every step it has/,
+  );
 
   for (const step of version.steps) {
     assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to the un-approved job`);

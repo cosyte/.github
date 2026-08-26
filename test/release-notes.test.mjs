@@ -1549,7 +1549,18 @@ test('release.yml keeps the publish command out of the un-gated job, and gates t
     'the publish command must be the direct arm or the staged arm and nothing else',
   );
   assert.equal(release.keys.environment, 'release', 'the publish command must live in the environment-held job');
-  assert.match(release.keys.if ?? '', /needs\.version\.outputs\.is-release == 'true'/, 'gated on the notes discriminator');
+
+  // AND THE CONDITION ON THAT JOB IS PINNED WHOLE, NOT MATCHED AS A SUBSTRING, for the same reason
+  // the paragraph above gives about the `publish:` input it replaced. `... == 'true' || true`
+  // contains every character a regex for the discriminator looks for and runs the environment-held
+  // job on every merge, which is the approval-per-merge defect this split removes. A substring
+  // reading of this line was refused deliberately; it is one line and it decides whether a human is
+  // asked on every merge or once per release.
+  assert.equal(
+    release.keys.if,
+    "${{ needs.version.outputs.is-release == 'true' }}",
+    'the publish job is gated on the notes discriminator, whole, with nothing added to it',
+  );
 
   // The version arm must NOT be conditional in either job. changesets/action opens the "Version
   // Packages" PR whenever pending changesets exist, whether or not a publish command is set, so

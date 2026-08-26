@@ -359,6 +359,15 @@ skipped required context does to a merge", below). On a run that only opens a Ve
 `release` job is skipped by its job-level `if:`, which the same measurement shows concludes `skipped`
 and **satisfies** a required context.
 
+**A refused gate lands on `version`, not on `release`.** The gate refuses by failing a step of
+`version`; the **run** concludes failure, and `release` never starts because it `needs: version`, so
+the `release` context concludes `skipped` on that run too. The refusal itself is not softened by
+this: the run fails, no Version PR is opened and the registry is never reached. What changed with the
+split is only which context carries it. Before the split there was one job and one context, so the
+question could not arise; after it, `version` is the context that runs on **every** path and the one
+a refusal shows up on, and it is therefore the context to require if a caller requires one for this
+workflow.
+
 **The gate does not move into the publish job**, and that is the whole reason the split is safe. It
 stays in `version`, unconditional, so it runs on every path this workflow has. A gate that only ran
 on the publish arm would stop proving anything on the arm that runs every day, and it would stop
