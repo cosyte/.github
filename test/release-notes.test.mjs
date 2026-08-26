@@ -77,6 +77,26 @@ function stripInlineComment(value) {
 const STEP_KEY_INDENT = 8;
 
 /**
+ * A key-line value that is not the value: the key's real value is on the lines below it. Empty, or a
+ * block-scalar indicator. Kept in step with `test/environment-gate.test.mjs`, the other copy.
+ */
+const VALUE_LIVES_BELOW = /^(?:[|>][+-]?\d*)?$/;
+
+/** The value that lives on the lines below `lines[at]`, folded onto one line. */
+function valueBelow(lines, at) {
+  if (at < 0) return '';
+  const indentOf = (line) => line.length - line.replace(/^[ \t]*/, '').length;
+  const keyIndent = indentOf(lines[at]);
+  const folded = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === '') continue;
+    if (indentOf(line) <= keyIndent) break;
+    folded.push(line.trim());
+  }
+  return folded.join(' ');
+}
+
+/**
  * Parse ONE step, REFUSING any line it cannot read rather than skipping it.
  *
  * The first version of this dropped a step-key line its pattern did not match, and the pattern
@@ -115,9 +135,26 @@ function parseWorkflowStep(index, jobId, rawLines) {
     if (open && open.indent === null && indent > STEP_KEY_INDENT) open.indent = indent;
     if (open && open.indent !== null && indent >= open.indent) {
       if (indent > open.indent) continue; // the body of a child's own scalar
+      // A SEQUENCE AT ITS PARENT KEY'S OWN INDENT IS LEGAL YAML AND IS READ, not refused. `path:`
+      // with its items in the same column is how `actions/upload-artifact` inputs are usually
+      // written; refusing it failed closed, so no assertion was ever weakened by it, but it spends
+      // the next maintainer's afternoon on a parse failure that names no real defect, and the
+      // cheapest way out of one of those is to loosen the refusal that matters. The item is
+      // appended to the key it belongs to, so nothing is dropped. An item under no key, or under a
+      // key that already carries a scalar, is not legal YAML and still refuses.
+      const item = new RegExp(`^ {${open.indent}}- (.*)$`).exec(line);
+      if (item) {
+        const under = open.last === null ? null : blocks[open.key][open.last];
+        if (under === null || !(under === '' || under.startsWith('\n- '))) {
+          throw unreadable(line, `, a sequence item inside \`${open.key}:\` under no key it can belong to`);
+        }
+        blocks[open.key][open.last] = `${under}\n- ${stripInlineComment(item[1])}`;
+        continue;
+      }
       const child = new RegExp(`^ {${open.indent}}([\\w-]+):\\s?(.*)$`).exec(line);
       if (!child) throw unreadable(line, `, inside \`${open.key}:\``);
       blocks[open.key][child[1]] = stripInlineComment(child[2]);
+      open.last = child[1];
       continue;
     }
     open = null; // anything shallower than the children closes the block
@@ -129,10 +166,19 @@ function parseWorkflowStep(index, jobId, rawLines) {
     fields[key[1]] = stripInlineComment(key[2]);
     if (key[1] === 'with' || key[1] === 'env') {
       if (fields[key[1]] !== '') throw unreadable(line, `, a \`${key[1]}:\` this parser cannot read`);
-      open = { key: key[1], indent: null };
+      open = { key: key[1], indent: null, last: null };
     } else {
       open = null;
     }
+  }
+  // AND A CONDITION WHOSE VALUE IS ON THE NEXT LINE IS STILL THIS STEP'S CONDITION. `if: >-` used to
+  // leave `fields.if` holding the block-scalar indicator `">-"`, which is legible and WRONG - worse
+  // than illegible, because `undefined` is refused and `">-"` is believed. The assertions here read
+  // this field for EXISTENCE, so they held either way; it is resolved anyway, because the two copies
+  // of this parser are only worth having if they agree, and the other one's AC9 reads the value.
+  if (fields.if !== undefined && VALUE_LIVES_BELOW.test(fields.if.trim())) {
+    const at = lines.findIndex((line) => /^ {8}if:/.test(line));
+    fields.if = `${fields.if} ${valueBelow(lines, at)}`.trim();
   }
   if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
     throw new Error(
@@ -1701,11 +1747,34 @@ test('the workflow reader refuses a line it cannot read, at every level, rather 
     /unreadable line in step 0 of job `release`, a `env:` this parser cannot read/,
   );
 
+  assert.throws(
+    () => parseWorkflowJobs(step('        with:\n          - dist-artifacts/a\n')),
+    /a sequence item inside `with:` under no key it can belong to/,
+  );
+
   // And it still reads what it is supposed to read: a block written at a legal indent other than the
   // one this file happens to use is PARSED, not refused, because refusing legible YAML would be the
   // same defect wearing the other hat.
   const odd = parseWorkflowJobs('jobs:\n  release:\n    steps:\n      - uses: a/b@c\n        with:\n         publish: x\n');
   assert.equal(odd.byId.release.steps[0].with.publish, 'x', 'a nine-space child block is read, not skipped');
+
+  // ... and so is a sequence written at its parent key's own indent, which is legal YAML this reader
+  // used to refuse. Failing closed on legible input is still a defect: it names no real problem and
+  // it teaches the next reader that the refusals here are noise.
+  const seq = parseWorkflowJobs(
+    'jobs:\n  release:\n    steps:\n      - uses: a/b@c\n        with:\n          path:\n          - a\n          - b\n',
+  );
+  assert.equal(seq.byId.release.steps[0].with.path, '\n- a\n- b', 'a sequence at its parent key indent is a value');
+
+  // ... and a condition whose value is on the following line is resolved to the condition, not to
+  // the block-scalar indicator that introduced it. The assertions in this file only ask whether a
+  // condition EXISTS, and `">-"` answered that correctly by accident; the other copy asks what it
+  // SAYS, and the two parsers are only worth having separately while they agree.
+  const folded = parseWorkflowJobs(
+    'jobs:\n  release:\n    steps:\n      - name: x\n        if: >-\n          ${{ always() }}\n        run: y\n',
+  );
+  assert.equal(folded.byId.release.steps[0].fields.if, '>- ${{ always() }}');
+  assert.match(folded.byId.release.steps[0].body, STEP_CONDITION_LINE, 'and the text guard sees the key line');
 });
 
 // The version-PR CI trap, asserted on the YAML because it cannot be asserted anywhere else.
