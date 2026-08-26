@@ -861,14 +861,34 @@ function effectivePermissions(text, job) {
  * block does not end it (ending there would silently stop reading and report "no credential"), and
  * the raw text comes back alongside the parsed map so a value this line-oriented parser cannot read
  * -- a folded scalar, say -- is still swept for the secret rather than passing as unreadable.
+ *
+ * THREE SPELLINGS OF THE KEY, because YAML has three and Actions accepts all three: the bare block
+ * `env:`, the quoted `"env":` (the same dodge M12 of the gate probe writes against `if:`), and the
+ * one-line flow mapping `env: { A: b }`. Reading only the first is how a guard ends up closed for
+ * the spelling someone thought to write and open for the one they did not, which is the defect this
+ * function was added for in the first place. The flow-mapping read is deliberately best-effort - it
+ * exists so the failure message can NAME the variable - and the guarantee sits in the raw sweeps in
+ * `assertNoAmbientNpmCredential`, which read text and therefore cannot be out-spelled.
  */
 function workflowEnv(text) {
   const lines = decomment(text);
-  const at = lines.findIndex((line) => /^env:\s*$/.test(line));
+  const at = lines.findIndex((line) => /^(?:env|"env"|'env'):/.test(line));
   if (at < 0) return { vars: {}, raw: '' };
   /** @type {Record<string, string>} */
   const vars = {};
   const raw = [];
+
+  // FLOW MAPPING FIRST: everything after the colon on the key's own line. `env: { A: b, C: d }` is
+  // the whole block, so there is no indented body below it to walk.
+  const inline = /^(?:env|"env"|'env'):\s*(\S.*)$/.exec(lines[at]);
+  if (inline) {
+    raw.push(inline[1]);
+    for (const [, name, value] of inline[1].matchAll(/([\w-]+)\s*:\s*("[^"]*"|'[^']*'|[^,}]*)/g)) {
+      vars[name] = value.trim().replace(/^["']|["']$/g, '');
+    }
+    return { vars, raw: raw.join('\n') };
+  }
+
   for (const line of lines.slice(at + 1)) {
     if (line.trim() === '') continue;
     if (/^\S/.test(line)) break; // a new top-level key closes the block
@@ -877,6 +897,23 @@ function workflowEnv(text) {
     if (match) vars[match[1]] = stripTrailingComment(match[2]);
   }
   return { vars, raw: raw.join('\n') };
+}
+
+/**
+ * Everything above `jobs:`, comments removed - the workflow preamble as text.
+ *
+ * The backstop under every parsed read of the workflow-level environment. A parser can always be
+ * out-spelled: a multi-line flow mapping, an anchor, a key this line-oriented reader does not
+ * recognise. Text cannot. The npm write credential is `secrets.NPM_TOKEN` and there is no legitimate
+ * reason for that expression to appear above `jobs:`, where the only key that evaluates it into
+ * every job at once is `env:`, so its ABSENCE from the preamble is asserted directly and no spelling
+ * of the key has to be anticipated to get there.
+ */
+function workflowPreamble(text) {
+  const lines = decomment(text);
+  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
+  return lines.slice(0, jobsAt).join('\n');
 }
 
 /** Does `jobId` transitively depend on `targetId` through `needs:`? */
@@ -1115,6 +1152,18 @@ function assertNoAmbientNpmCredential(text, job) {
     /secrets\.NPM_TOKEN/,
     'the workflow-level env: block reads the npm secret, so every step of every job can read it',
   );
+  // AND THE WHOLE PREAMBLE AS TEXT, which is the backstop that closes the spelling game rather than
+  // adding one more spelling to it. Every check above this line has to RECOGNISE the key before it
+  // can read the value, so each of them is only ever closed for the spellings someone thought of.
+  // This one asserts that the npm write credential is not named above `jobs:` at all, in any syntax,
+  // under any key: a multi-line flow mapping, an anchor, a form of `env:` that postdates this file.
+  // Safe to assert flatly because the delivered preamble names it nowhere - the `workflow_call`
+  // declaration spells it `NPM_TOKEN:`, without the `secrets.` an expression needs.
+  assert.doesNotMatch(
+    workflowPreamble(text),
+    /secrets\.NPM_TOKEN/,
+    'the npm secret is read above `jobs:`, where the only thing that can consume it hands it to every job',
+  );
 }
 
 test('AC6: the npm publish credential never reaches the un-gated job', () => {
@@ -1165,6 +1214,51 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
   assert.throws(
     () => assertNoAmbientNpmCredential(foldedInWorkflow, parseWorkflow(foldedInWorkflow).byId.version),
     /the workflow-level env: block reads the npm secret/,
+  );
+  // ... and under each of the OTHER TWO SPELLINGS OF THE KEY that Actions accepts. Neither changes
+  // what the file does; both change what a reader looking for `^env:$` can see, which is the whole
+  // point of writing it that way. The one-line flow mapping:
+  const flowInWorkflow =
+    'env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "one line, and every step of both jobs can read it"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(flowInWorkflow, parseWorkflow(flowInWorkflow).byId.version),
+    /hands NODE_AUTH_TOKEN to every step it has, through the workflow-level env:/,
+  );
+  // ... and the quoted key, which is the dodge the gate probe's M12 writes against `if:`:
+  const quotedInWorkflow =
+    '"env":\n' +
+    "  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n" +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "two quote marks, and the reader looking for ^env:$ goes blind"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(quotedInWorkflow, parseWorkflow(quotedInWorkflow).byId.version),
+    /hands NODE_AUTH_TOKEN to every step it has, through the workflow-level env:/,
+  );
+  // ... and finally a spelling NONE of the readers above understands, to prove the preamble backstop
+  // is what stops this being an endless list. A flow mapping broken over three lines parses to no
+  // pairs and has no indented body, so every name-based and value-based check comes back clean.
+  const unparseableInWorkflow =
+    'env: {\n' +
+    "  NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}'\n" +
+    '}\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "no reader here understands this, and Actions does"\n';
+  assert.deepEqual(
+    workflowEnv(unparseableInWorkflow).vars,
+    {},
+    'the multi-line flow mapping is meant to defeat the PARSED reads - if it stops doing so, re-derive this proof',
+  );
+  assert.throws(
+    () => assertNoAmbientNpmCredential(unparseableInWorkflow, parseWorkflow(unparseableInWorkflow).byId.version),
+    /the npm secret is read above `jobs:`/,
   );
 
   for (const step of version.steps) {
