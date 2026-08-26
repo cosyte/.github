@@ -848,6 +848,67 @@ function effectivePermissions(text, job) {
 }
 
 /**
+ * The npm write credential, in EVERY form a workflow expression can name it.
+ *
+ * WHY THIS IS A CONSTANT AND NOT A LITERAL AT EACH SITE. Every absence check for this credential is
+ * ultimately a TEXT match, and a text match is only as complete as the spelling it was written
+ * against. Four of them were written against `secrets.NPM_TOKEN`, which is one of the two forms
+ * GitHub's expression language has: property dereference, and the INDEX form
+ * `secrets['NPM_TOKEN']`, which the docs give as an exact equivalent ("you can use the index syntax
+ * to access properties"). `secrets["NPM_TOKEN"]` is the same thing again with the other quote. All
+ * of them evaluate to the same secret and reach the same steps, and none of the index ones contains
+ * the substring `secrets.NPM_TOKEN`, so a guard written against that substring alone is closed for
+ * the spelling its author had in mind and open for the other. That is the shape of the finding this
+ * whole family of checks exists to answer, one turn further out.
+ *
+ * WHY THIS ENDS IT RATHER THAN ADDING ONE MORE SPELLING TO THE LIST. The key that carries the
+ * credential has unboundedly many spellings, which is why the sweeps below read text instead of
+ * parsing it. The credential REFERENCE does not: an expression names a context member by `.` or by
+ * `[...]`, those are the two the language has, and both are enumerated here. There is no third form
+ * left to be surprised by, so this is a closure and not a patch.
+ *
+ * DELIBERATELY BROADER THAN THE FOUR LITERALS IT REPLACES, never narrower: everything the old
+ * `/secrets\.NPM_TOKEN/` matched still matches (no word boundary is added, so `NPM_TOKEN_OLD` is
+ * still caught the way it was), and the index forms are added on top. Whitespace is tolerated
+ * around the dot and inside the brackets because the expression lexer tolerates it there. What it
+ * must NOT match is the `workflow_call` declaration's own `NPM_TOKEN:` key, which names the secret
+ * without reading it and which the preamble sweep runs straight over; that is asserted below rather
+ * than assumed.
+ */
+const NPM_SECRET_REF = /secrets\s*(?:\.\s*NPM_TOKEN|\[\s*['"]NPM_TOKEN)/;
+
+/**
+ * Refuse a `secrets[...]` index whose key is not a literal this check can read.
+ *
+ * THE LAST WAY OUT OF `NPM_SECRET_REF`, AND IT IS CLOSED BY FAILING RATHER THAN BY MATCHING. The two
+ * forms above are the two ways an expression NAMES a secret, and enumerating them is a closure only
+ * for keys written as literals. `secrets[format('NPM{0}', '_TOKEN')]` and `secrets[env.WHICH]` name
+ * a secret too, and which one they name is not decidable from this file, so no pattern over the text
+ * can ever answer it. Adding a cleverer pattern is the move that has already been made twice here.
+ *
+ * So an unresolvable index is REFUSED instead of read, which is this repository's existing answer to
+ * exactly this shape: the gate itself refuses protection it cannot read rather than treating
+ * unreadable protection as protection (AC5), and the workflow parser fails explicitly rather than
+ * asserting over a list it could not build (AC12). An absence claim that cannot resolve its subject
+ * has to fail CLOSED, because the alternative is reporting "no credential here" about an expression
+ * nobody read.
+ *
+ * It costs nothing today and it is not a ban on dynamic secrets in general: the delivered workflow
+ * indexes `secrets` nowhere at all, and this runs only where the npm credential must not be, which is
+ * the preamble and the un-approved job. A future step that genuinely needs a computed secret in
+ * `version` writes the literal, or states its case here.
+ */
+function assertNoUnresolvableSecretIndex(text, where) {
+  for (const match of String(text).matchAll(/secrets\s*\[[^\]]*\]?/g)) {
+    assert.match(
+      match[0],
+      /^secrets\s*\[\s*['"][^'"]*['"]\s*\]$/,
+      `${where} reads \`secrets\` through an index nothing here can resolve (\`${match[0].trim()}\`), so it cannot be shown not to name the npm write credential`,
+    );
+  }
+}
+
+/**
  * The WORKFLOW-level `env:` block, above `jobs:`, with the raw text it was read out of.
  *
  * Read the way `effectivePermissions` reads the workflow-level `permissions:` block, and here for
@@ -868,7 +929,11 @@ function effectivePermissions(text, job) {
  * the spelling someone thought to write and open for the one they did not, which is the defect this
  * function was added for in the first place. The flow-mapping read is deliberately best-effort - it
  * exists so the failure message can NAME the variable - and the guarantee sits in the raw sweeps in
- * `assertNoAmbientNpmCredential`, which read text and therefore cannot be out-spelled.
+ * `assertNoAmbientNpmCredential`, which read text rather than parsing it and so cannot be
+ * out-spelled BY THE KEY. Being out-spelled by the CREDENTIAL REFERENCE is a separate axis and a
+ * separate closure: see `NPM_SECRET_REF` above, which is what every one of those sweeps matches
+ * with. An earlier version of this sentence claimed the text sweeps "cannot be out-spelled" full
+ * stop, and they could, in the index form.
  */
 function workflowEnv(text) {
   const lines = decomment(text);
@@ -1139,9 +1204,10 @@ function assertNoAmbientNpmCredential(text, job) {
       );
       assert.doesNotMatch(
         value,
-        /secrets\.NPM_TOKEN/,
+        NPM_SECRET_REF,
         `job \`${job.id}\`'s \`${name}\`, set in ${where}, reads the npm secret in the un-approved job`,
       );
+      assertNoUnresolvableSecretIndex(value, `job \`${job.id}\`'s \`${name}\`, set in ${where},`);
     }
   }
   // AND THE BLOCK AS TEXT, so a value the line parser above cannot read is swept rather than
@@ -1149,7 +1215,7 @@ function assertNoAmbientNpmCredential(text, job) {
   // passes both checks above while reaching every step of both jobs.
   assert.doesNotMatch(
     workflow.raw,
-    /secrets\.NPM_TOKEN/,
+    NPM_SECRET_REF,
     'the workflow-level env: block reads the npm secret, so every step of every job can read it',
   );
   // AND THE WHOLE PREAMBLE AS TEXT, which is the backstop that closes the spelling game rather than
@@ -1158,12 +1224,45 @@ function assertNoAmbientNpmCredential(text, job) {
   // This one asserts that the npm write credential is not named above `jobs:` at all, in any syntax,
   // under any key: a multi-line flow mapping, an anchor, a form of `env:` that postdates this file.
   // Safe to assert flatly because the delivered preamble names it nowhere - the `workflow_call`
-  // declaration spells it `NPM_TOKEN:`, without the `secrets.` an expression needs.
+  // declaration spells it `NPM_TOKEN:`, without the `secrets` context an expression needs to READ
+  // it in either of the two forms `NPM_SECRET_REF` knows.
   assert.doesNotMatch(
     workflowPreamble(text),
-    /secrets\.NPM_TOKEN/,
+    NPM_SECRET_REF,
     'the npm secret is read above `jobs:`, where the only thing that can consume it hands it to every job',
   );
+  // ... and the preamble may not reach `secrets` through an index that cannot be resolved to a name,
+  // which is the one remaining way to name the credential without spelling it.
+  assertNoUnresolvableSecretIndex(workflowPreamble(text), 'the workflow preamble');
+}
+
+/**
+ * The npm write credential must not be reachable from any STEP of a job: not as a variable it sets,
+ * not as a registry credential file it asks `setup-node` to write, and not as an expression its own
+ * body reads.
+ *
+ * Extracted from the test below so it can be shown to BITE, the way the ambient check above is.
+ * `assert.doesNotMatch` over a delivered file that has never carried the credential passes whether
+ * or not the pattern it matches with is any good, and "the pattern was not good enough" is exactly
+ * how the index spelling stayed reachable through five earlier proofs.
+ */
+function assertNoStepNpmCredential(job) {
+  for (const step of job.steps) {
+    assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to the un-approved job`);
+    assert.equal(step.env.NODE_AUTH_TOKEN, undefined, `"${step.label}" hands NODE_AUTH_TOKEN to the un-approved job`);
+    // `registry-url` is what makes setup-node write `_authToken=${NODE_AUTH_TOKEN}` into an npmrc
+    // and point NPM_CONFIG_USERCONFIG at it. A registry credential FILE in a job no human approved
+    // is the same defect as the variable, one indirection out.
+    assert.equal(
+      step.with['registry-url'],
+      undefined,
+      `"${step.label}" writes a registry credential file in the un-approved job`,
+    );
+    // The step's RAW text, so a value under a name nothing here knows is still refused, in either
+    // form an expression can name the secret.
+    assert.doesNotMatch(step.body, NPM_SECRET_REF, `"${step.label}" reads the npm secret in the un-approved job`);
+    assertNoUnresolvableSecretIndex(step.body, `"${step.label}"`);
+  }
 }
 
 test('AC6: the npm publish credential never reaches the un-gated job', () => {
@@ -1261,18 +1360,123 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
     /the npm secret is read above `jobs:`/,
   );
 
-  for (const step of version.steps) {
-    assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to the un-approved job`);
-    assert.equal(step.env.NODE_AUTH_TOKEN, undefined, `"${step.label}" hands NODE_AUTH_TOKEN to the un-approved job`);
-    // `registry-url` is what makes setup-node write `_authToken=${NODE_AUTH_TOKEN}` into an npmrc
-    // and point NPM_CONFIG_USERCONFIG at it. A registry credential FILE in a job no human approved
-    // is the same defect as the variable, one indirection out.
-    assert.equal(
-      step.with['registry-url'],
-      undefined,
-      `"${step.label}" writes a registry credential file in the un-approved job`,
+  // ▶ AND THE OTHER AXIS ENTIRELY: not how the KEY that carries the credential is spelled, which is
+  //   what every proof above varies, but how the CREDENTIAL ITSELF is named. Each of those sweeps
+  //   ends in a text match, and a text match written against one spelling of the reference is closed
+  //   for that one and open for the rest. GitHub expressions name a context member two ways, `.` and
+  //   `[...]`, so `secrets['NPM_TOKEN']` is `secrets.NPM_TOKEN` under another name, reaches the same
+  //   steps, and shares no substring with it. `NPM_SECRET_REF` is where both live; here is the proof
+  //   that it knows each one, and the proof that it does NOT fire on the `workflow_call` declaration
+  //   further down this file, which NAMES the secret without reading it and which the preamble sweep
+  //   passes straight over.
+  for (const spelling of [
+    '${{ secrets.NPM_TOKEN }}',
+    '${{secrets.NPM_TOKEN}}',
+    "${{ secrets['NPM_TOKEN'] }}",
+    '${{ secrets["NPM_TOKEN"] }}',
+    "${{ secrets[ 'NPM_TOKEN' ] }}",
+  ]) {
+    assert.match(spelling, NPM_SECRET_REF, `${spelling} names the npm write credential and must be recognised`);
+  }
+  for (const innocent of [
+    '  NPM_TOKEN:\n    required: true',
+    '${{ secrets.GITHUB_TOKEN }}',
+    "${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}",
+    '${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}',
+  ]) {
+    assert.doesNotMatch(innocent, NPM_SECRET_REF, `${innocent} does not read the npm write credential`);
+  }
+  // ... and it is WIRED, not merely correct in isolation. A constant proved by a table and used
+  // nowhere would pass this test and guard nothing, so both ambient scopes are re-planted with the
+  // index spelling, under an innocent variable name so the name checks cannot be what refuses them.
+  // The name check already covers `NPM_TOKEN`/`NODE_AUTH_TOKEN` whatever the value says; an innocent
+  // name is the case where the VALUE has to be read, which is where the spelling matters at all.
+  const indexInWorkflow =
+    'env:\n' +
+    "  RELEASE_HELPER: ${{ secrets['NPM_TOKEN'] }}\n" +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "no dot anywhere, and every step of both jobs holds the npm token"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(indexInWorkflow, parseWorkflow(indexInWorkflow).byId.version),
+    /`RELEASE_HELPER`, set in the workflow-level env:.*reads the npm secret/,
+  );
+  const indexInJob =
+    'jobs:\n' +
+    '  version:\n' +
+    '    env:\n' +
+    '      RELEASE_HELPER: ${{ secrets["NPM_TOKEN"] }}\n' +
+    '    steps:\n' +
+    '      - run: echo "the other quote, the other scope, the same credential"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(indexInJob, parseWorkflow(indexInJob).byId.version),
+    /`RELEASE_HELPER`, set in its own job-level env:.*reads the npm secret/,
+  );
+  // ... including in a spelling of the KEY that defeats the parsed reads AND a spelling of the
+  // REFERENCE that defeated the sweeps, together, which is the case both closures have to hold at
+  // once for either to be worth anything.
+  const bothAxesAtOnce =
+    'env: {\n' +
+    "  RELEASE_HELPER: ${{ secrets['NPM_TOKEN'] }}\n" +
+    '}\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "unreadable key, unswept reference, and Actions resolves it fine"\n';
+  assert.deepEqual(
+    workflowEnv(bothAxesAtOnce).vars,
+    {},
+    'the multi-line flow mapping is meant to defeat the PARSED reads - if it stops doing so, re-derive this proof',
+  );
+  assert.throws(
+    () => assertNoAmbientNpmCredential(bothAxesAtOnce, parseWorkflow(bothAxesAtOnce).byId.version),
+    /the npm secret is read above `jobs:`/,
+  );
+  // ... and the key that is not a literal at all, which no enumeration of spellings can ever reach
+  // and which is therefore refused rather than read. `format('NPM{0}', '_TOKEN')` evaluates to
+  // `NPM_TOKEN` at run time and to nothing at all here.
+  const computedIndex =
+    'env:\n' +
+    "  RELEASE_HELPER: ${{ secrets[format('NPM{0}', '_TOKEN')] }}\n" +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "the name is assembled at run time, so no pattern here can read it"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(computedIndex, parseWorkflow(computedIndex).byId.version),
+    /reads `secrets` through an index nothing here can resolve/,
+  );
+  // ... while a RESOLVABLE index of some other secret is left alone, because the refusal is about
+  // what cannot be read, not about the bracket.
+  const innocentIndex =
+    'env:\n' +
+    "  GH: ${{ secrets['GITHUB_TOKEN'] }}\n" +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "an index this check can resolve, naming a secret AC6 is not about"\n';
+  assertNoAmbientNpmCredential(innocentIndex, parseWorkflow(innocentIndex).byId.version);
+
+  assertNoStepNpmCredential(version);
+  // ... and that sweep is not vacuous either, in EITHER of the two forms an expression can name the
+  // secret. The dot form is the one the delivered file uses in `release` and the one every earlier
+  // proof was written against; the index form is the one that reaches the same secret while
+  // containing no `secrets.NPM_TOKEN` substring at all. Both are planted BELOW the gate on purpose,
+  // where AC3's step-order rule cannot be what refuses them, so it is this sweep that has to.
+  for (const spelling of ["${{ secrets.NPM_TOKEN }}", "${{ secrets['NPM_TOKEN'] }}"]) {
+    const plantedInStep =
+      'jobs:\n' +
+      '  version:\n' +
+      '    steps:\n' +
+      '      - run: echo "no env: anywhere, and the token still lands in a file on this runner"\n' +
+      '      - name: Warm the registry\n' +
+      `        run: echo "//registry.npmjs.org/:_authToken=${spelling}" > ~/.npmrc\n`;
+    assert.throws(
+      () => assertNoStepNpmCredential(parseWorkflow(plantedInStep).byId.version),
+      /"Warm the registry" reads the npm secret in the un-approved job/,
+      `the per-step sweep must refuse ${spelling}`,
     );
-    assert.doesNotMatch(step.body, /secrets\.NPM_TOKEN/, `"${step.label}" reads the npm secret in the un-approved job`);
   }
 
   // NOT VACUOUS: the credential still exists, and it is in the job the environment holds.
