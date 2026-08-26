@@ -384,6 +384,18 @@ the two `assert` calls that bracket the publish. Base64 rather than a multi-line
 body is human-written markdown and the transport must not be able to eat a trailing newline or be
 terminated early by a line of the body itself.
 
+**One caller-side residual, and it is the only one this split creates: `RELEASE_PR_TOKEN` must not
+be an environment secret.** An environment secret is scoped to jobs that reference that environment.
+Before the split the single job referenced `release`, so a `RELEASE_PR_TOKEN` stored there resolved;
+the Version PR is now opened from `version`, which references no environment on purpose, so a token
+stored that way reads **empty** in the job that needs it and this workflow falls back to
+`GITHUB_TOKEN`, which is the zero-checks trap described under "Who authors the 'Version Packages'
+PR" below. It degrades rather than breaking, and it announces itself: the "Version PR will land with
+zero checks" warning fires exactly as it would for a caller that never set the token, so the log is
+the diagnosis. The fix is caller-side and takes no change to this file: **store `RELEASE_PR_TOKEN`
+as a repository or organization secret**. `NPM_TOKEN` and `DOCS_REPO_DISPATCH_TOKEN` are unaffected
+from either placement, because both are consumed in `release`, which does reference the environment.
+
 The failure that hides in is quiet in the worst way: a `release` environment carrying **no protection
 rules** produces a run that looks identical to a genuinely gated one. Same environment badge on the
 job, same green steps, no approval prompt, and nothing anywhere saying there was never anything to

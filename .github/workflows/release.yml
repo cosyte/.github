@@ -239,6 +239,29 @@ name: Release
 # take every caller's release pipeline down the moment this lands, to protect against a state those
 # repos are already in. The fallback is announced loudly in the log rather than taken quietly,
 # because a fix that silently is not applied is worse than no fix.
+#
+# ▶ WHERE A CALLER STORES IT NOW MATTERS, AND THE SPLIT IS WHAT MADE IT MATTER. An ENVIRONMENT
+#   secret is scoped to jobs that reference that environment: GitHub's "Control deployments" says
+#   "You can configure environments with protection rules and secrets [...] A job also cannot access
+#   secrets that are defined in an environment until all the deployment protection rules pass", and
+#   lists "Organizing secrets" and "Access control [...] restrict which branches can use certain
+#   secrets" among what an environment is for. Before the split the one job referenced `release`, so
+#   a `RELEASE_PR_TOKEN` stored THERE resolved. The Version PR is now opened from `version`, which
+#   references no environment by design, so a token stored that way reads empty there and this file
+#   takes the `GITHUB_TOKEN` fallback: the zero-checks trap above, back again.
+#
+#   NOT MEASURED HERE, and it does not need to be, because the run says which way it went: this is
+#   read off the documented scoping rule above rather than off a live caller, and
+#   `secrets.RELEASE_PR_TOKEN != ''` in the step below is the observation. A caller whose token has
+#   become invisible to this job gets the "Version PR will land with zero checks" warning, exactly as
+#   a caller that never set one does, so the diagnosis is in the log rather than in this comment.
+#
+#   IT DEGRADES RATHER THAN BREAKING, AND THE REMEDY IS CALLER-SIDE: store `RELEASE_PR_TOKEN` as a
+#   REPOSITORY or ORGANIZATION secret rather than an environment one. It is written here and not
+#   implemented here because nothing in this file can read a caller's secret placement, and adding an
+#   input or a secret to surface it would break the contract with thirteen callers that pin `@main`.
+#   `NPM_TOKEN` and `DOCS_REPO_DISPATCH_TOKEN` are unaffected by the split from either placement:
+#   both are consumed in `release`, which does reference the environment.
 
 on:
   workflow_call:
@@ -610,7 +633,7 @@ jobs:
             echo "RELEASE_PR_TOKEN is set. If this run opens a Version Packages PR, that PR will be"
             echo "authored by the token's owner, so its required checks will actually run."
           else
-            echo "::warning title=Version PR will land with zero checks::RELEASE_PR_TOKEN is not set, so if this run opens a Version Packages PR it will be authored by GITHUB_TOKEN. GitHub does not start workflow runs for that token's events, required checks that never report count as PENDING rather than failing, and with bypass_actors empty the PR cannot be merged by anyone, an admin included. Set RELEASE_PR_TOKEN to fix it."
+            echo "::warning title=Version PR will land with zero checks::RELEASE_PR_TOKEN is not set, so if this run opens a Version Packages PR it will be authored by GITHUB_TOKEN. GitHub does not start workflow runs for that token's events, required checks that never report count as PENDING rather than failing, and with bypass_actors empty the PR cannot be merged by anyone, an admin included. Set RELEASE_PR_TOKEN to fix it. If you believe it IS set, check WHERE: this job references no deployment environment, so a secret stored on the release ENVIRONMENT is not readable here. Move it to a repository or organization secret."
           fi
       # THE PUBLISH PATH IS NOT RESOLVED IN THIS JOB, AND THAT IS THE SPLIT SPEAKING RATHER THAN AN
       # OMISSION. `publish-floor.mjs` answers "which tool publishes for this caller, does it clear

@@ -1224,6 +1224,12 @@ test("the probe install passes --ignore-scripts, and the flag is asserted not as
 // `scope:` input is ever added), which is what this guard is for. The last entry is the point of the
 // whole fixture: a name no list in this repo has ever seen, which a deny-list would miss and an
 // allow-list excludes for free.
+//
+// THE "NO JOB-LEVEL AND NO WORKFLOW-LEVEL `env`" CLAIM ABOVE IS NOW ENFORCED RATHER THAN OBSERVED,
+// for the credential half of it: `test/environment-gate.test.mjs`, "AC6: the npm publish credential
+// never reaches the un-gated job", reads both blocks and refuses the npm token in either. It was a
+// comment for as long as this file was one job, which is exactly how long the sentence stayed true
+// by accident.
 const SENTINEL = "sentinel-not-a-real-credential";
 const POISONED_JOB_ENV = {
   // Actually in this `run:` step's environment today, because the workflow requests
@@ -1355,44 +1361,101 @@ test("REGRESSION: a real probe child sees none of the job's credentials, on BOTH
   }
 });
 
+/**
+ * One job of `release.yml`, sliced by its ID.
+ *
+ * WHY THIS EXISTS, AND IT IS THE WHOLE POINT OF THE ASSERTIONS BELOW. The test below used to read
+ * the workflow as `yml.slice(yml.indexOf("\n    steps:"))`: the FIRST `steps:` in the file, which
+ * was unambiguous while `release.yml` was one job. It is two jobs now, so that expression silently
+ * became "the un-gated `version` job" -- the job that is handed no `NPM_TOKEN`, whose
+ * `changesets/action` writes no `~/.npmrc`, and which has no credential for this step to sweep.
+ * Every ordering assertion in it went on passing while describing that job. A guard that retargets
+ * itself to the harmless job is worse than one that was never written: it reads as coverage.
+ */
+function sliceJob(yml, id) {
+  const jobsAt = yml.indexOf("\njobs:\n");
+  assert.ok(jobsAt > 0, "release.yml must have a top-level `jobs:` key");
+  const headers = [...yml.matchAll(/^ {2}([A-Za-z0-9_-]+):$/gm)].filter((m) => m.index > jobsAt);
+  const which = headers.findIndex((m) => m[1] === id);
+  assert.ok(which >= 0, `release.yml must keep a job whose id is \`${id}\``);
+  const end = which + 1 < headers.length ? headers[which + 1].index : yml.length;
+  return yml.slice(headers[which].index, end);
+}
+
+/** A job's steps, in order. Index 0 is the text before the first step and never matches a name. */
+function stepsOf(job) {
+  return job.slice(job.indexOf("\n    steps:")).split(/\n      - (?=\S)/);
+}
+
 // THE WHOLE SECURITY PROPERTY OF THE REMOVAL STEP IS ITS POSITION, so the position is what is
 // pinned. Nothing else pins where this step sits: `actionlint` checks that the workflow is valid,
 // not that its steps are in the one order that makes this one do anything, so a future edit that
 // moves this step to the end of the job, or drops it, would otherwise ship green. Anchored
 // structurally on the steps array, the way the version-PR wiring is anchored in
-// `test/release-notes.test.mjs`, rather than on text adjacency.
+// `test/release-notes.test.mjs`, rather than on text adjacency -- and anchored INSIDE one named
+// job, because "the steps array" stopped identifying a job the moment there were two of them.
 test("release.yml drops the release credentials between the publish and everything that follows", async () => {
   const { readFile } = await import("node:fs/promises");
   const yml = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const steps = yml.slice(yml.indexOf("\n    steps:")).split(/\n      - (?=\S)/);
-  const at = (needle) => steps.findIndex((s) => s.startsWith(`name: ${needle}`) || s.includes(`\n        id: ${needle}`));
+  const stepAt = (steps, needle) =>
+    steps.findIndex((s) => s.startsWith(`name: ${needle}`) || s.includes(`\n        id: ${needle}`));
 
-  const drop = at("Drop the release credentials from disk");
-  const changesets = at("changesets");
-  const ghRelease = at("Publish the GitHub release + dispatch docs rebuild");
-  const installGate = at("The published package must be installable from the registry");
-  assert.ok(changesets > 0, "the changesets step must be findable, or this test proves nothing");
-  assert.ok(drop > 0, "release.yml must drop the release credentials from disk");
+  // BOTH JOBS SWEEP, AND BOTH SWEEPS ARE PINNED. `changesets/action` writes `~/.netrc`
+  // unconditionally, before its arm switch, in whichever job it runs in, so the version job holds a
+  // git credential of its own (`RELEASE_PR_TOKEN`, or the `GITHUB_TOKEN` fallback) even though it
+  // holds no npm one. Asserting only the release job here would swap one silently-unguarded job for
+  // the other.
+  for (const id of ["version", "release"]) {
+    const steps = stepsOf(sliceJob(yml, id));
+    const drop = stepAt(steps, "Drop the release credentials from disk");
+    const changesets = stepAt(steps, "changesets");
+    assert.ok(changesets > 0, `the changesets step of \`${id}\` must be findable, or this proves nothing`);
+    assert.ok(drop > 0, `job \`${id}\` must drop the release credentials from disk`);
 
-  // AFTER the action, because the action's own `git push` is the credential's only consumer, and
-  // BEFORE both steps that run code this org did not write: the caller's `pack:docs`, and the entry
-  // probe's third-party module-init. Adjacent to the action, not merely somewhere after it.
-  assert.equal(drop, changesets + 1, "the drop must be the step immediately after changesets/action");
+    // AFTER the action, because the action's own `git push` is the credential's only consumer, and
+    // ADJACENT to it, not merely somewhere after it. What follows the drop differs per job; that it
+    // is the very next step does not.
+    assert.equal(drop, changesets + 1, `in \`${id}\`, the drop must be the step immediately after changesets/action`);
+
+    // `always()`, so a failed or skipped release step cannot leave the credentials on disk: the
+    // install gate below runs under `!cancelled()` and would otherwise still run with them present.
+    assert.match(steps[drop], /^\s*if: \$\{\{ always\(\) \}\}$/m);
+    // Both files, in both jobs. The npmrc holds the raw NPM_TOKEN in plaintext on the publish arm,
+    // which is the only arm the entry probe runs on at all; in the version job it is expected to be
+    // absent, and it is swept anyway, because a step that removes only what it expects to find stops
+    // removing the thing nobody expected.
+    assert.match(steps[drop], /"\$HOME\/\.netrc"/);
+    assert.match(steps[drop], /"\$HOME\/\.npmrc"/);
+    // It must not be able to red a release that already published, and `exit 1` is not the only way
+    // to do that: `shell: bash` runs under `-eo pipefail`, so an unguarded failing `rm` would exit the
+    // step before the warn branch that exists to prevent exactly this.
+    assert.doesNotMatch(steps[drop], /^\s*exit 1$/m);
+    assert.match(steps[drop], /rm -f "\$f" \|\| true/);
+  }
+
+  // AND THE ORDERING THAT IS ONLY ABOUT THE PUBLISHING JOB, measured INSIDE it. These two steps run
+  // code this org did not write -- the caller's own `pack:docs` command, and the entry probe's
+  // third-party module-init -- and the `~/.npmrc` they must not see holds the raw npm token in
+  // plaintext. Both live in the `release` job only, so comparing them against a `drop` resolved
+  // anywhere else is how this assertion stopped meaning anything.
+  const release = sliceJob(yml, "release");
+  // NOT VACUOUS, AND PROVABLY THE RIGHT JOB: the slice is the one the caller's environment holds and
+  // the one the npm credential is handed to. If this ever fails, the ordering below is measuring
+  // some other job and the fix is the slice, not the workflow.
+  assert.match(release, /^ {4}environment: release$/m, "the sliced job must be the one in the caller's environment");
+  assert.match(
+    release,
+    /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
+    "the sliced job must be the one holding the npm credential this step exists to remove",
+  );
+  const releaseSteps = stepsOf(release);
+  const drop = stepAt(releaseSteps, "Drop the release credentials from disk");
+  const ghRelease = stepAt(releaseSteps, "Publish the GitHub release + dispatch docs rebuild");
+  const installGate = stepAt(releaseSteps, "The published package must be installable from the registry");
+  assert.ok(ghRelease > 0, "the GitHub release step must be findable in `release`, or this proves nothing");
+  assert.ok(installGate > 0, "the install gate must be findable in `release`, or this proves nothing");
   assert.ok(drop < ghRelease, "the drop must precede the caller's pack:docs command");
   assert.ok(drop < installGate, "the drop must precede the post-publish install gate");
-
-  // `always()`, so a failed or skipped release step cannot leave the credentials on disk: the
-  // install gate below runs under `!cancelled()` and would otherwise still run with them present.
-  assert.match(steps[drop], /^\s*if: \$\{\{ always\(\) \}\}$/m);
-  // Both files. The npmrc holds the raw NPM_TOKEN in plaintext on the publish arm, which is the only
-  // arm the entry probe runs on at all.
-  assert.match(steps[drop], /"\$HOME\/\.netrc"/);
-  assert.match(steps[drop], /"\$HOME\/\.npmrc"/);
-  // It must not be able to red a release that already published, and `exit 1` is not the only way
-  // to do that: `shell: bash` runs under `-eo pipefail`, so an unguarded failing `rm` would exit the
-  // step before the warn branch that exists to prevent exactly this.
-  assert.doesNotMatch(steps[drop], /^\s*exit 1$/m);
-  assert.match(steps[drop], /rm -f "\$f" \|\| true/);
 
   // WHICH FILES TO REMOVE WAS READ OUT OF `changesets/action` AT THIS SHA, so a bump to the action
   // can invalidate the step silently: it would still exit 0, still print "Removed", and still leave
@@ -1416,11 +1479,20 @@ test("release.yml drops the release credentials between the publish and everythi
   //   gh api 'repos/cosyte/.github/rulesets?includes_parents=true' --jq '.[].id'
   //   gh api repos/cosyte/.github/rulesets/<id> \
   //     --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
-  assert.match(
-    yml,
-    /uses: changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/,
-    "changesets/action moved off the sha the credential-removal step was derived against. Re-read " +
-      "its src/index.ts for where it writes the netrc and the npmrc, update the step and this pin " +
-      "together, and do not simply update this line.",
-  );
+  //
+  // EVERY OCCURRENCE, NOT THE FIRST ONE. There are two invocations of the action now, one per job,
+  // and `assert.match` over the whole file is satisfied by either: bumping the release job's alone
+  // would leave this green while the sha the sweep beside it was derived from no longer exists in
+  // that job. Same first-match hazard the slice above exists to close.
+  const pinned = [...yml.matchAll(/uses: changesets\/action@(\S+)/g)].map((m) => m[1]);
+  assert.ok(pinned.length > 0, "the changesets/action pin must be findable, or this assertion proves nothing");
+  for (const sha of pinned) {
+    assert.equal(
+      sha,
+      "a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d",
+      "changesets/action moved off the sha the credential-removal step was derived against. Re-read " +
+        "its src/index.ts for where it writes the netrc and the npmrc, update the step and this pin " +
+        "together, and do not simply update this line.",
+    );
+  }
 });

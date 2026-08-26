@@ -847,6 +847,38 @@ function effectivePermissions(text, job) {
   return out;
 }
 
+/**
+ * The WORKFLOW-level `env:` block, above `jobs:`, with the raw text it was read out of.
+ *
+ * Read the way `effectivePermissions` reads the workflow-level `permissions:` block, and here for
+ * the same reason: a key written once at the top of the file is in force inside every job without
+ * appearing in any of them. It is the one spelling that neither a per-step sweep nor a read of
+ * `job.blocks.env` can see, and after the split it is the spelling that would hand the npm write
+ * credential to a job no human approved.
+ *
+ * TWO DIFFERENCES FROM THE PERMISSIONS READ, both because this one is used for an ABSENCE claim and
+ * that one for a presence claim, so the failure directions are opposite. A blank line inside the
+ * block does not end it (ending there would silently stop reading and report "no credential"), and
+ * the raw text comes back alongside the parsed map so a value this line-oriented parser cannot read
+ * -- a folded scalar, say -- is still swept for the secret rather than passing as unreadable.
+ */
+function workflowEnv(text) {
+  const lines = decomment(text);
+  const at = lines.findIndex((line) => /^env:\s*$/.test(line));
+  if (at < 0) return { vars: {}, raw: '' };
+  /** @type {Record<string, string>} */
+  const vars = {};
+  const raw = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === '') continue;
+    if (/^\S/.test(line)) break; // a new top-level key closes the block
+    raw.push(line);
+    const match = /^ {2}([\w-]+):\s?(.*)$/.exec(line);
+    if (match) vars[match[1]] = stripTrailingComment(match[2]);
+  }
+  return { vars, raw: raw.join('\n') };
+}
+
 /** Does `jobId` transitively depend on `targetId` through `needs:`? */
 function dependsOn(workflow, jobId, targetId, seen = new Set()) {
   if (jobId === targetId) return true;
@@ -1042,46 +1074,97 @@ test('AC3: the protection gate runs unconditionally, on every path, ahead of eve
 });
 
 /**
- * The npm write credential must not be reachable from a job's OWN `env:` block.
+ * The npm write credential must not be reachable from the AMBIENT environment of a job: neither the
+ * job's own `env:` block nor the workflow-level `env:` block above `jobs:`.
  *
- * A job-level `env:` reaches every step of that job without appearing in any of them, so it is
- * exactly AC6's "in that job's environment" and is the one spelling a step-by-step sweep cannot see.
- * Split out of the test below so the check can be shown to bite: the delivered `version` job carries
- * no `env:` block at all, and an absence assertion over an empty map proves nothing on its own.
+ * Both reach every step of the job without appearing in any of them, so both are exactly AC6's "in
+ * that job's environment", and both are spellings a step-by-step sweep cannot see. The workflow-level
+ * one is the wider hole of the two, because it is written once, outside either job, and lands in the
+ * un-approved one for free; before the split it sat inside the single job the environment held, and
+ * the split is what turned it into a window on a write credential nobody approved.
+ *
+ * GITHUB MERGES THESE TWO, which is why both are read rather than "the job's if it has one, else the
+ * workflow's" the way `effectivePermissions` reads `permissions:`. Split out of the test below so
+ * each scope can be shown to bite: the delivered file has neither block, and an absence assertion
+ * over two empty maps proves nothing on its own.
  */
-function assertNoJobLevelNpmCredential(job) {
-  for (const [name, value] of Object.entries(job.blocks.env ?? {})) {
-    assert.ok(
-      name !== 'NPM_TOKEN' && name !== 'NODE_AUTH_TOKEN',
-      `job \`${job.id}\` hands ${name} to every step it has, through its own job-level env:`,
-    );
-    assert.doesNotMatch(
-      value,
-      /secrets\.NPM_TOKEN/,
-      `job \`${job.id}\`'s job-level \`${name}\` reads the npm secret in the un-approved job`,
-    );
+function assertNoAmbientNpmCredential(text, job) {
+  const workflow = workflowEnv(text);
+  const scopes = [
+    ['the workflow-level env:, above `jobs:`', workflow.vars],
+    ['its own job-level env:', job.blocks.env ?? {}],
+  ];
+  for (const [where, vars] of scopes) {
+    for (const [name, value] of Object.entries(vars)) {
+      assert.ok(
+        name !== 'NPM_TOKEN' && name !== 'NODE_AUTH_TOKEN',
+        `job \`${job.id}\` hands ${name} to every step it has, through ${where}`,
+      );
+      assert.doesNotMatch(
+        value,
+        /secrets\.NPM_TOKEN/,
+        `job \`${job.id}\`'s \`${name}\`, set in ${where}, reads the npm secret in the un-approved job`,
+      );
+    }
   }
+  // AND THE BLOCK AS TEXT, so a value the line parser above cannot read is swept rather than
+  // skipped: `FOO: >-` on one line and `${{ secrets.NPM_TOKEN }}` on the next parses to `>-` and
+  // passes both checks above while reaching every step of both jobs.
+  assert.doesNotMatch(
+    workflow.raw,
+    /secrets\.NPM_TOKEN/,
+    'the workflow-level env: block reads the npm secret, so every step of every job can read it',
+  );
 }
 
 test('AC6: the npm publish credential never reaches the un-gated job', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const text = readFileSync(WORKFLOW, 'utf8');
+  const workflow = parseWorkflow(text);
   const version = workflow.byId.version;
 
-  // THE JOB'S OWN `env:` BLOCK FIRST, because it is the spelling that reaches every step at once.
-  assertNoJobLevelNpmCredential(version);
-  // ... and the check is not vacuous: planted at job level, it is caught. This is asserted against a
-  // synthetic job rather than the real one precisely because the real one is clean.
-  const planted = parseWorkflow(
+  // THE AMBIENT `env:` BLOCKS FIRST, both of them, because they are the spellings that reach every
+  // step at once while appearing in none of them.
+  assertNoAmbientNpmCredential(text, version);
+  // ... and neither check is vacuous. The delivered file declares no `env:` at either level, so each
+  // scope is proved to bite against a synthetic workflow with the credential planted in it, in the
+  // spirit of AC12's `assert.throws` battery. JOB level first:
+  const plantedInJob =
     'jobs:\n' +
-      '  version:\n' +
-      '    env:\n' +
-      "      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n" +
-      '    steps:\n' +
-      '      - run: echo "no step of mine names it, and all of them can read it"\n',
-  );
+    '  version:\n' +
+    '    env:\n' +
+    "      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n" +
+    '    steps:\n' +
+    '      - run: echo "no step of mine names it, and all of them can read it"\n';
   assert.throws(
-    () => assertNoJobLevelNpmCredential(planted.byId.version),
-    /hands NODE_AUTH_TOKEN to every step it has/,
+    () => assertNoAmbientNpmCredential(plantedInJob, parseWorkflow(plantedInJob).byId.version),
+    /hands NODE_AUTH_TOKEN to every step it has, through its own job-level env:/,
+  );
+  // ... and WORKFLOW level, one line above `jobs:`, which is the spelling that lands in a job
+  // without being written in it. Nothing inside either job changes, which is exactly the problem.
+  const plantedInWorkflow =
+    'env:\n' +
+    "  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n" +
+    '\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "neither job names it, and every step of both can read it"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(plantedInWorkflow, parseWorkflow(plantedInWorkflow).byId.version),
+    /hands NODE_AUTH_TOKEN to every step it has, through the workflow-level env:/,
+  );
+  // ... including under a name AC6 does not know, carried by a value this parser reads as `>-`.
+  const foldedInWorkflow =
+    'env:\n' +
+    '  RELEASE_HELPER: >-\n' +
+    "    ${{ secrets.NPM_TOKEN }}\n" +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "the name is innocent and the value is not"\n';
+  assert.throws(
+    () => assertNoAmbientNpmCredential(foldedInWorkflow, parseWorkflow(foldedInWorkflow).byId.version),
+    /the workflow-level env: block reads the npm secret/,
   );
 
   for (const step of version.steps) {
