@@ -156,7 +156,8 @@ corpus silently outside the gate. Block boundaries are still boundaries: two lis
 paragraphs and a heading beside its neighbour are never joined. An unclosed code fence inside a list
 item ends with that item rather than running to end of file, so a malformed sample in one bullet
 cannot hide every link after it; an unclosed fence at the top level does run to end of file, which
-is what CommonMark says it is.
+is what CommonMark says it is. A code block inside a BLOCK QUOTE is the one container this parse
+gets wrong, and it has a section of its own just below.
 
 **Three paths to a broken site this gate cannot stand in front of**, each owned elsewhere: a direct
 or administrative push to `main`; a release cut from a commit no gated pull request produced (the
@@ -171,6 +172,40 @@ own `on:` block, which may carry `paths:` filters (this workflow never filters o
 whether an adopting repository's content passes is a question about that repository's tree, which
 nothing here reads. The red and green controls are fixture trees in
 `test/docs-content-check.test.mjs`.
+
+### A known limit: a code sample inside a BLOCK QUOTE reds
+
+**The out-of-scope promise for code covers the TOP LEVEL and a LIST ITEM, and it does not cover a
+BLOCK QUOTE.** A fenced or an indented code block nested inside a block quote is read as ordinary
+quoted prose, so a target inside it IS checked and can fail the run. That is a known **false red**,
+deferred to its own item rather than fixed here, and it is written down because the symptom is a red
+pull request over a page the site renders exactly as its author intended.
+
+The cause is ordering, not ambition: the fence test and the four-space indented-code test both run
+before a quote's `>` marker comes off the line, so neither one ever sees the fence. This note
+
+```markdown
+> **Note**, from the runtime docs:
+>
+> ~~~ts runnable
+> const out = handlers[0](event);
+> ~~~
+```
+
+extracts `handlers[0](event)` as a link and prints a `B1` for `event`, exit 1, while the identical
+sample at the top level, inside a list item, or inside a `:::tip` admonition is code and yields no
+target at all. A four-space indented sample inside a quote and an unclosed fence inside one red the
+same way. A **closed triple-backtick** sample inside a quote does survive today, but by accident
+rather than by design: once the quoted paragraph is joined, the two backtick runs match each other
+as a code span. Change the fence character to `~`, drop the closer, or indent the sample instead,
+and it reds. Do not lean on it.
+
+**It is a false RED and never a false green**, so no broken link escapes through it and coverage of
+the class this gate exists to catch is untouched. Two workarounds until the deferred item lands:
+move the sample out of the quote, or use a Docusaurus admonition (`:::tip` ... `:::`) in place of
+the block quote, which holds a fence correctly. Nothing else about code changes: a code span between
+backticks, a fence at the top level, a fence inside a list item and a fence inside an admonition are
+all code, and nothing inside any of them is ever a target.
 
 ### One correction, because an org-side artifact gets it backwards
 
