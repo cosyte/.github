@@ -10,7 +10,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 | Workflow | Purpose | Used by |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
+| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **the release environment gate** → Changesets → npm publish **with provenance** → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first and refuses the run, before any caller tree is checked out, unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
@@ -28,6 +28,7 @@ jobs:
     uses: cosyte/.github/.github/workflows/ci.yml@main
     with:
       run-phi-scan: true # parsers that handle PHI / raw bytes
+      check-docs-content: true # repos that publish docs-content/; see below
 ```
 
 ```yaml
@@ -47,6 +48,175 @@ jobs:
       id-token: write
       pull-requests: write
 ```
+
+## The docs-content gate
+
+**`check-docs-content` is OFF by default, and no caller changes behaviour until it opts in by
+name.** Every caller tracks `@main` and picks up an edit to this workflow on its next run, so a
+default of `false` is the whole of what keeps a new gate from redding thirteen repositories on the
+day it merges.
+
+**The hole it closes.** A repo that publishes `docs-content/` can merge and release content that
+breaks `docs.cosyte.com`, because nothing between the author and the published site resolves the
+links in that content. `x12` did exactly that: its own pull request checks were green, because no
+check had an opinion about `docs-content/` at all, and the `cosyte/docs` build was red for **eight
+consecutive days** on a broken link `x12`'s docs-content introduced. With the input on, that link
+reds the pull request that introduces it instead.
+
+```yaml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@main
+    with:
+      run-phi-scan: true
+      check-docs-content: true # requires docs-content/sidebars.json
+```
+
+**Opting in REQUIRES `docs-content/sidebars.json`, by that exact name.** It is the only source of
+document ids this gate has, so a tree without it fails (`B3`) rather than passing over a check it
+could not run. That is a requirement of THIS GATE and not Docusaurus's default: `sidebars.js` and
+`sidebars.ts` are JavaScript, and reading them means executing caller code, which this does not do.
+**A repo shipping only `sidebars.ts` must not set the input.** `intro.md` is NOT required and its
+absence is no finding at all: `release.yml` asserts nothing about docs-content filenames, and a repo
+using Docusaurus's `index.md` convention builds fine.
+
+**Where it runs, and why there.** Two steps inside the `verify` job, which is the only job in
+`ci.yml` with no job-level `if:` and no `needs:`. Both halves of that matter and both are measured
+rather than assumed: a new JOB would emit a new status check context, and this repository cannot
+edit any caller's branch protection to require it, so a failure there would leave a caller's
+required set green; and a job skipped by a conditional **satisfies** its required context (see
+"What a skipped required context does to a merge" below), so hanging the gate off the input-guarded
+`prepublish` or `actionlint` would report success having never run. The checker is fetched into
+`$RUNNER_TEMP`, **outside `$GITHUB_WORKSPACE`**, at `github.job_workflow_sha`: `actions/checkout`
+refuses a path outside the workspace, and a second tree inside it would be visible to `pnpm lint`,
+`pnpm format:check` and `pnpm phi-scan`, whose scanner walks from the repository root. The gate
+creates, modifies and deletes nothing anywhere under the caller's workspace.
+
+### What it blocks on
+
+Every finding is printed with the path from the repository root, the 1-based line where there is
+one, the raw target or id, and what was looked for. It never stops at the first.
+
+| | Blocks on |
+|---|---|
+| **B1** | a package-internal LINK target that resolves to no REGULAR FILE under `docs-content/`, through any of the five spellings `<t>`, `<t>.md`, `<t>.mdx`, `<t>/index.md`, `<t>/index.mdx`. A bare directory named `<t>` resolves nothing: the list already spells `<t>/index.md`, and letting the directory itself resolve would pass the exact class this gate exists to catch |
+| **B2** | a document id `sidebars.json` names that equals no id the tree DECLARES, or an `{"type": "autogenerated"}` `dirName` naming no directory. A file's id is its path without the extension, with a frontmatter `id` replacing the last segment. A `dirName` that climbs out of `docs-content/` (`".."`) names no directory under it, so it is a B2 and it covers nothing: reading it as the root would excuse the whole tree from the zero-ids finding |
+| **B3** | `docs-content/sidebars.json` absent, unparseable, not a JSON object at its top level, or collecting zero ids over files no `autogenerated` entry covers; any sidebar shape or item malformation; a frontmatter block opened and never closed, or an `id` opening a block scalar (`|`, `>`) or a flow collection (`[`, `{`) |
+| **B4** | the input is `true` and there is no `docs-content/` at the repository root. A gate that silently no-ops is not a gate |
+| **B5** | a package-internal IMAGE destination with no regular file at exactly that path. No build step invents an extension for an asset, and a directory sitting there is not a resolution |
+| **B6** | any entry under `docs-content/` that cannot be READ: an unreadable file, a directory the walk cannot list, a dangling symlink. Reported wherever it sits, whether or not anything references it, and the walk continues over everything it can read |
+
+Resolution is compared **case-sensitively against a listing of the tree**, never through a
+filesystem lookup, so `./Troubleshooting` does not resolve `troubleshooting.md` on a macOS or
+Windows runner while failing on Linux. The `os` matrix axis is caller-supplied and the site builds
+case-sensitively; a gate reaching two verdicts for one tree would be worse than none.
+
+### Reported, never failed
+
+Printed with the same detail, failing nothing: **same-page anchors**, **external URLs**,
+**site-absolute paths** and **cross-package relative links** that escape the `docs-content/` root;
+a sidebar `"type"` this gate does not enumerate; a symlink cycle; **orphans**, meaning files no
+sidebar entry references and no `autogenerated` entry covers; and an **unchecked id**, meaning one
+that no readable document declares while a file that would not read could be declaring it, since a
+frontmatter `id` replaces the last path segment and that file's frontmatter went unread. That run is
+red already, on the unreadable file's own B6. The four link classes are excluded
+deliberately: `cosyte/docs` rewrites cross-package relative links at mount time, so site-absolute
+and version-mounted paths are owned there, external URLs are covered by that repo's scheduled link
+check, and Docusaurus treats a broken anchor as a warning. Unlinked is not broken, but the orphan
+count is the only visibility anyone has into content the site will not show.
+
+### What it does NOT claim, stated so nobody reads more into a green run
+
+**Residuals inside the check.** Raw HTML and JSX attributes (`<a href=...>`, `<img src=...>`), HTML
+comments and MDX expressions are not targets, so a broken one there is invisible. A tag is skipped
+whole, attribute values included; a `<!-- ... -->` comment and a `{/* ... */}` expression are skipped
+whole even when they run across blank lines, because neither renders anything. That last one is
+applied to `.md` as well as `.mdx`, which is the wider of the two readings: a repository configuring
+Docusaurus with `format: 'mdx'` gets MDX in both, and the cost of the reading is a residual this
+gate already accepts rather than a false red on a page nobody can see. The skip refuses to guess,
+so prose is never swallowed: `a<b and [see](./x)>c` is not a tag, an unbalanced `{` is literal text,
+and a tag inside a code span is code. A destination inside an **image's alt text**
+(`![see [here](./missing)](./logo.svg)`) is not checked either: the alt renders as plain text, so
+that destination is never live in the page, while the image's own destination is checked as any
+other. Nested brackets otherwise follow CommonMark, which is not a residual but is worth saying:
+`[![Logo](./logo.svg)](./intro)`, the clickable-badge shape, has BOTH destinations checked, and
+where a link is nested in link text (`[a [b](./b) c](./intro)`) the INNER one is the link, so the
+outer text is literal and its destination is not a target. **Duplicate declared ids are not even
+reported**: two files declaring one id is an error Docusaurus raises and this gate does not detect.
+A frontmatter `id:` written twice takes the first; a `sidebars.json` key written twice takes the
+last, which is `JSON.parse`. And rule 1 URL-decodes every target, so a file whose NAME literally
+contains a percent escape (`guide%20name.md`) linked as `./guide%20name.md` decodes to
+`guide name.md` and reds.
+
+**A construct may wrap across a line break, and one that does is still checked.** A paragraph is
+read as a paragraph, not as a row of lines, so `[x12 envelope\nreference](./gone)` is one link and a
+code span opened on one line and closed on the next is one span. Hard-wrapped prose is the house
+style of every markdown file in this org, so a line-by-line scan would leave a large share of every
+corpus silently outside the gate. Block boundaries are still boundaries: two list items, two
+paragraphs and a heading beside its neighbour are never joined. An unclosed code fence inside a list
+item ends with that item rather than running to end of file, so a malformed sample in one bullet
+cannot hide every link after it; an unclosed fence at the top level does run to end of file, which
+is what CommonMark says it is. A code block inside a BLOCK QUOTE is the one container this parse
+gets wrong, and it has a section of its own just below.
+
+**Three paths to a broken site this gate cannot stand in front of**, each owned elsewhere: a direct
+or administrative push to `main`; a release cut from a commit no gated pull request produced (the
+input goes on the CI workflow, deliberately not on `release.yml`); and the merge race, where one
+pull request deletes a document while another links to it and both are green against their own
+heads.
+
+**And three facts that live on the caller's side, not here.** Whether the failing context is
+REQUIRED is branch protection, which is per-caller settings this repository can neither read nor
+write; whether a caller's workflow even triggers on a given pull request depends on that caller's
+own `on:` block, which may carry `paths:` filters (this workflow never filters on the diff); and
+whether an adopting repository's content passes is a question about that repository's tree, which
+nothing here reads. The red and green controls are fixture trees in
+`test/docs-content-check.test.mjs`.
+
+### A known limit: a code sample inside a BLOCK QUOTE reds
+
+**The out-of-scope promise for code covers the TOP LEVEL and a LIST ITEM, and it does not cover a
+BLOCK QUOTE.** A fenced or an indented code block nested inside a block quote is read as ordinary
+quoted prose, so a target inside it IS checked and can fail the run. That is a known **false red**,
+deferred to its own item rather than fixed here, and it is written down because the symptom is a red
+pull request over a page the site renders exactly as its author intended.
+
+The cause is ordering, not ambition: the fence test and the four-space indented-code test both run
+before a quote's `>` marker comes off the line, so neither one ever sees the fence. This note
+
+```markdown
+> **Note**, from the runtime docs:
+>
+> ~~~ts runnable
+> const out = handlers[0](event);
+> ~~~
+```
+
+extracts `handlers[0](event)` as a link and prints a `B1` for `event`, exit 1, while the identical
+sample at the top level, inside a list item, or inside a `:::tip` admonition is code and yields no
+target at all. A four-space indented sample inside a quote and an unclosed fence inside one red the
+same way. A **closed triple-backtick** sample inside a quote does survive today, but by accident
+rather than by design: once the quoted paragraph is joined, the two backtick runs match each other
+as a code span. Change the fence character to `~`, drop the closer, or indent the sample instead,
+and it reds. Do not lean on it.
+
+**It is a false RED and never a false green**, so no broken link escapes through it and coverage of
+the class this gate exists to catch is untouched. Two workarounds until the deferred item lands:
+move the sample out of the quote, or use a Docusaurus admonition (`:::tip` ... `:::`) in place of
+the block quote, which holds a fence correctly. Nothing else about code changes: a code span between
+backticks, a fence at the top level, a fence inside a list item and a fence inside an admonition are
+all code, and nothing inside any of them is ever a target.
+
+### One correction, because an org-side artifact gets it backwards
+
+**This repository is PUBLIC and carries no `LICENSE` file.** Both halves are true at once, and
+`cards/github-profile.md` in the umbrella infers from the second that this repo should be treated as
+"private/internal". That inference is wrong: a repository can be public and unlicensed, and
+`gh repo view cosyte/.github --json visibility,isPrivate,licenseInfo` returned
+`{"isPrivate":false,"licenseInfo":null,"visibility":"PUBLIC"}` on 2026-08-22. It matters here
+because the delivery step fetches this file from `raw.githubusercontent.com` with **no credential**,
+which only works because the repository is public. That card is generated, so it stays wrong until
+its generator stops inferring visibility from a missing licence; this paragraph is the record.
 
 ## The release environment gate
 
