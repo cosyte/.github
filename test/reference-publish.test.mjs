@@ -239,6 +239,16 @@ test('readValue strips a trailing comment from a plain scalar and never from ins
   assert.equal(readValue(' "unterminated').kind, 'bad');
 });
 
+/**
+ * FULL with its whole `inputs:` block swapped out, so a row below tests the refusal it names and
+ * not, incidentally, the "nothing may be indented under a value that ends on its line" one.
+ */
+const inputsReplacedBy = (replacement) =>
+  FULL.slice(0, FULL.indexOf('    inputs:')) + replacement + FULL.slice(FULL.indexOf('    secrets:'));
+
+/** The same, for the last job in FULL, which is `actionlint`. */
+const actionlintReplacedBy = (replacement) => FULL.slice(0, FULL.indexOf('  actionlint:')) + replacement;
+
 const REFUSALS = [
   ['a tab in the indentation', FULL.replace('  workflow_call:', '\tworkflow_call:'), /tab/],
   ['no `on:` block at all', FULL.replace(/^on:$/m, 'off:'), /no `on:` block/],
@@ -255,16 +265,73 @@ const REFUSALS = [
   ],
   ['a `required:` that is not true or false', FULL.replace('        required: true', '        required: yes'), /required:/],
   ['a duplicated input', FULL.replace('      package-name:', '      run-phi-scan:'), /twice/],
-  ['an input that is not a mapping', FULL.replace('      run-phi-scan:', '      run-phi-scan: false'), /not a block mapping/],
-  ['an `inputs:` that is a flow collection', FULL.replace('    inputs:', '    inputs: { a: b }'), /not a block mapping/],
+  [
+    'an input that is not a mapping',
+    inputsReplacedBy('    inputs:\n      run-phi-scan: false\n'),
+    /not a block mapping/,
+  ],
+  ['an `inputs:` that is a flow collection', inputsReplacedBy('    inputs: { a: b }\n'), /not a block mapping/],
   ['no `jobs:` block', FULL.replace(/^jobs:$/m, 'tasks:'), /no `jobs:` block/],
-  ['a job that is not a mapping', FULL.replace('  actionlint:\n    runs-on: ubuntu-latest', '  actionlint: nope'), /not a block mapping/],
+  ['a job that is not a mapping', actionlintReplacedBy('  actionlint: nope\n'), /not a block mapping/],
   [
     'a permissions block whose value is not a scalar',
     FULL.replace('  contents: read # a trailing comment, which is not part of the value', '  contents:\n    - read'),
     /permissions/,
   ],
   ['an unterminated quote in a value this reader reads', FULL.replace('        type: string\n        required: true', '        type: "string\n        required: true'), /type:/],
+
+  // ▶ NOTHING MAY BE INDENTED UNDER A VALUE THAT ALREADY ENDED ON ITS OWN LINE. Each row below is a
+  //   shape the reader used to accept while DROPPING the indented line, which is the one way a
+  //   caller-affecting change reaches a note that says a caller has nothing to act on. A wrapped
+  //   plain scalar is the dangerous one, because it is legal YAML and truncates silently; the rest
+  //   are junk that was equally silently swallowed. None of the six files uses any of them, and
+  //   nobody is being asked to support one: the answer is to refuse, naming the workflow and the
+  //   line.
+  [
+    'a plain scalar wrapped onto a second line, which would truncate an input default',
+    FULL.replace('        default: false', '        default: hello\n          world'),
+    /line \d+ is indented under `default:`.*whose value ends on that line/,
+  ],
+  [
+    'a plain scalar wrapped onto a second line, which would truncate a job name',
+    FULL.replace('  verify:\n    runs-on', '  verify:\n    name: Verify on Node\n      22 and 24\n    runs-on'),
+    /line \d+ is indented under `name:`.*whose value ends on that line/,
+  ],
+  [
+    'a wrapped scalar in the `permissions:` a caller must grant',
+    FULL.replace('  id-token: write', '  id-token: write\n    and-more'),
+    /line \d+ is indented under `id-token:`/,
+  ],
+  [
+    'a wrapped scalar under a secret a caller must pass',
+    FULL.replace('      NPM_TOKEN:\n        required: true', '      NPM_TOKEN:\n        required: true\n          and-more'),
+    /line \d+ is indented under `required:`/,
+  ],
+  [
+    'a block sequence under a scalar',
+    FULL.replace('        default: false', '        default: false\n          - three'),
+    /line \d+ is indented under `default:`/,
+  ],
+  [
+    'stray junk under a scalar',
+    FULL.replace('        default: false', '        default: false\n          ]]]'),
+    /line \d+ is indented under `default:`/,
+  ],
+  [
+    'an unterminated quote under a scalar',
+    FULL.replace('        default: false', '        default: false\n          "no closing quote'),
+    /line \d+ is indented under `default:`/,
+  ],
+  [
+    'a second `key: value` line under a scalar',
+    FULL.replace('        default: false', '        default: false\n          required: true'),
+    /line \d+ is indented under `default:`/,
+  ],
+  [
+    'a wrapped scalar inside the `on: workflow_call:` block itself',
+    FULL.replace('on:\n  workflow_call:', 'on:\n  workflow_call: yes\n    and-more'),
+    /line \d+ is indented under `workflow_call:`/,
+  ],
 ];
 
 for (const [label, text, pattern] of REFUSALS) {
@@ -275,6 +342,71 @@ for (const [label, text, pattern] of REFUSALS) {
     assert.match(read.reason, pattern);
   });
 }
+
+// -----------------------------------------------------------------------------------------------
+// The wrapped scalar, in full: it must never read as "nothing changed"
+// -----------------------------------------------------------------------------------------------
+
+/** One reusable whose only variable is the continuation line of a wrapped plain `default:`. */
+const wrappedDefault = (continuation) =>
+  FULL.replace('        default: false', `        default: hello\n          ${continuation}`);
+
+test('AC7: two interfaces differing only in a wrapped scalar are never read as the same one', () => {
+  // The expensive failure this rules out: `hello world` and `hello there` are different defaults, so
+  // a reader that truncates both to `hello` reports no change and publishes a reference whose note
+  // says a caller has nothing to act on. Refusing is the answer the spec asks for; reading the
+  // continuation would be the other one. Silently agreeing they are the same interface is neither.
+  const before = readWorkflowInterface(wrappedDefault('world'), 'ci.yml');
+  const after = readWorkflowInterface(wrappedDefault('there'), 'ci.yml');
+
+  if (before.ok || after.ok) {
+    assert.notDeepEqual(after.interface, before.interface, 'a changed default must not be invisible');
+    return;
+  }
+  for (const refusal of [before, after]) {
+    assert.match(refusal.reason, /^ci\.yml: /, 'a refusal names the workflow');
+    assert.match(refusal.reason, /whose value ends on that line/);
+  }
+});
+
+test('AC2 and AC7: a change hidden in a wrapped scalar refuses instead of publishing "nothing changed"', () => {
+  const verdict = decide(
+    facts({
+      current: snapshot(six({ 'ci.yml': wrappedDefault('there') })),
+      previous: previousAt(six({ 'ci.yml': wrappedDefault('world') })),
+    }),
+  );
+  assert.equal(verdict.action, 'refused', 'a state it cannot read is not a state it may publish');
+  assert.equal(verdict.reference, null);
+  assert.equal(verdict.note, null);
+  assert.match(verdict.message, /ci\.yml/, 'the refusal names the workflow');
+});
+
+test('AC7: a wrapped job name refuses too, because a job name is a check-run context', () => {
+  const wrapped = FULL.replace('  verify:\n    runs-on', '  verify:\n    name: Verify on Node\n      22 and 24\n    runs-on');
+  const read = readWorkflowInterface(wrapped, 'ci.yml');
+  assert.equal(read.ok, false);
+  assert.match(read.reason, /^ci\.yml: the job `verify`: /, 'the refusal names the job it could not read');
+});
+
+test('comments and blank lines under a value are still not structure, or every file here would refuse', () => {
+  // The other half of the rule above, and the reason it costs nothing: in all six real files the
+  // ONLY lines indented under a value that ends on its own line are comments and blanks, because a
+  // comment block documenting the NEXT input sits under the previous input's `default:`. A rule that
+  // reddened the default branch would be worse than the hole it closed, so this pins the exemption.
+  const commented = FULL.replace(
+    '        default: false',
+    ['        default: false', '          # A comment block explaining the input below.', '', '          #   with an indented line of its own'].join('\n'),
+  );
+  const read = readWorkflowInterface(commented, 'ci.yml');
+  assert.equal(read.ok, true, read.ok ? '' : read.reason);
+  assert.equal(read.interface.inputs['run-phi-scan'].default.value, false);
+
+  for (const name of REUSABLE_WORKFLOWS) {
+    const text = execFileSync('cat', [join(REPO, '.github/workflows', name)], { encoding: 'utf8' });
+    assert.equal(readWorkflowInterface(text, name).ok, true, `${name} carries comment blocks under its values and must still read`);
+  }
+});
 
 test('AC7: a refusal on any one of the six publishes nothing, and names it', () => {
   const broken = six({ 'codeql.yml': minimal('codeql.yml').replace('  workflow_call:', '  push:') });
@@ -507,6 +639,18 @@ test('AC5: the first publish says there is no earlier reference, and does not re
   assert.match(verdict.note, /no earlier reference to compare this one against/);
   assert.doesNotMatch(verdict.note, /Nothing\. No `workflow_call` input/);
   assert.match(verdict.message, /first reference this repository has ever published/);
+});
+
+test('AC5: the first-publish note sends a caller to the interface, not to a list that is not there', () => {
+  // "Everything below" was a promise the note did not keep: the sections below that heading are
+  // "what moved in the state" and "why this exists", neither of which is a list of changes to act
+  // on. A first adopter who reads a heading and skips to the list finds one that is about files.
+  const verdict = decide(facts({ current: snapshot(six({ 'ci.yml': FULL })), previous: null }));
+  assert.equal(verdict.action, 'publish');
+  const mustAct = verdict.note.split('## What a caller must act on')[1].split('\n## ')[0];
+  assert.doesNotMatch(mustAct, /below/, 'it must not point at a must-act list that does not exist');
+  assert.match(mustAct, /no earlier reference/);
+  assert.match(mustAct, /workflow headers at this commit/, 'it says where the interface actually is');
 });
 
 test('AC6: an unchanged state publishes nothing and says a second reference was not needed', () => {
@@ -997,6 +1141,32 @@ test('AC6 end to end: the same state on the next run publishes nothing', async (
   assert.match(result.out, /action: none/);
   assert.equal(result.notes.length, 0);
   assert.equal(result.calls.some((call) => call.startsWith('release create')), false);
+});
+
+test('a hand-made tag under the same prefix is not a reference, and never becomes the baseline', async () => {
+  // `refs/tags/workflows-*` is a glob; a REFERENCE is a name this path minted, and only names of the
+  // form `workflows-YYYY-MM-DD-<12 hex>` are that. Somebody's `workflows-old`, sitting on a state
+  // this path never published, would otherwise be the thing a caller is compared against, and when
+  // the six do not parse there it would refuse on every later push until a human deleted a tag.
+  const { dir, run } = makePipelineRepo();
+  writeFile(dir, '.github/workflows/ci.yml', 'this is not a workflow at all\n');
+  commitAt(dir, 'a state nobody published', '2026-06-02T12:00:00+00:00');
+  run('tag', 'workflows-old');
+  writeFile(dir, '.github/workflows/ci.yml', minimal('ci.yml'));
+  commitAt(dir, 'a readable pipeline again', '2026-06-03T12:00:00+00:00');
+  const { reference } = referenceFor(dir);
+
+  const result = await runMain(dir);
+  assert.equal(result.status, 0, result.err);
+  assert.match(result.out, /action: publish/);
+  assert.match(result.notes[0], /no earlier reference to compare this one against/, 'the hand-made tag is not a baseline');
+  assert.ok(result.calls.some((call) => call.startsWith(`release create ${reference} `)));
+  assert.equal(
+    result.calls.some((call) => call.includes('workflows-old')),
+    false,
+    'it is left strictly alone: not compared against, not moved, not deleted',
+  );
+  assert.equal(run('tag', '--list', 'workflows-old').trim(), 'workflows-old', 'and it still exists afterwards');
 });
 
 test('AC1 end to end: a script-only change is a new state and gets a new reference', async () => {

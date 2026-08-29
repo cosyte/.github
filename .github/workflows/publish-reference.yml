@@ -38,8 +38,16 @@ permissions:
   contents: read
 
 # Two pushes landing close together must not decide against the same "most recent reference" at the
-# same time. `cancel-in-progress: false` because the second push has a state of its own that is owed
-# a reference; it waits rather than being dropped.
+# same time, so every publish is serialized on one group. `cancel-in-progress: false` so a run that
+# has already started is never cancelled part way through deciding.
+#
+# ▶ WHAT THIS DOES NOT BUY IS A REFERENCE FOR EVERY INTERMEDIATE STATE. GitHub holds at most one run
+#   PENDING per group and cancels the pending one when a newer run queues behind the same group, so
+#   with three pushes landing while the first run is still going, the second push's run is cancelled
+#   and that default-branch state never gets a reference of its own. Nothing is lost: the third
+#   push's state CONTAINS the second push's change and does get a reference, and the note is composed
+#   against the last reference PUBLISHED rather than against the previous push, so it still reports
+#   everything a caller adopting it must act on. What a caller cannot do is pin the middle state.
 concurrency:
   group: publish-reference
   cancel-in-progress: false

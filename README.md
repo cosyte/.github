@@ -114,8 +114,11 @@ and every refusal below is a red run on this repository that publishes nothing:
   `package.json` to add one to, so `reference-publish.mjs` carries a narrow reader that recognises
   the shapes these six files use and refuses, naming the workflow and the line, on anything else.
   That asymmetry is the design: a reader that refuses on an unfamiliar shape cannot silently miss a
-  caller-affecting change, and a permissive one can. **If you add a shape it does not know, widen the
-  reader and pin the new shape as a test; do not loosen it.**
+  caller-affecting change, and a permissive one can. That includes anything indented under a value
+  that already ended on its own line: a plain scalar wrapped onto a second line is legal YAML that a
+  line-oriented reader would truncate to its first line, which would turn a changed input `default:`
+  or a changed job `name:` into a note reporting that nothing changed. **If you add a shape it does
+  not know, widen the reader and pin the new shape as a test; do not loosen it.**
 - **An earlier reference it cannot read**, because the comparison the note owes a caller cannot be
   made against it.
 - **A note it cannot compose.** Neither the note nor the reference is published: a reference without

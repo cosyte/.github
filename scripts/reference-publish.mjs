@@ -253,6 +253,17 @@ export function lex(text) {
 }
 
 /**
+ * Is a key line's value complete on that line, so that nothing indented under it is part of it?
+ *
+ * `empty` means the value is the nested node below, and `block` means the value is the block scalar
+ * below. For every other kind the value was written after the colon and is finished there.
+ * @param {{kind: string}} value
+ */
+function valueEndsOnItsLine(value) {
+  return value.kind !== 'empty' && value.kind !== 'block';
+}
+
+/**
  * Read the block mapping occupying `lines[from..to)`, at the indentation of its first key.
  *
  * Every entry carries the half-open range of the lines BELOW it, which is its value when the value
@@ -262,6 +273,17 @@ export function lex(text) {
  *
  * Blank and comment lines are skipped wherever they appear, at any indentation, because YAML gives
  * neither of them structural meaning.
+ *
+ * WHERE THE VALUE ENDS ON ITS OWN LINE, THE RANGE BELOW IT MUST BE EMPTY OF EVERYTHING ELSE, and
+ * this reader refuses when it is not. Those bytes are not part of any shape it recognises, so
+ * accepting the entry anyway means DROPPING them: a plain scalar wrapped onto a second line reads
+ * as its first line alone, and two interfaces that genuinely differ (a changed input `default:`, a
+ * changed job `name:`, both of them things Constraint 4 calls a change a caller must act on) read
+ * as one. The note then says a caller has nothing to act on while it does, which is the single
+ * failure this reader's narrowness exists to make impossible. Nobody has to SUPPORT a wrapped
+ * scalar; the rule is to refuse what is not recognised, and this is the shape the range-based skip
+ * used to swallow. Blanks and comments stay exempt: every one of these six files carries a comment
+ * block under its `name:` and between its inputs, and YAML gives neither structural meaning.
  * @param {any[]} lines
  * @param {number} from
  * @param {number} to
@@ -297,6 +319,18 @@ export function readMapping(lines, from, to) {
         continue;
       }
       break;
+    }
+    if (valueEndsOnItsLine(line.value)) {
+      for (let k = i + 1; k < j; k += 1) {
+        const below = lines[k];
+        if (skippable(below)) continue;
+        return {
+          ok: false,
+          reason:
+            `line ${below.number} is indented under \`${line.key}:\` (line ${line.number}), whose value ends on that line, ` +
+            'so this reader neither reads it nor recognises it',
+        };
+      }
     }
     entries.push({ key: line.key, value: line.value, line: line.number, from: i + 1, to: j });
     i = j;
@@ -767,7 +801,11 @@ export function composeNote(facts) {
     body.push(
       previous
         ? `Nothing. No \`workflow_call\` input, no secret, no permission and no job name changed between \`${previous.reference}\` and this reference. Moving to it is safe without editing anything else in your repository.`
-        : 'Everything below, because there is no earlier reference to have adopted.',
+        : // Not "everything below": nothing below this heading is a must-act list, and pointing a
+          // caller at one that is not there is how a first adopter skips the reading it actually
+          // owes. There is no earlier reference, so there is no change to list; what a caller must
+          // act on is the whole interface, which lives in the workflow itself.
+          'This is the first reference, so there is no list here: with no earlier reference to have adopted, nothing can be reported as having changed. What a caller must act on is the whole interface, which is every `workflow_call` input, every secret it must pass, every permission it must grant and every job name it may have made required. Read it from the workflow headers at this commit rather than from this note.',
     );
   } else {
     for (const entry of mustAct) body.push(`- ${entry.sentence}`);
@@ -1282,9 +1320,11 @@ export async function gatherReferences({ git, gh }) {
   }
 
   // Newest first, and DETERMINISTIC when two references share a creation date: for-each-ref makes
-  // the LAST `--sort` the primary key, so this is "by creation date, then by name". Two commits
-  // landing in the same second is not exotic on a busy default branch, and "whichever git happened
-  // to list first" is not a basis for deciding what a caller is being compared against.
+  // the LAST `--sort` the primary key, so this is "by creation date, then by name". These are the
+  // lightweight tags `gh release create` mints, so `creatordate` is the tagged commit's committer
+  // date rather than anything the tag itself records; two commits landing in the same second is not
+  // exotic on a busy default branch, and the name tie-break is there so that "whichever git happened
+  // to list first" is never what decides who a caller is compared against.
   const tagged = await git([
     'for-each-ref',
     '--sort=-refname',
@@ -1295,10 +1335,15 @@ export async function gatherReferences({ git, gh }) {
   if (!tagged.ok) {
     return { ok: false, reason: `the tags in this checkout could not be listed: ${(tagged.stderr ?? '').trim()}` };
   }
+  // The glob is a prefix, and a reference is a NAME THIS PATH MINTED: `workflows-YYYY-MM-DD-<12
+  // hex>`. Anything else under the prefix is somebody's hand-made tag (`workflows-old`), and taking
+  // one as the baseline would compare a caller against a state this path never published, or refuse
+  // on every later push because the six do not parse there. It is left strictly alone: not listed,
+  // not moved, not deleted.
   const local = tagged.stdout
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line !== '');
+    .filter((line) => REFERENCE_PATTERN.test(line));
 
   const listed = await gh(['release', 'list', '--limit', '200', '--json', 'tagName']);
   if (!listed.ok) {
@@ -1313,11 +1358,14 @@ export async function gatherReferences({ git, gh }) {
   if (!Array.isArray(releases)) {
     return { ok: false, reason: 'the list of releases already published was not a list' };
   }
-  const remote = releases.map((release) => String(release?.tagName ?? '')).filter((name) => name !== '');
+  // Same filter as the tags, and for the same reason: a release named anything else was not
+  // published by this path, so it is neither a baseline nor a name this path could ever collide
+  // with. Every name this path mints matches the pattern, so nothing that could collide is dropped.
+  const remote = releases.map((release) => String(release?.tagName ?? '')).filter((name) => REFERENCE_PATTERN.test(name));
 
   // A release whose tag is not in this checkout means the checkout cannot see what is published, and
   // publishing from it risks minting a second name for a state that already has one.
-  const missing = remote.filter((name) => name.startsWith(REFERENCE_PREFIX) && !local.includes(name));
+  const missing = remote.filter((name) => !local.includes(name));
   if (missing.length > 0) {
     return {
       ok: false,
