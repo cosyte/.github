@@ -6,8 +6,14 @@ name: Drift check
 #   on: { push: { branches: [main] }, pull_request: { branches: [main] } }
 #   jobs:
 #     drift:
-#       uses: cosyte/.github/.github/workflows/drift-check.yml@main
+#       uses: cosyte/.github/.github/workflows/drift-check.yml@workflows-YYYY-MM-DD-COMMIT
 # The checker is zero-dep (Node stdlib), so no install is needed, only the submodules checked out.
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
 
 on:
   workflow_call:

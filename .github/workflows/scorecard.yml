@@ -9,10 +9,16 @@ name: Scorecard
 #                                # omit it and the job gets contents:none and startup-fails.
 #         security-events: write # upload the SARIF to the repo's Security tab
 #         id-token: write        # publish results to the OpenSSF API (for the badge)
-#       uses: cosyte/.github/.github/workflows/scorecard.yml@main
+#       uses: cosyte/.github/.github/workflows/scorecard.yml@workflows-YYYY-MM-DD-COMMIT
 # A called workflow can only downgrade the caller's token, so the caller MUST grant these. Runs on a
 # weekly schedule + push to main (set by the caller's `on:`); never on pull_request (publish needs the
 # default branch). Actions pinned to SHAs.
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
 
 on:
   workflow_call:

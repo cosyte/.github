@@ -17,6 +17,16 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 ## Calling them
 
+**Name a published reference, not `@main`.** `@main` is a branch, and a branch delivers every later
+change to your pipeline on **this** repository's clock rather than yours: the next merge here changes
+your CI and your release, reviewed by nobody in your repository. A published reference names one
+commit and never names another, so nothing reaches you until you edit your own `uses:` line.
+
+Pick the newest from <https://github.com/cosyte/.github/releases> and paste it in place of the
+placeholder below. Each release's notes say what a caller adopting it has to act on. See
+"[The published reference](#the-published-reference-and-what-main-costs-a-caller)" for how they are
+produced and what they do not promise.
+
 ```yaml
 # <parser>/.github/workflows/ci.yml
 name: CI
@@ -25,7 +35,8 @@ on:
   pull_request: { branches: [main] }
 jobs:
   ci:
-    uses: cosyte/.github/.github/workflows/ci.yml@main
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
     with:
       run-phi-scan: true # parsers that handle PHI / raw bytes
       check-docs-content: true # repos that publish docs-content/; see below
@@ -38,7 +49,8 @@ on:
   push: { branches: [main] }
 jobs:
   release:
-    uses: cosyte/.github/.github/workflows/release.yml@main
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/release.yml@workflows-YYYY-MM-DD-COMMIT
     with:
       package-name: "@cosyte/hl7"
     secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
@@ -48,6 +60,98 @@ jobs:
       id-token: write
       pull-requests: write
 ```
+
+GitHub allows three kinds of ref here: "the `{ref}` can be a SHA, a release tag, or a branch name",
+and "Using the commit SHA is the safest option for stability and security"
+([reusing workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)).
+A published reference is the release-tag form. A SHA is safer still and is always available, at the
+cost of a name nobody can read; either one is a reference that does not move, which is the property
+that matters.
+
+## The published reference, and what `@main` costs a caller
+
+Thirteen repositories call these workflows, and until each one moves its own `uses:` line, every push
+to `main` here changes thirteen pipelines that nobody in those repositories reviewed. This repository
+cannot move them: GitHub's "Require actions to be pinned to a full-length commit SHA" policy says in
+the same breath that "Reusable workflows can still be referenced by tag", so the one switch that
+would force it exempts exactly what this repository publishes. What this repository can do is offer
+something to move to, and that is what
+[`.github/workflows/publish-reference.yml`](.github/workflows/publish-reference.yml) and
+[`scripts/reference-publish.mjs`](scripts/reference-publish.mjs) do, proved by
+[`test/reference-publish.test.mjs`](test/reference-publish.test.mjs).
+
+**One reference per default-branch state, named after the commit it carries.** On a push to `main`,
+the script compares this commit against the most recently published reference and publishes
+`workflows-YYYY-MM-DD-<first 12 of the commit>` when anything a caller resolves has moved. That name
+is a pure function of the commit, so there is no such thing as the same name at a different commit,
+and there is deliberately **no `v1`-style major alias**: a moved reference is worse than a branch
+because it looks immutable. The release body is the note, and it says what a caller adopting this
+reference has to act on.
+
+**What "a change a caller must act on" means, exactly.** For any of the six reusables: a
+`workflow_call` input added without a default or made required, an input removed, a default changed,
+any change to the set of `secrets`, any change to the permissions the caller must grant (at the
+workflow level or on any job), or any job added, removed or renamed, because a job id is the
+check-run context a caller's ruleset may require. Everything else is reported in a second list and
+demanded of nobody: an input added **with** a default breaks no caller, which is how
+`check-docs-content` reached thirteen repositories without touching one of them.
+
+**What moves the reference is wider than what the note demands.** The state a caller resolves is the
+six workflow files **plus everything under `scripts/`**, because `ci.yml` fetches
+`docs-content-check.mjs` and `prepublish-check.mjs` at `github.job_workflow_sha` and `release.yml`
+runs five more: a caller pinned to a reference runs those scripts as of that commit. So a script fix
+mints a reference (otherwise no caller could ever adopt it) whose note truthfully says there is
+nothing to act on. A README edit or a test change mints nothing.
+
+### It refuses rather than publishing something it cannot stand behind
+
+There is no `continue-on-error` and no `|| true` on any step, the same rule the em-dash gate states,
+and every refusal below is a red run on this repository that publishes nothing:
+
+- **A name that already exists.** Never deleted, never force-updated, never pointed at another
+  commit. Someone decides by hand what that existing reference is.
+- **An interface it cannot read.** Node ships no YAML parser and this repository has no
+  `package.json` to add one to, so `reference-publish.mjs` carries a narrow reader that recognises
+  the shapes these six files use and refuses, naming the workflow and the line, on anything else.
+  That asymmetry is the design: a reader that refuses on an unfamiliar shape cannot silently miss a
+  caller-affecting change, and a permissive one can. That includes anything indented under a value
+  that already ended on its own line: a plain scalar wrapped onto a second line is legal YAML that a
+  line-oriented reader would truncate to its first line, which would turn a changed input `default:`
+  or a changed job `name:` into a note reporting that nothing changed. **If you add a shape it does
+  not know, widen the reader and pin the new shape as a test; do not loosen it.**
+- **An earlier reference it cannot read**, because the comparison the note owes a caller cannot be
+  made against it.
+- **A note it cannot compose.** Neither the note nor the reference is published: a reference without
+  its note is one nobody can adopt safely. The tag and its note are created by **one**
+  `gh release create` call for that reason, rather than a tag first and a note second.
+- **A shallow checkout, or a release on GitHub whose tag is not in the checkout.** Reading "no tags"
+  as "nothing has ever been published" would mint a second name for a state that already has one.
+- **A publish whose outcome it cannot read back**, including a tag that turns out to name a different
+  commit. Nothing is reported as published, and nothing is deleted to make room for a retry.
+- **A denied permission**, named as `contents: write` rather than reported as a generic failure.
+
+### The platform's half, which is a human's click
+
+Enabling **Settings, "Releases", `Enable release immutability`** on this repository makes GitHub
+enforce what the script already refuses to do: "Once an immutable release is published, its
+associated Git tag is locked to a specific commit, cannot be changed, and cannot be deleted while the
+release exists"
+([immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)).
+Note that "immutability will only apply to future releases"
+([preventing changes to your releases](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/preventing-changes-to-your-releases)),
+so it is worth turning on before the reference stream is long rather than after.
+
+**Nothing here depends on that setting.** That a reusable-workflow reference AT such a tag is
+therefore immutable is a composition of two documented facts rather than a documented guarantee, and
+it is written down as one. The safety property is enforced in this repository's own code, by the
+refusals above, and holds whether or not the setting is on. A green run does not mean it is on: the
+only way to know is to look at the setting.
+
+### What this does not do
+
+It does not move a single caller. Thirteen `uses:` lines live in thirteen other repositories, and
+this repository has no way to edit them and no policy that can force them. Until each one moves, the
+`@main` fan-out is exactly what it was, and this is an offer rather than an enforcement.
 
 ## The docs-content gate
 
@@ -66,7 +170,7 @@ reds the pull request that introduces it instead.
 ```yaml
 jobs:
   ci:
-    uses: cosyte/.github/.github/workflows/ci.yml@main
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
     with:
       run-phi-scan: true
       check-docs-content: true # requires docs-content/sidebars.json
@@ -667,7 +771,7 @@ every pull request) opts **out**:
 ```yaml
 jobs:
   ci:
-    uses: cosyte/.github/.github/workflows/ci.yml@main
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
     with:
       run-phi-scan: true
       run-prepublish-install: false # opt out of layer 2
