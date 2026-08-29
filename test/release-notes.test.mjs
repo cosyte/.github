@@ -1354,9 +1354,19 @@ test('release.yml withholds the publish command unless the notes gate derived no
   // passes on `is-release == 'true' && '' || 'pnpm run release'`, which contains exactly the same
   // text and publishes precisely when the gate says not to. This is one line, it decides whether npm
   // can be reached, and there is no edit to it that should be anything other than deliberate.
+  //
+  // THE INNER TERNARY IS THE STAGED-PUBLISHING ARM, ADDED WITH `publish-floor.mjs`, AND IT DOES NOT
+  // WEAKEN THIS GATE. The outer `is-release` test is unchanged and still decides whether ANY publish
+  // command is handed over; the inner one only chooses WHICH, and both of its branches are non-empty
+  // strings, so the outer `|| ''` remains the sole route to withholding. A package that has never
+  // been published takes `pnpm run release` exactly as before. `test/publish-floor.test.mjs` and
+  // `test/staged-publish.test.mjs` own the staged arm's own behaviour; what is asserted HERE is that
+  // it did not become a second way to reach npm behind the notes gate's back.
   assert.equal(
     publishInput[1].trim(),
-    "${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}",
+    "${{ steps.notes.outputs.is-release == 'true' && (steps.publish-floor.outputs.mode == 'staged' " +
+      "&& format('node .cosyte-release-tooling/scripts/staged-publish.mjs stage --package {0}', " +
+      "inputs.package-name) || 'pnpm run release') || '' }}",
     'the publish command must be the notes gate and nothing else',
   );
   // The version-PR half must NOT be conditional. changesets/action opens the "Version Packages" PR

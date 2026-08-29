@@ -801,6 +801,7 @@ test('AC7: no packing or publishing step is reachable past a failed gate', () =>
     optsBackIn.map((s) => s.label),
     [
       'Drop the release credentials from disk',
+      'Report the staged version for a maintainer',
       'The published package must be installable from the registry',
       'Collect the npm debug log',
       'Upload the npm debug log',
@@ -811,10 +812,19 @@ test('AC7: no packing or publishing step is reachable past a failed gate', () =>
     assert.ok(step.index > gate);
     assert.doesNotMatch(step.body, /uses: changesets\/action@|PACK_DOCS_CMD|pnpm run release|NODE_AUTH_TOKEN:/, step.label);
   }
-  // And the one that runs on `!cancelled()` is additionally conditioned on a publish having
-  // happened, which cannot be true in a run the gate refused: `changesets/action` never ran.
+  // And each one that runs on `!cancelled()` is additionally conditioned on a step output that
+  // CANNOT hold in a run this gate refused, because the step that would have set it never ran.
+  //
+  //   the install gate   `changesets/action` never ran, so `published` is empty, not `true`.
+  //   the stage report   `publish-floor` sits below this gate, so `mode` is empty, not `staged`. It
+  //                      also runs no tool: `staged-publish.mjs report` reads a file and prints.
   const installGate = optsBackIn.find((s) => s.label === 'The published package must be installable from the registry');
   assert.match(installGate.fields.if, /steps\.changesets\.outputs\.published == 'true'/);
+  const stageReport = optsBackIn.find((s) => s.label === 'Report the staged version for a maintainer');
+  assert.match(stageReport.fields.if, /steps\.publish-floor\.outputs\.mode == 'staged'/);
+  const floorGate = steps.findIndex((s) => /publish-floor\.mjs/.test(s.body));
+  assert.ok(floorGate > gate, 'the floor gate is itself below the protection gate, so it cannot speak first');
+  assert.match(stageReport.body, /staged-publish\.mjs report/, 'it reports; it does not stage or publish');
 });
 
 test('AC10: the permissions in force on that job name `contents` as well as `actions: read`', () => {
