@@ -8,9 +8,15 @@ name: CodeQL
 #         security-events: write # upload the SARIF to the repo's Security tab
 #         contents: read
 #         actions: read
-#       uses: cosyte/.github/.github/workflows/codeql.yml@main
+#       uses: cosyte/.github/.github/workflows/codeql.yml@workflows-YYYY-MM-DD-COMMIT
 # A called workflow can only downgrade the caller's token, never escalate it, so the caller MUST grant
 # security-events: write. Without it GitHub rejects the workflow at startup. Actions pinned to SHAs.
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
 
 on:
   workflow_call:

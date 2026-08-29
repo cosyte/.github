@@ -4,8 +4,15 @@ name: CI
 # Caller (each repo's .github/workflows/ci.yml):
 #   jobs:
 #     ci:
-#       uses: cosyte/.github/.github/workflows/ci.yml@main
+#       uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
 #       with: { run-phi-scan: true }      # byte/PHI parsers
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
+#
 # Universal gates: typecheck . lint(--max-warnings=0) . format:check . [PHI scan] . test .
 # coverage(gating) . build . attw . dual ESM/CJS smoke . actionlint. Actions are pinned to SHAs.
 #

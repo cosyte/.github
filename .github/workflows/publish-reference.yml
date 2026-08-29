@@ -1,0 +1,74 @@
+name: Publish a reference
+
+# Publishes each default-branch state of the six reusable workflows at a named reference that never
+# moves, with a note saying what a caller adopting it must act on.
+#
+# ▶ THIS WORKFLOW IS NOT A REUSABLE, AND MUST NEVER BECOME ONE. It carries `contents: write` and
+#   creates releases on THIS repository. A `workflow_call` trigger here would offer that job to
+#   thirteen callers, each running it against its own repository with its own token. It runs on a
+#   push to this repository's default branch and on nothing else.
+#
+# WHY THIS EXISTS. Thirteen repositories call `cosyte/.github/.github/workflows/<x>.yml@main`, so
+# every merge here changes thirteen pipelines that nobody in those repositories reviewed. A reference
+# that names one commit forever gives a caller something to move to on its own clock. This workflow
+# is only this repository's half: it offers the reference, and moving thirteen `uses:` lines is work
+# in those thirteen repositories.
+#
+# ▶ NO `continue-on-error` AND NO `|| true` ON ANY STEP BELOW, and the reason is the same one the
+#   em-dash gate states: a publish gate that degrades quietly is worse than no gate. Every refusal in
+#   `scripts/reference-publish.mjs` is a non-zero exit, and this job is meant to go red on it. The
+#   refusals it can produce are, deliberately, all of the form "this run could not tell, so it
+#   published nothing": an unreadable workflow interface, an unreadable earlier reference, a name
+#   that already exists, a note that could not be composed, a create that failed, and an outcome that
+#   could not be read back.
+#
+# ▶ `fetch-depth: 0` IS LOAD-BEARING RATHER THAN GENEROUS. The script compares this commit against
+#   the most recently published reference, and the tags carrying those references are in the
+#   repository, so the comparison needs no API call and no extra credential. A shallow clone has
+#   neither the tags nor the history, and reading "no tags" as "nothing has ever been published"
+#   would mint a second name for a state that already has one. The script REFUSES on a shallow
+#   checkout and refuses again when a release exists on GitHub whose tag is not in this checkout, so
+#   a future edit that drops this line reds the run instead of publishing a duplicate.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Two pushes landing close together must not decide against the same "most recent reference" at the
+# same time. `cancel-in-progress: false` because the second push has a state of its own that is owed
+# a reference; it waits rather than being dropped.
+concurrency:
+  group: publish-reference
+  cancel-in-progress: false
+
+jobs:
+  publish-reference:
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the tag and its release. This is the one permission this job needs beyond the
+      # default, and the one `scripts/reference-publish.mjs` names by hand when a run is denied it.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Zero dependencies on purpose, like every other script here: node builtins only, so there
+          # is nothing to install and no lockfile to cache.
+          node-version: "22"
+
+      - name: Publish the reference for this state, or say why none is owed
+        env:
+          # The automatic token. No PAT and no third-party action: `gh` is on `ubuntu-latest`.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/reference-publish.mjs --repo . --commit "$COMMIT_SHA"

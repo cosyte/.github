@@ -4,7 +4,7 @@ name: Release
 # Caller (each repo's .github/workflows/release.yml):
 #   jobs:
 #     release:
-#       uses: cosyte/.github/.github/workflows/release.yml@main
+#       uses: cosyte/.github/.github/workflows/release.yml@workflows-YYYY-MM-DD-COMMIT
 #       with: { package-name: "@cosyte/hl7" }
 #       secrets: inherit
 #       permissions:          # see THE CALLER-SIDE PRECONDITION below
@@ -12,6 +12,12 @@ name: Release
 #         contents: write
 #         id-token: write
 #         pull-requests: write
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
 #
 # ▶ THE CALLER-SIDE PRECONDITION, AND IT IS A PREREQUISITE RATHER THAN A RECOMMENDATION. READ THIS
 #   BEFORE ADOPTING A NEW VERSION OF THIS FILE.
