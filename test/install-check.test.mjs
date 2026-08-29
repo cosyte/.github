@@ -1108,7 +1108,16 @@ test("release.yml wires the gate the way the script expects", async () => {
 
   // The predicate. A strict superset of the sibling step's, which is observed running on real
   // releases; `!cancelled()` so a failure in the release step does not skip the installability check.
-  assert.match(yml, /if: \$\{\{ !cancelled\(\) && steps\.changesets\.outputs\.published == 'true' \}\}/);
+  //
+  // THE THIRD CLAUSE IS NOT OPTIONAL AND IS NOT COSMETIC. This gate installs the name and the
+  // version FROM THE REGISTRY, and a STAGED version is not resolved by an ordinary install until a
+  // maintainer approves it. Pointed at one, the gate would spend its entire 540s deadline budget
+  // proving an absence that is expected, then warn. `mode != 'staged'` keeps it aimed at versions
+  // the registry has actually been asked to serve.
+  assert.match(
+    yml,
+    /if: \$\{\{ !cancelled\(\) && steps\.changesets\.outputs\.published == 'true' && steps\.publish-floor\.outputs\.mode != 'staged' \}\}/,
+  );
 
   // The tooling path. A reusable workflow runs against the CALLER's checkout, so the script only
   // exists under the tooling checkout; a bare `scripts/` path would be a caller-side file.

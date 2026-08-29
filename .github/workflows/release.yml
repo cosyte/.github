@@ -38,6 +38,22 @@ name: Release
 # bumps versions and publishes to npm WITH PROVENANCE, uploads the docs artifacts, and fires a
 # repository_dispatch to cosyte/docs so the site rebuilds. Actions are pinned to SHAs.
 #
+# STAGED PUBLISHING, AND THE ONE SENTENCE THAT EXPLAINS EVERY STEP CONDITION MENTIONING `mode`.
+# npm registry data is immutable: `package@version`, once used, can never be used again, an unpublish
+# included. So the last reversible moment this pipeline had was BEFORE `changesets/action` ran. A
+# version of a package that ALREADY EXISTS on the registry is now submitted to npm's staging area
+# instead of being promoted to it, where a maintainer can download the exact tarball, inspect it, and
+# approve it or simply walk away. An unapproved stage leaves the live registry exactly as it was.
+#
+#   `publish-floor.mjs`   before anything is packed: which tool performs the publish for THIS caller,
+#                         whether it clears the floor that tool's staging mode needs, and whether the
+#                         package exists on the registry at all. Every unknown is a refusal.
+#   `staged-publish.mjs`  the publish command itself on the staged arm, in place of the caller's
+#                         `pnpm run release`. It stages and stops, and never falls back to a publish.
+#
+# A package that has NEVER been published cannot be staged (npm's own rule) and so takes the direct
+# arm unchanged, with the run saying out loud that this one is a one-way door.
+#
 # RELEASE NOTES. The GitHub release body is DERIVED from the changesets the "Version Packages" PR
 # consumed: each is a human-written summary of one change, they are what drove the version bump, and
 # the version commit deletes them, which is why `fetch-depth: 0` matters. `scripts/release-notes.mjs`
@@ -465,6 +481,44 @@ jobs:
           else
             echo "::warning title=Version PR will land with zero checks::RELEASE_PR_TOKEN is not set, so if this run opens a Version Packages PR it will be authored by GITHUB_TOKEN. GitHub does not start workflow runs for that token's events, required checks that never report count as PENDING rather than failing, and with bypass_actors empty the PR cannot be merged by anyone, an admin included. Set RELEASE_PR_TOKEN to fix it."
           fi
+      # THE PUBLISH PATH IS RESOLVED HERE, BEFORE ANYTHING IS PACKED, AND IT DECIDES THE ARM BELOW.
+      #
+      # Two questions, one step, both answered before a single byte is packed:
+      #
+      #   WHICH TOOL PUBLISHES, AND DOES IT CLEAR ITS OWN FLOOR. There is no single floor and
+      #   asserting `npm --version >= 11.15.0` here would be wrong. Since pnpm 11, `pnpm publish` is
+      #   implemented natively and does not delegate to the npm CLI, so on a pnpm-11 caller the npm
+      #   bundled with Node governs nothing and `pnpm stage` (added in pnpm v11.3.0) is the
+      #   capability in play. On a pnpm-10 caller the delegation is real and npm's own floor binds.
+      #   The `packageManager` versions measured across the callers are pnpm 10.0.0, 10.34.5 and
+      #   11.17.0, so BOTH arms exist in this org today. `publish-floor.mjs` reads the caller's tree
+      #   and the caller's binaries at runtime; no number in this file decides it.
+      #
+      #   IS THIS PACKAGE STAGEABLE AT ALL. npm is explicit that a package "already exists on the npm
+      #   registry - you cannot stage a brand-new package", so a first publish is a one-way door and
+      #   this step says so out loud rather than letting it look like every other release.
+      #
+      # ▶ THIS STEP CAN TURN A WORKING RELEASE PATH RED, AND THAT IS THE DECLARED FAIL-SAFE RATHER
+      #   THAN A DEFECT. A caller whose resolved publish tool is below the floor its mode needs
+      #   cannot release again until it raises its own `packageManager` pin or its own Node. That fix
+      #   belongs in the CALLING repository; nothing here can or should make it. The refusal names the
+      #   version found and the floor needed so the caller does not have to come and read this file.
+      #
+      # IT RUNS ONLY WHEN THIS COMMIT ACTUALLY PUBLISHES, on the same predicate the notes and
+      # changelog gates above already use. A run that opens a Version PR has no publish mode in use,
+      # so there is no floor for it to owe, and redding it would take a caller's release pipeline down
+      # one commit earlier than the thing it is warning about.
+      #
+      # IT PRECEDES `pnpm install` DELIBERATELY, which puts it ahead of the `Verify` ladder below.
+      # `pnpm attw` shells out to `npm pack`, so "before anything is packed" is only true on this side
+      # of that step.
+      - name: Resolve the publish path and prove it clears its floor
+        id: publish-floor
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+        run: |
+          node .cosyte-release-tooling/scripts/publish-floor.mjs --package "$PACKAGE_NAME" --repo .
       - run: pnpm install --frozen-lockfile
       - name: Verify
         run: |
@@ -550,7 +604,28 @@ jobs:
           # pending changesets" in bash against the action's own readChangesetState, and a predicate
           # that disagrees with it by a single empty changeset file hands the publish command back on
           # the arm that actually publishes. A misleading sentence is recoverable; that is not.
-          publish: ${{ steps.notes.outputs.is-release == 'true' && 'pnpm run release' || '' }}
+          #
+          # ▶ THE STAGED ARM IS SELECTED ON THIS LINE, AND THAT IS THE WHOLE REASON IT CAN BE
+          #   SELECTED WITHOUT EDITING A SINGLE CALLER. The command that publishes lives in each
+          #   caller's `package.json` (`release` is `changeset publish`), but the STRING handed to
+          #   the action is composed in THIS repository. So when `publish-floor.mjs` above reports
+          #   that the package already exists on the registry, the action is handed our own script
+          #   instead, and it submits the version to the npm staging area rather than promoting it.
+          #   No caller's `package.json`, `packageManager` or workflow changes.
+          #
+          #   THE DIRECT ARM IS BYTE-IDENTICAL TO WHAT SHIPPED BEFORE. A package that has never been
+          #   published still takes `pnpm run release` and behaves exactly as it always has, because
+          #   npm cannot stage a brand-new package and demanding it would red a correct first release.
+          #
+          #   `mode` is `staged`, `direct`, `refused`, or EMPTY when the step above was skipped. Only
+          #   the literal `staged` selects the staged command, so every other value, an unrecognised
+          #   one included, lands on the path this pipeline has been running all along.
+          #
+          #   THE `A && B || C` SHAPE IS LOAD-BEARING AND CANNOT BE REWRITTEN AS `A && '' || B`. An
+          #   empty string is falsy in an Actions expression, so the negated form falls through to its
+          #   own right-hand side and hands the publish command BACK on the run that must not have it.
+          #   Both branches of the inner expression are non-empty strings for exactly that reason.
+          publish: ${{ steps.notes.outputs.is-release == 'true' && (steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release') || '' }}
           # Defaults to TRUE, which cuts a SECOND GitHub release next to the one the upload step
           # below creates: two releases for one publish (x12 shipped 0.0.1 that way). It is also
           # the wrong release: it carries no docs artifacts, and because every caller sets
@@ -568,6 +643,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
+          # Where `staged-publish.mjs stage` leaves what it staged, and where the report step below
+          # looks for it. Named in one place so the two cannot drift onto different paths; the script
+          # defaults to the same file when the variable is absent, so a hand run still works.
+          STAGED_PUBLISH_REPORT: ${{ runner.temp }}/staged-publish.json
       # DELETE THE RELEASE CREDENTIALS FROM DISK AS SOON AS THEIR LAST CONSUMER HAS FINISHED.
       #
       # WHICH TWO FILES, AND THE LINE NUMBERS BELOW, ARE READ OUT OF `changesets/action` AT THE SHA
@@ -625,8 +704,42 @@ jobs:
             echo "::warning title=Release credential still on disk::Could not remove:$left. A credential changesets/action wrote stays readable for the rest of this job, the post-publish install probe included."
           fi
 
+      # SAY, ON THE RUN'S OWN SURFACE, THAT A VERSION IS SITTING IN STAGING WAITING FOR A HUMAN.
+      #
+      # A staged version that nobody is told about is the failure this whole change exists to avoid in
+      # the other direction: a release that looks finished and is not. So the package, the version and
+      # the identifier or command a maintainer needs to review it go into the job summary and into an
+      # annotation, not only into the publish step's log.
+      #
+      # IT NEVER PROMOTES OR DISCARDS ANYTHING, AND IT COULD NOT IF IT WANTED TO. npm prompts for 2FA
+      # "whether you approve the package in the CLI or on npmjs.com", and this job has no second
+      # factor. That is the design and not a gap: staging is what CI is allowed to do, and deciding is
+      # what a maintainer is for.
+      #
+      # A MISSING REPORT IS NOT A FAILURE. `is-release` is not the action's own arm predicate, so this
+      # step can be reached on the staged arm in a run where the action opened a Version PR and
+      # published nothing at all. The script says so and exits 0. The converse cannot happen quietly:
+      # a run that really staged always leaves the file behind, because the write is the last thing
+      # `stage` does and a failed write fails that step.
+      - name: Report the staged version for a maintainer
+        if: ${{ !cancelled() && steps.publish-floor.outputs.mode == 'staged' }}
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          STAGED_PUBLISH_REPORT: ${{ runner.temp }}/staged-publish.json
+        run: |
+          node .cosyte-release-tooling/scripts/staged-publish.mjs report --package "$PACKAGE_NAME"
+
+      # `mode != 'staged'` IS THE HALF THAT KEEPS A STAGED VERSION OUT OF THIS STEP, AND IT IS HERE
+      # EXPLICITLY RATHER THAN LEFT TO FOLLOW FROM `published`.
+      #
+      # It does follow: `staged-publish.mjs` never prints the `New tag:` marker the action reads, so
+      # `published` is not `true` on the staged arm and this step would skip anyway. That is a
+      # property of a string in another file, which is precisely why it is not the only thing standing
+      # between a staged version and a GitHub release announcing it shipped. Cutting a release, and
+      # dispatching a cosyte/docs rebuild, for a version no consumer can resolve would be a lie on a
+      # public surface, and the docs site would rebuild against a version the registry will not serve.
       - name: Publish the GitHub release + dispatch docs rebuild
-        if: ${{ steps.changesets.outputs.published == 'true' }}
+        if: ${{ steps.changesets.outputs.published == 'true' && steps.publish-floor.outputs.mode != 'staged' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
@@ -822,8 +935,15 @@ jobs:
       # does not skip the one check that says whether the thing on the registry can be installed. The
       # `published == 'true'` half is the same predicate the step above uses, which is a predicate
       # this org has watched fire on real releases rather than one written and never taken.
+      #
+      # AND IT MUST NOT BE POINTED AT A STAGED VERSION, WHICH IS THE `mode != 'staged'` CLAUSE BELOW.
+      # This gate installs the name and the version FROM THE REGISTRY. A staged version is not
+      # resolved by an ordinary install until it is approved, so the registry would correctly refuse
+      # to serve it, and this gate's retry ladder would then spend its whole 540s deadline budget
+      # proving a fact that is already known and expected. It would warn rather than red, which is the
+      # fail-open design working, but a 9-minute step asserting the wrong thing is not a check.
       - name: The published package must be installable from the registry
-        if: ${{ !cancelled() && steps.changesets.outputs.published == 'true' }}
+        if: ${{ !cancelled() && steps.changesets.outputs.published == 'true' && steps.publish-floor.outputs.mode != 'staged' }}
         # THE OUTERMOST OF FOUR NESTED BOUNDS, AND DELIBERATELY THE ONE THAT SHOULD NEVER FIRE.
         # This job holds a PROTECTED `release` environment while it runs, so the step cannot be left
         # on the six-hour job default. But reaching THIS bound is a killed step, which is a RED RUN
