@@ -260,8 +260,12 @@ corpus silently outside the gate. Block boundaries are still boundaries: two lis
 paragraphs and a heading beside its neighbour are never joined. An unclosed code fence inside a list
 item ends with that item rather than running to end of file, so a malformed sample in one bullet
 cannot hide every link after it; an unclosed fence at the top level does run to end of file, which
-is what CommonMark says it is. A code block inside a BLOCK QUOTE is the one container this parse
-gets wrong, and it has a section of its own just below.
+is what CommonMark says it is. A BLOCK QUOTE is a container in exactly the same way: an unclosed
+fence inside one ends where the QUOTE ends, so a forgotten closer under a `>` cannot hide the prose
+below it either, and a `>` carrying nothing ends the quoted paragraph as a blank line ends any
+other. Where containers nest, the TIGHTER one wins and both sentences hold at once: a fence opened
+in a list item that is itself inside a quote ends with that ITEM, so the bullet, the paragraph or
+the heading below it is prose again and the links in it are checked.
 
 **Three paths to a broken site this gate cannot stand in front of**, each owned elsewhere: a direct
 or administrative push to `main`; a release cut from a commit no gated pull request produced (the
@@ -277,16 +281,14 @@ whether an adopting repository's content passes is a question about that reposit
 nothing here reads. The red and green controls are fixture trees in
 `test/docs-content-check.test.mjs`.
 
-### A known limit: a code sample inside a BLOCK QUOTE reds
-
-**The out-of-scope promise for code covers the TOP LEVEL and a LIST ITEM, and it does not cover a
-BLOCK QUOTE.** A fenced or an indented code block nested inside a block quote is read as ordinary
-quoted prose, so a target inside it IS checked and can fail the run. That is a known **false red**,
-deferred to its own item rather than fixed here, and it is written down because the symptom is a red
-pull request over a page the site renders exactly as its author intended.
-
-The cause is ordering, not ambition: the fence test and the four-space indented-code test both run
-before a quote's `>` marker comes off the line, so neither one ever sees the fence. This note
+**The out-of-scope promise for code covers every container a document can put code in.** A code span
+between backticks, a fenced block under any info string and a four-space indented block are all
+code at the TOP LEVEL, inside a LIST ITEM, inside a BLOCK QUOTE and inside a `:::tip` admonition
+alike, at every nesting depth those containers reach, and nothing inside any of them is ever a
+target. A quote's `>` markers come off the line - one per nesting level, `> >` included - BEFORE the
+fence and the four-space indent are measured, and the column after them is the column both are
+measured from, so a quoted sample is read exactly as the same sample is at the top level. What that
+buys is an ordinary piece of technical writing:
 
 ```markdown
 > **Note**, from the runtime docs:
@@ -296,20 +298,11 @@ before a quote's `>` marker comes off the line, so neither one ever sees the fen
 > ~~~
 ```
 
-extracts `handlers[0](event)` as a link and prints a `B1` for `event`, exit 1, while the identical
-sample at the top level, inside a list item, or inside a `:::tip` admonition is code and yields no
-target at all. A four-space indented sample inside a quote and an unclosed fence inside one red the
-same way. A **closed triple-backtick** sample inside a quote does survive today, but by accident
-rather than by design: once the quoted paragraph is joined, the two backtick runs match each other
-as a code span. Change the fence character to `~`, drop the closer, or indent the sample instead,
-and it reds. Do not lean on it.
-
-**It is a false RED and never a false green**, so no broken link escapes through it and coverage of
-the class this gate exists to catch is untouched. Two workarounds until the deferred item lands:
-move the sample out of the quote, or use a Docusaurus admonition (`:::tip` ... `:::`) in place of
-the block quote, which holds a fence correctly. Nothing else about code changes: a code span between
-backticks, a fence at the top level, a fence inside a list item and a fence inside an admonition are
-all code, and nothing inside any of them is ever a target.
+which yields no target at all rather than a `B1` for `event` over a page the site renders exactly as
+its author intended. The promise is bounded in the direction that matters: a quote is a container,
+not a hole, so a broken link in quoted PROSE is still a `B1` on the line the link opens on, a
+wrapped one included, and an unclosed fence inside a quote ends where the quote ends - or with the
+quoted list item that holds it, whichever comes first - rather than swallowing the rest of the file.
 
 ### One correction, because an org-side artifact gets it backwards
 

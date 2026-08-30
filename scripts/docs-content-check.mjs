@@ -235,6 +235,33 @@ function runLength(text, start, character) {
   return n;
 }
 
+/** A block quote's own marker: up to three spaces, one `>`, and at most one space after it. */
+const QUOTE_MARKER = /^ {0,3}>( ?)/;
+
+/**
+ * The content of a line with its block-quote markers taken off, and how many came off.
+ *
+ * A quote nests, so a line carries one marker PER LEVEL and a peel that stops at the first gets
+ * `> > ` wrong. `limit` is what a line already inside a fence needs: peeling exactly as many
+ * markers as the fence was opened under leaves a DEEPER quote's own `>` in the content, where it
+ * cannot be mistaken for the fence's closer.
+ *
+ * @param {string} content the line, already past its container's content column
+ * @param {number} [limit] how many markers to take, at most
+ * @returns {{content: string, depth: number}}
+ */
+function peelQuotes(content, limit = Number.POSITIVE_INFINITY) {
+  let rest = content;
+  let depth = 0;
+  while (depth < limit) {
+    const marker = QUOTE_MARKER.exec(rest);
+    if (!marker) break;
+    rest = rest.slice(marker[0].length);
+    depth += 1;
+  }
+  return { content: rest, depth };
+}
+
 /**
  * The end of a code span opened by a run of `length` backticks at `from`, or -1.
  *
@@ -725,12 +752,23 @@ function scanBlock(block, found) {
  *     inner three as the closer turns the next line into prose and reds a working sample. An
  *     UNCLOSED fence ends with the CONTAINER that holds it - a line dedented past the list item's
  *     content column closes it - so a malformed sample inside a bullet cannot hide every link in
- *     the rest of the file.
+ *     the rest of the file. Where containers nest, the TIGHTEST one holding the fence is the one it
+ *     ends with, so a fence opened in a list item INSIDE a quote ends with that item and not with
+ *     the whole quote.
  *   - An INDENTED block is four spaces measured from the CONTAINER'S CONTENT COLUMN, not from
  *     column zero. `- Parent` followed by `    - Child, see [the guide](./missing)` is a nested
  *     list and that link is a link; reading it as code is how the Origin incident ships green.
  *   - An indented line cannot interrupt a PARAGRAPH, so a lazily indented continuation line is
  *     prose and its links are links.
+ *   - A BLOCK QUOTE is a container like any other, so its markers come off - one PER NESTING LEVEL,
+ *     `> >` included - BEFORE the fence and indented-code tests run, and the column after them is
+ *     the content column both tests measure from. A quoted sample is code exactly as the same
+ *     sample is at the top level. The quote is a container in the other direction too: an unclosed
+ *     fence inside one ends where the QUOTE ends - or with the quoted LIST ITEM that holds it,
+ *     whichever comes first - so a broken link in the prose below it is still found, and a `>`
+ *     carrying nothing is a quoted blank line that ends the quoted paragraph.
+ *     Leaving a quote does NOT end a paragraph, because CommonMark continues one lazily and a link
+ *     wrapped across that boundary is a link.
  *   - An HTML COMMENT and an MDX EXPRESSION COMMENT opening a line run to their closer across blank
  *     lines, exactly as the renderer reads them. Neither renders anything, so nothing inside one is
  *     a target.
@@ -744,11 +782,23 @@ export function extractTargets(text, startLine = 1) {
   const found = [];
   /** @type {number[]} */
   const containers = [];
-  /** @type {{character: string, length: number, base: number} | null} */
+  /**
+   * The same stack for list items opened INSIDE a block quote, whose content columns are measured
+   * in the QUOTED content and so do not compare with the line's own columns above.
+   * @type {number[]}
+   */
+  const quotedContainers = [];
+  /**
+   * The fence still open, and the container it was opened in. `base` is that container's column in
+   * the LINE's own coordinate and `quotedBase` is it in the QUOTED content's, because a fence
+   * opened in a list item INSIDE a quote is held by that item and ends with it, not with the quote.
+   * @type {{character: string, length: number, base: number, quotedBase: number, depth: number} | null}
+   */
   let fence = null;
   /** @type {string | null} the closer of a comment block still open */
   let comment = null;
-  let inQuote = false;
+  /** How many block-quote markers the block being built sits under. */
+  let quoteDepth = 0;
   /** @type {{content: string, line: number}[]} */
   let block = [];
 
@@ -757,7 +807,7 @@ export function extractTargets(text, startLine = 1) {
       scanBlock(block, found);
       block = [];
     }
-    inQuote = false;
+    quoteDepth = 0;
   };
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -766,15 +816,38 @@ export function extractTargets(text, startLine = 1) {
     const trimmed = line.trim();
 
     if (fence) {
-      if (trimmed === '') continue;
-      if (indentOf(line) >= fence.base) {
-        const run = runLength(trimmed, 0, fence.character);
-        if (run >= fence.length && trimmed.length === run) fence = null;
-        continue;
+      if (trimmed === '') {
+        // A blank line ends a BLOCK QUOTE, so a fence the quote held ends with it; at the top level
+        // or inside a list item a blank line is ordinary code and the fence stands. Without this
+        // the quoted lines BELOW the blank one read as code too, which is a false green.
+        if (fence.depth === 0) continue;
+        fence = null;
+      } else if (indentOf(line) >= fence.base) {
+        const inner = peelQuotes(line.slice(fence.base), fence.depth);
+        if (inner.depth === fence.depth) {
+          const rest = inner.content.trim();
+          // A `>` carrying nothing is a blank line of code: a blank line does not end the list item
+          // that holds the fence, so the block spans it exactly as it does at the top level.
+          if (rest === '') continue;
+          if (indentOf(inner.content) >= fence.quotedBase) {
+            const run = runLength(rest, 0, fence.character);
+            if (run >= fence.length && rest.length === run) fence = null;
+            continue;
+          }
+          // Dedented past the QUOTED container that held it - a sibling bullet, a quoted paragraph,
+          // a quoted heading. The list item ended, so the fence ended with it and did not run on
+          // to swallow the rest of the quote. This line is then the ordinary content it is.
+          fence = null;
+        } else {
+          // Fewer markers than the fence opened under: the block quote ended on this line, so the
+          // fence ended with it rather than running on and swallowing the rest of the file.
+          fence = null;
+        }
+      } else {
+        // Dedented past the container that held it: the list item ended, so the fence ended with
+        // it. This line is then read as the ordinary content it is.
+        fence = null;
       }
-      // Dedented past the container that held it: the list item ended, so the fence ended with it.
-      // This line is then read as the ordinary content it is.
-      fence = null;
     }
 
     if (comment !== null) {
@@ -788,6 +861,8 @@ export function extractTargets(text, startLine = 1) {
     }
 
     if (trimmed === '') {
+      // A blank line ends the block quote outright, so nothing it held is still open.
+      quotedContainers.length = 0;
       flush();
       continue;
     }
@@ -795,13 +870,48 @@ export function extractTargets(text, startLine = 1) {
     const indent = indentOf(line);
     while (containers.length > 0 && indent < containers[containers.length - 1]) containers.pop();
     const base = containers.length > 0 ? containers[containers.length - 1] : 0;
-    let content = line.slice(base);
+
+    // THE MARKERS COME OFF FIRST. Every test below measures the QUOTED CONTENT COLUMN, so a fence
+    // and a four-space indent are seen inside a quote exactly as they are outside one.
+    const quoted = peelQuotes(line.slice(base));
+    const depth = quoted.depth;
+    let content = quoted.content;
+
+    let quotedBase = 0;
+    if (depth === 0) {
+      quotedContainers.length = 0;
+    } else {
+      // A block quote's own paragraph, which may wrap exactly as any other does. A different marker
+      // run is a different quote, so it is a different block; a line with NO marker is left alone,
+      // because CommonMark continues a quoted paragraph lazily and a link wrapped across that
+      // boundary is a link.
+      if (depth !== quoteDepth) flush();
+      quoteDepth = depth;
+      if (content.trim() === '') {
+        // `>` carrying nothing is a quoted blank line: it ends the quoted paragraph, exactly as an
+        // unquoted blank line ends an unquoted one. The list item it sits in survives it, so the
+        // quoted container stack stands.
+        flush();
+        continue;
+      }
+      // A LIST ITEM INSIDE THE QUOTE MOVES THE CONTENT COLUMN exactly as one outside it does, and
+      // the indented-code test below measures from there. Without this a nested bullet under a
+      // quoted parent reads as four spaces of code and its link goes unchecked, which is the false
+      // GREEN this whole change is guarding against.
+      const inner = indentOf(content);
+      while (quotedContainers.length > 0 && inner < quotedContainers[quotedContainers.length - 1]) {
+        quotedContainers.pop();
+      }
+      quotedBase = quotedContainers.length > 0 ? quotedContainers[quotedContainers.length - 1] : 0;
+      content = content.slice(quotedBase);
+    }
+
     const relativeIndent = indentOf(content);
 
     const fenceOpen = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
     if (fenceOpen && !(fenceOpen[1][0] === '`' && fenceOpen[2].includes('`'))) {
       flush();
-      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length, base };
+      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length, base, quotedBase, depth };
       continue;
     }
 
@@ -815,16 +925,15 @@ export function extractTargets(text, startLine = 1) {
       // A new list item is a new block: `- [Item one` and `- Item two](./x)` are two items and no
       // link at all, so they must never be joined.
       flush();
-      containers.push(base + marker[0].length);
+      // Each stack holds the column in ITS OWN coordinate: the line's for an unquoted item, the
+      // quoted content's for one inside a quote, because a marker past a `>` does not compare with
+      // a marker before one.
+      if (depth === 0) containers.push(base + marker[0].length);
+      else {
+        quotedContainers.push(quotedBase + marker[0].length);
+        quoteDepth = depth;
+      }
       content = content.slice(marker[0].length);
-    }
-
-    const quote = /^ {0,3}>( ?)/.exec(content);
-    if (quote) {
-      // A block quote's own paragraph, which may wrap exactly as any other does.
-      if (!inQuote) flush();
-      inQuote = true;
-      content = content.slice(quote[0].length);
     }
 
     const opener = /^ {0,3}(\{\/\*|<!--)/.exec(content);
