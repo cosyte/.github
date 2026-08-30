@@ -697,6 +697,284 @@ test('an unclosed fence inside a list item ends with the item, not at end of fil
 });
 
 // ---------------------------------------------------------------------------
+// A CODE BLOCK INSIDE A BLOCK QUOTE IS CODE, AT EVERY DEPTH THE PARSE PRODUCES
+// ---------------------------------------------------------------------------
+//
+// A BLOCK QUOTE IS A CONTAINER LIKE ANY OTHER, and the code it holds is code. Quoting a runtime
+// sample under a `> **Note**` is ordinary technical writing, so reading the sample as quoted prose
+// extracts `handlers[0](event)` as a link and reds a pull request over a page the site renders
+// exactly as its author intended. Each case below pairs the quoted spelling with the SAME sample at
+// the top level, which is already code, so what is proved is that the container makes no difference
+// rather than that the quote is skipped. The other direction - a quote swallowing a link that IS
+// live - is the false GREEN this gate exists to prevent, and it has controls of its own further
+// down.
+
+/** The three link-shaped spellings, so no finding class can slip through a quoted sample. */
+const SHAPES = ['[Guide](./missing)', '![Logo](./missing.svg)', '[label]: ./missing'];
+
+test('a FENCED sample inside a BLOCK QUOTE is code, for backticks and tildes at any run length', () => {
+  for (const fence of ['```', '````', '~~~', '~~~~~']) {
+    const open = fence === '```' || fence === '````' ? `${fence}ts runnable` : `${fence}ts`;
+    const quoted = ['> **Note**, from the runtime docs:', '>', `> ${open}`, `> ${SAMPLE}`];
+    for (const shape of SHAPES) quoted.push(`> ${shape}`);
+    quoted.push(`> ${fence}`, '');
+    assert.deepEqual(
+      extractTargets(quoted.join('\n')),
+      [],
+      `a ${fence} sample inside a block quote is code:\n${quoted.join('\n')}`,
+    );
+
+    // The identical sample at the TOP LEVEL, which is already code today: the pair is what shows
+    // the container is what changed, not the fence handling.
+    const top = [open, SAMPLE, ...SHAPES, fence, ''];
+    assert.deepEqual(extractTargets(top.join('\n')), []);
+  }
+});
+
+test('a WHOLE TREE whose only link-shaped text is inside a quoted fence exits zero with 0 link(s)', () => {
+  const document = [
+    '# Intro',
+    '',
+    '> **Note**, from the runtime docs:',
+    '>',
+    '> ~~~ts runnable',
+    `> ${SAMPLE}`,
+    ...SHAPES.map((shape) => `> ${shape}`),
+    '> ~~~',
+    '',
+  ].join('\n');
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': `${document}\n`,
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, `a false red on a working sample is a defect of this gate:\n${output}`);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\), 0 image\(s\)/, output);
+  assert.doesNotMatch(output, /B1|B5/, output);
+  assert.doesNotMatch(output, /event/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// AN INDENTED BLOCK IS FOUR SPACES FROM THE CONTAINER'S CONTENT COLUMN, and inside a quote that
+// column is the one AFTER the `>` marker. Measuring from column zero instead is how the marker
+// hides the indent and the sample reads as prose.
+test('an INDENTED sample inside a BLOCK QUOTE is code, measured from the quoted content column', () => {
+  const quoted = ['> **Note**, from the runtime docs:', '>', `>     ${SAMPLE}`];
+  for (const shape of SHAPES) quoted.push(`>     ${shape}`);
+  quoted.push('');
+  assert.deepEqual(extractTargets(quoted.join('\n')), [], quoted.join('\n'));
+
+  const top = ['**Note**, from the runtime docs:', '', `    ${SAMPLE}`, ...SHAPES.map((s) => `    ${s}`), ''];
+  assert.deepEqual(extractTargets(top.join('\n')), []);
+
+  // And the same tree end to end.
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': `# Intro\n\n${quoted.join('\n')}\n`,
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, output);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\), 0 image\(s\)/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// EVERY NESTING DEPTH THE PARSER PRODUCES, not just one marker deep. A quote inside a quote, a
+// quote inside a list item and a list item inside a quote each move the content column, and a fix
+// that peels exactly one marker gets two of the three wrong.
+test('a quoted code block is code inside `> >`, inside a list item, and holding a list item', () => {
+  const nested = [
+    '> > **Note**:',
+    '> >',
+    '> > ```ts',
+    `> > ${SAMPLE}`,
+    ...SHAPES.map((shape) => `> > ${shape}`),
+    '> > ```',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(nested), [], nested);
+
+  const nestedIndent = [
+    '> > **Note**:',
+    '> >',
+    `> >     ${SAMPLE}`,
+    ...SHAPES.map((shape) => `> >     ${shape}`),
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(nestedIndent), [], nestedIndent);
+
+  const quoteInItem = [
+    '- A note:',
+    '',
+    '  > ```ts',
+    `  > ${SAMPLE}`,
+    ...SHAPES.map((shape) => `  > ${shape}`),
+    '  > ```',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(quoteInItem), [], quoteInItem);
+
+  const itemInQuote = [
+    '> - A note:',
+    '>',
+    '>   ```ts',
+    `>   ${SAMPLE}`,
+    ...SHAPES.map((shape) => `>   ${shape}`),
+    '>   ```',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(itemInQuote), [], itemInQuote);
+
+  const indentedItemInQuote = [
+    '> - A note:',
+    '>',
+    `>       ${SAMPLE}`,
+    ...SHAPES.map((shape) => `>       ${shape}`),
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(indentedItemInQuote), [], indentedItemInQuote);
+});
+
+// A `>` LINE WITH NOTHING AFTER IT is a quoted blank: it ends the quoted paragraph exactly as a
+// blank line ends an unquoted one, and inside a fence it is a blank line of code. It is also the
+// shape most likely to walk a hand-rolled peel off the end of a string.
+test('an empty `>` line before, inside and after quoted code throws nothing and yields no target', () => {
+  const document = [
+    '>',
+    '> **Note**:',
+    '>',
+    '> ~~~ts',
+    '>',
+    `> ${SAMPLE}`,
+    ...SHAPES.map((shape) => `> ${shape}`),
+    '>',
+    '> ~~~',
+    '>',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(document), [], document);
+
+  // A quote that is nothing but markers, and one whose marker carries no trailing space.
+  assert.deepEqual(extractTargets('>\n>\n>\n'), []);
+  assert.deepEqual(extractTargets('>\n>~~~ts\n>const out = [x](./missing);\n>~~~\n'), []);
+
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': `# Intro\n\n${document}\n`,
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 0, output);
+  assert.match(output, /Checked 1 file\(s\), 0 link\(s\), 0 image\(s\)/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// AND THE MIRROR: A BLOCK QUOTE IS NOT A PLACE A BROKEN LINK GOES TO HIDE
+// ---------------------------------------------------------------------------
+//
+// THE FALSE RED ABOVE IS THE CHEAP FAILURE; THIS IS THE EXPENSIVE ONE. A fix that reads too much
+// of a block quote as code turns a real broken link into a false GREEN, and a green pull request
+// can be merged and cut into a release that reds `docs.cosyte.com` for days - the incident this
+// gate exists for, which no re-run of the gate undoes. Every case below is red against a fix that
+// skips quoted content wholesale, or that lets an unclosed quoted fence run to end of file, and
+// green against one that ends the code where the QUOTE ends.
+
+test('a broken link in quoted PROSE is still B1, wrapped across two quoted lines included', () => {
+  // On one line, as the control.
+  assert.deepEqual(extractTargets('> See the [reference](./gone) for it.\n'), [
+    { line: 1, raw: './gone', kind: 'link' },
+  ]);
+  // The LABEL wrapping across the quote's two lines, reported where the construct OPENS.
+  assert.deepEqual(extractTargets('> See the [x12 envelope\n> reference](./gone) for it.\n'), [
+    { line: 1, raw: './gone', kind: 'link' },
+  ]);
+  // And the DESTINATION wrapping, on the line after the one the link opens on.
+  assert.deepEqual(extractTargets('> See the [reference](\n> ./gone) for it.\n'), [
+    { line: 1, raw: './gone', kind: 'link' },
+  ]);
+  // A quoted IMAGE and a quoted link reference DEFINITION are targets in prose too.
+  assert.deepEqual(extractTargets('> ![Segment\n> layout](./diagrams/envelope.svg)\n'), [
+    { line: 1, raw: './diagrams/envelope.svg', kind: 'image' },
+  ]);
+  assert.deepEqual(extractTargets('> [label]:\n> ./gone\n'), [
+    { line: 1, raw: './gone', kind: 'definition' },
+  ]);
+
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': '# Intro\n\n> See the [x12 envelope\n> reference](./gone) for it.\n',
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 1, `a broken link in a quote is still broken:\n${output}`);
+  assert.match(output, /Checked 1 file\(s\), 1 link\(s\)/, output);
+  assert.match(output, /B1 docs-content\/intro\.md:3/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// THE OTHER HALF OF THE INDENT RULE, INSIDE A QUOTE. Four spaces is measured from the CONTAINER'S
+// content column, and a list item inside the quote moves that column exactly as one outside it
+// does. Measuring from the quote's own column instead reads a nested bullet as code and lets its
+// link through unchecked - the quoted spelling of the Origin incident.
+test('a nested list item inside a BLOCK QUOTE is NOT code, so its link is still checked', () => {
+  const separated = '> - Parent topic\n>\n>     - Child topic, see [the guide](./missing)\n';
+  assert.deepEqual(extractTargets(separated), [{ line: 3, raw: './missing', kind: 'link' }]);
+
+  // And with no quoted blank line between them, where the paragraph rule already carried it.
+  const tight = '> - Parent topic\n>     - Child topic, see [the guide](./missing)\n';
+  assert.deepEqual(extractTargets(tight), [{ line: 2, raw: './missing', kind: 'link' }]);
+
+  // The same item nested one level deeper, and a fence inside it still being code.
+  const deeper = ['> - Parent topic', '>', '>   - Child topic', '>', '>     ```js', `>     ${SAMPLE}`, '>     ```', ''];
+  assert.deepEqual(extractTargets(deeper.join('\n')), []);
+
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': `# Intro\n\n${separated}`,
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 1, `a link in a quoted nested list is a link:\n${output}`);
+  assert.match(output, /B1 docs-content\/intro\.md:5/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// AN UNCLOSED FENCE INSIDE A QUOTE ENDS WITH THE QUOTE, exactly as one inside a list item ends with
+// the item. Letting it run on would hide every link in the rest of the file behind a single
+// forgotten closer, which is the whole-file version of the same false green.
+test('an unclosed fence inside a BLOCK QUOTE ends with the quote, not at end of file', () => {
+  const afterBlank = [
+    '> A malformed sample:',
+    '> ```js',
+    `> ${SAMPLE}`,
+    '',
+    'Back at the top level, see [the guide](./missing).',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(afterBlank), [{ line: 5, raw: './missing', kind: 'link' }]);
+
+  // With no blank line between them either: the line simply carries no marker, so it is outside.
+  const noBlank = [
+    '> A malformed sample:',
+    '> ~~~js',
+    `> ${SAMPLE}`,
+    'Back at the top level, see [the guide](./missing).',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(noBlank), [{ line: 4, raw: './missing', kind: 'link' }]);
+
+  // And a blank line ends the QUOTE, so a NEW quote below it is prose and not more code.
+  const newQuote = ['> ~~~js', `> ${SAMPLE}`, '', '> See [the guide](./missing) here.', ''].join('\n');
+  assert.deepEqual(extractTargets(newQuote), [{ line: 4, raw: './missing', kind: 'link' }]);
+
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md': `# Intro\n\n${afterBlank}\n`,
+  });
+  const { code, output } = run(dir);
+  assert.equal(code, 1, `an unclosed quoted fence must not hide the rest of the file:\n${output}`);
+  assert.match(output, /B1 docs-content\/intro\.md:7/, output);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
 // RAW HTML, JSX ATTRIBUTES AND MDX EXPRESSIONS ARE NOT TARGETS
 // ---------------------------------------------------------------------------
 //
