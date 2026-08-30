@@ -974,6 +974,75 @@ test('an unclosed fence inside a BLOCK QUOTE ends with the quote, not at end of 
   rmSync(dir, { recursive: true, force: true });
 });
 
+// AND THE TIGHTER CONTAINER WINS. A quote is a container, but so is a LIST ITEM INSIDE ONE, and an
+// unclosed fence ends with whichever of them holds it most tightly. Ending it only where the whole
+// quote ends lets a forgotten closer in one quoted bullet swallow every later line of quoted prose,
+// which is the same false green one nesting level in. Each case pairs the quoted spelling with the
+// IDENTICAL text at the top level, where this rule is already right, so what is proved is that the
+// `> ` prefix makes no difference.
+test('an unclosed fence inside a QUOTED LIST ITEM ends with that item, not with the whole quote', () => {
+  // A SIBLING ITEM below the malformed one. The two texts differ by nothing but the marker.
+  const top = '- One\n  ```js\n  x\n- Two, see [the guide](./missing)\n';
+  const quoted = '> - One\n>   ```js\n>   x\n> - Two, see [the guide](./missing)\n';
+  assert.deepEqual(extractTargets(top), [{ line: 4, raw: './missing', kind: 'link' }]);
+  assert.deepEqual(extractTargets(quoted), [{ line: 4, raw: './missing', kind: 'link' }], quoted);
+
+  // A quoted PARAGRAPH below the item, with a quoted blank line between them and without one.
+  assert.deepEqual(
+    extractTargets('> - One\n>   ~~~js\n>   x\n>\n> Back in the quote, see [the guide](./missing).\n'),
+    [{ line: 5, raw: './missing', kind: 'link' }],
+  );
+  assert.deepEqual(
+    extractTargets('> - One\n>   ~~~js\n>   x\n> Back in the quote, see [the guide](./missing).\n'),
+    [{ line: 4, raw: './missing', kind: 'link' }],
+  );
+
+  // A quoted HEADING, which is a block of its own and cannot be inside the item's code.
+  assert.deepEqual(
+    extractTargets('> - One\n>   ```js\n>   x\n> # Head\n> See [the guide](./missing).\n'),
+    [{ line: 5, raw: './missing', kind: 'link' }],
+  );
+
+  // One quoted level deeper: the fence ends with the DEEP item, and the sibling at that level is
+  // prose again.
+  assert.deepEqual(
+    extractTargets('> - One\n>   - Deep\n>     ```js\n>     x\n>   - Sibling, see [the guide](./missing)\n'),
+    [{ line: 5, raw: './missing', kind: 'link' }],
+  );
+
+  // And inside `> >`, where the item's column is measured past two markers.
+  assert.deepEqual(
+    extractTargets('> > - One\n> >   ~~~js\n> >   x\n> > - Two, see [the guide](./missing)\n'),
+    [{ line: 4, raw: './missing', kind: 'link' }],
+  );
+
+  // THE FALSE-RED CONTROL, in the other direction: everything still AT the item's content column is
+  // code, a quoted blank line inside it does not end it, and the closer still closes it there.
+  const stillCode = [
+    '> - One',
+    '>   ```js',
+    `>   ${SAMPLE}`,
+    '>',
+    '>   [Guide](./missing)',
+    '>   ```',
+    '',
+  ].join('\n');
+  assert.deepEqual(extractTargets(stillCode), [], stillCode);
+});
+
+test('a WHOLE TREE with an unclosed fence in a quoted list item still reports the link below it', () => {
+  const dir = makeTree({
+    'docs-content/sidebars.json': sidebar({ docs: ['intro'] }),
+    'docs-content/intro.md':
+      `# Intro\n\n> - One\n>   \`\`\`js\n>   ${SAMPLE}\n> - Two, see [the guide](./missing)\n`,
+  });
+  const { code, output } = run(dir);
+  assert.match(output, /Checked 1 file\(s\), 1 link\(s\)/, output);
+  assert.match(output, /B1 docs-content\/intro\.md:6/, output);
+  assert.equal(code, 1, `a broken link in a quoted list item must still be B1:\n${output}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // ---------------------------------------------------------------------------
 // RAW HTML, JSX ATTRIBUTES AND MDX EXPRESSIONS ARE NOT TARGETS
 // ---------------------------------------------------------------------------

@@ -752,7 +752,9 @@ function scanBlock(block, found) {
  *     inner three as the closer turns the next line into prose and reds a working sample. An
  *     UNCLOSED fence ends with the CONTAINER that holds it - a line dedented past the list item's
  *     content column closes it - so a malformed sample inside a bullet cannot hide every link in
- *     the rest of the file.
+ *     the rest of the file. Where containers nest, the TIGHTEST one holding the fence is the one it
+ *     ends with, so a fence opened in a list item INSIDE a quote ends with that item and not with
+ *     the whole quote.
  *   - An INDENTED block is four spaces measured from the CONTAINER'S CONTENT COLUMN, not from
  *     column zero. `- Parent` followed by `    - Child, see [the guide](./missing)` is a nested
  *     list and that link is a link; reading it as code is how the Origin incident ships green.
@@ -762,8 +764,9 @@ function scanBlock(block, found) {
  *     `> >` included - BEFORE the fence and indented-code tests run, and the column after them is
  *     the content column both tests measure from. A quoted sample is code exactly as the same
  *     sample is at the top level. The quote is a container in the other direction too: an unclosed
- *     fence inside one ends where the QUOTE ends, so a broken link in the prose below it is still
- *     found, and a `>` carrying nothing is a quoted blank line that ends the quoted paragraph.
+ *     fence inside one ends where the QUOTE ends - or with the quoted LIST ITEM that holds it,
+ *     whichever comes first - so a broken link in the prose below it is still found, and a `>`
+ *     carrying nothing is a quoted blank line that ends the quoted paragraph.
  *     Leaving a quote does NOT end a paragraph, because CommonMark continues one lazily and a link
  *     wrapped across that boundary is a link.
  *   - An HTML COMMENT and an MDX EXPRESSION COMMENT opening a line run to their closer across blank
@@ -785,7 +788,12 @@ export function extractTargets(text, startLine = 1) {
    * @type {number[]}
    */
   const quotedContainers = [];
-  /** @type {{character: string, length: number, base: number, depth: number} | null} */
+  /**
+   * The fence still open, and the container it was opened in. `base` is that container's column in
+   * the LINE's own coordinate and `quotedBase` is it in the QUOTED content's, because a fence
+   * opened in a list item INSIDE a quote is held by that item and ends with it, not with the quote.
+   * @type {{character: string, length: number, base: number, quotedBase: number, depth: number} | null}
+   */
   let fence = null;
   /** @type {string | null} the closer of a comment block still open */
   let comment = null;
@@ -818,15 +826,23 @@ export function extractTargets(text, startLine = 1) {
         const inner = peelQuotes(line.slice(fence.base), fence.depth);
         if (inner.depth === fence.depth) {
           const rest = inner.content.trim();
-          if (rest !== '') {
+          // A `>` carrying nothing is a blank line of code: a blank line does not end the list item
+          // that holds the fence, so the block spans it exactly as it does at the top level.
+          if (rest === '') continue;
+          if (indentOf(inner.content) >= fence.quotedBase) {
             const run = runLength(rest, 0, fence.character);
             if (run >= fence.length && rest.length === run) fence = null;
+            continue;
           }
-          continue;
+          // Dedented past the QUOTED container that held it - a sibling bullet, a quoted paragraph,
+          // a quoted heading. The list item ended, so the fence ended with it and did not run on
+          // to swallow the rest of the quote. This line is then the ordinary content it is.
+          fence = null;
+        } else {
+          // Fewer markers than the fence opened under: the block quote ended on this line, so the
+          // fence ended with it rather than running on and swallowing the rest of the file.
+          fence = null;
         }
-        // Fewer markers than the fence opened under: the block quote ended on this line, so the
-        // fence ended with it rather than running on and swallowing the rest of the file.
-        fence = null;
       } else {
         // Dedented past the container that held it: the list item ended, so the fence ended with
         // it. This line is then read as the ordinary content it is.
@@ -895,7 +911,7 @@ export function extractTargets(text, startLine = 1) {
     const fenceOpen = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
     if (fenceOpen && !(fenceOpen[1][0] === '`' && fenceOpen[2].includes('`'))) {
       flush();
-      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length, base, depth };
+      fence = { character: fenceOpen[1][0], length: fenceOpen[1].length, base, quotedBase, depth };
       continue;
     }
 

@@ -263,7 +263,9 @@ cannot hide every link after it; an unclosed fence at the top level does run to 
 is what CommonMark says it is. A BLOCK QUOTE is a container in exactly the same way: an unclosed
 fence inside one ends where the QUOTE ends, so a forgotten closer under a `>` cannot hide the prose
 below it either, and a `>` carrying nothing ends the quoted paragraph as a blank line ends any
-other.
+other. Where containers nest, the TIGHTER one wins and both sentences hold at once: a fence opened
+in a list item that is itself inside a quote ends with that ITEM, so the bullet, the paragraph or
+the heading below it is prose again and the links in it are checked.
 
 **Three paths to a broken site this gate cannot stand in front of**, each owned elsewhere: a direct
 or administrative push to `main`; a release cut from a commit no gated pull request produced (the
@@ -299,8 +301,8 @@ buys is an ordinary piece of technical writing:
 which yields no target at all rather than a `B1` for `event` over a page the site renders exactly as
 its author intended. The promise is bounded in the direction that matters: a quote is a container,
 not a hole, so a broken link in quoted PROSE is still a `B1` on the line the link opens on, a
-wrapped one included, and an unclosed fence inside a quote ends where the quote ends rather than
-swallowing the rest of the file.
+wrapped one included, and an unclosed fence inside a quote ends where the quote ends - or with the
+quoted list item that holds it, whichever comes first - rather than swallowing the rest of the file.
 
 ### One correction, because an org-side artifact gets it backwards
 
