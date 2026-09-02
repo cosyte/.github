@@ -1,0 +1,61 @@
+name: Self CodeQL
+
+# This repository running its OWN `codeql.yml` reusable over its own tree.
+#
+# WHY THIS FILE EXISTS. `codeql.yml` declares `on: workflow_call` and nothing else, so it analyses
+# the thirteen repositories that call it and never this one. That left the tree holding every gate
+# script in `scripts/` and every credentialed publish path in this org as the one `@cosyte/*` tree
+# with no static analysis: the widest blast radius here was the single exemption. This is the thin
+# caller that closes it, and it is deliberately the same shape a calling repository writes.
+#
+# ▶ THE `uses:` LINE IS `./.github/workflows/codeql.yml`, WITH NO `@ref`, AND THAT IS LOAD-BEARING.
+#   GitHub resolves the same-repository form from THE COMMIT UNDER ANALYSIS, so a pull request is
+#   analysed with the analysis definition that pull request itself proposes. Written instead as an
+#   `{owner}/{repo}/.github/workflows/...@{ref}` cross-repository reference naming the default
+#   branch, every pull request would be analysed with the default branch's definition, and this
+#   repository would reintroduce, inside the repository that exists to end the moving-reference
+#   fan-out, the exact reference it just closed. `test/self-scan.test.mjs` refuses that form here.
+#
+# ▶ THE PERMISSIONS BLOCK IS NOT DECORATION. A called workflow can only DOWNGRADE the caller's
+#   token, never escalate it, as `codeql.yml`'s own header states. Every permission the `analyze`
+#   job declares therefore has to be granted here, or the run either startup-fails or completes
+#   having uploaded nothing to a Security tab nobody then reads. `test/self-scan.test.mjs` reads
+#   both files and asserts this job grants each permission that one declares.
+#
+# ▶ NO `continue-on-error` AND NO `|| true` ANYWHERE ON THIS PATH. An analysis that cannot complete
+#   must red the run. A suppressed failure is indistinguishable, on the only surface anyone checks,
+#   from a tree with no findings, and recording an absent result as a clean one is the precise
+#   outcome this work exists to prevent.
+#
+# ▶ `languages` IS PASSED EXPLICITLY RATHER THAN LEFT TO THE REUSABLE'S DEFAULT, because the matrix
+#   downstream is built from it: `fromJSON('[]')` produces ZERO analyze jobs, and zero jobs report
+#   as a SATISFIED context. That is a green check over nothing analysed, which is the same false
+#   green by a different route. Naming the set here puts it where a reviewer of THIS repository sees
+#   it, and `test/self-scan.test.mjs` refuses an empty one.
+#
+# ▶ WHAT THIS FILE DOES NOT DO: act on a finding. No alert is triaged and no severity fails a run
+#   beyond the analysis itself failing. Uploading the findings is this change; deciding what to do
+#   about one is separate work and is not smuggled in here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    permissions:
+      # Exactly what `codeql.yml`'s `analyze` job declares. Keep these in step with it.
+      security-events: write # upload the SARIF to this repository's own code-scanning surface
+      contents: read # check this repository out, and resolve the reusable below
+      actions: read # read the workflow run the analysis is attributed to
+    uses: ./.github/workflows/codeql.yml
+    with:
+      # Everything analysable that this repository tracks is JavaScript: `scripts/` and `test/` are
+      # zero-dependency ES modules, which is why there is no package.json here to detect. Non-empty
+      # on purpose; see the note above about an empty set producing a green check over nothing.
+      languages: '["javascript-typescript"]'

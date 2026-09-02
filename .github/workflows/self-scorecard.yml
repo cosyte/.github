@@ -1,0 +1,64 @@
+name: Self Scorecard
+
+# This repository running its OWN `scorecard.yml` reusable against its own tree, on a weekly clock.
+#
+# WHY THIS FILE EXISTS. `scorecard.yml` declares `on: workflow_call` and nothing else, so this
+# repository scored everyone else's supply chain and never its own. An auditor reading this org now
+# finds the repository with the widest blast radius scored like every repository it governs.
+#
+# ▶ THIS PUBLISHES A PUBLIC RESULT, AND PUBLICATION IS ONE-WAY. `publish-results: true` sends this
+#   repository's OpenSSF Scorecard result to the public OpenSSF REST API, which is what backs the
+#   badge and what an auditor reads without asking anyone here. A datapoint already published is not
+#   retracted by a later run: it is a public statement of this repository's supply-chain posture at
+#   that commit, INCLUDING the weaknesses it currently has. That exposure is intended, and it is
+#   written down here rather than discovered by whoever reads the first published score. Passing
+#   `false` would keep the SARIF upload and drop the publication; nothing else here reads the value.
+#
+# ▶ NEVER ON `pull_request`, AND THAT IS A CORRECTNESS RULE RATHER THAN A PREFERENCE. Publishing
+#   needs the default branch, and the analysis reads repository state (branch protection, the
+#   permissions on the token, the workflow set) that a pull request's token does not see the same
+#   way, so a pull-request run would publish a result about the wrong thing. `scorecard.yml`'s own
+#   header names the trigger set a caller is expected to give it: a weekly schedule plus push to the
+#   default branch, never `pull_request`. `test/self-scan.test.mjs` refuses one on this path.
+#
+# ▶ THE SCHEDULE IS THE LOAD-BEARING TRIGGER, NOT A BACKSTOP FOR THE PUSH ONE. Supply-chain posture
+#   decays with no commit at all: a pinned action's repository is archived, a maintainer's access
+#   changes, a dependency is yanked, a protection is relaxed. Seven quiet days with no push here
+#   must still produce an analysis, so a push trigger alone would not satisfy what this file is for.
+#
+# ▶ THE `uses:` LINE IS THE SAME-REPOSITORY FORM, resolved from the commit being analysed. See
+#   `self-codeql.yml`'s header for why a reference that can move independently of that commit is
+#   refused in this repository of all repositories.
+#
+# ▶ NO `continue-on-error` AND NO `|| true`. An analysis that cannot complete reds the run. An
+#   absent result is never recorded as a clean one, and a score is never a gate: nothing here fails
+#   a run on the value the analysis returns, only on the analysis failing to return one.
+
+on:
+  schedule:
+    # Weekly, Monday 04:21 UTC. Deliberately off the top of the hour: GitHub delays and drops
+    # scheduled runs that queue at :00 with everyone else's, and a dropped weekly run is a week.
+    - cron: "21 4 * * 1"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    permissions:
+      # Exactly what `scorecard.yml`'s `analysis` job declares. Keep these in step with it.
+      #
+      # `contents: read` is REQUIRED here rather than merely tidy: the caller job reads the reusable
+      # in order to resolve it, and omitting the line gives this job `contents: none`, which
+      # startup-fails. `scorecard.yml`'s header says so, and this is the file it says it to.
+      contents: read
+      security-events: write # upload the SARIF to this repository's own code-scanning surface
+      id-token: write # publish the result to the OpenSSF API, which is what the badge reads
+    uses: ./.github/workflows/scorecard.yml
+    with:
+      # The reusable already defaults this to true. Written out anyway, because publication is the
+      # public, one-way effect noted above and it should be visible in the file that causes it
+      # rather than only in the file that defines it.
+      publish-results: true
