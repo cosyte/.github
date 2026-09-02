@@ -1,0 +1,99 @@
+name: Org defaults coverage
+
+# This repository MEASURING whether the default issue templates it publishes actually land, instead
+# of assuming they do.
+#
+# `.github/ISSUE_TEMPLATE/bug_report.yml` promises the label `bug` and `feature_request.yml` promises
+# `enhancement`, in every repository this account owns that has no issue templates of its own. GitHub
+# requires each of those labels to already exist in each of those repositories. Nothing here had ever
+# read one, so a contributor filing an issue in a repository that never created `bug` got an
+# unlabelled issue and nobody learned of it. `scripts/org-defaults-coverage.mjs` reads the real
+# state; this file is what runs it and what makes the result something a maintainer can read.
+#
+# ▶ NEVER `on: workflow_call`. Thirteen repositories call this repository's reusable workflows at
+#   `@main`, and this file is deliberately not one of them: it runs HERE, against this account, and
+#   offers nothing for a caller to name. A `workflow_call` trigger would hand this job's token to
+#   whoever named the file. `test/org-defaults-coverage.test.mjs` refuses one.
+#
+# ▶ THE SCHEDULE IS THE LOAD-BEARING TRIGGER. The thing being measured is state in OTHER
+#   repositories: a label deleted, a repository created without one, an `ISSUE_TEMPLATE` folder added
+#   somewhere. None of that produces a commit here, so a run driven only by pull requests would go
+#   quiet exactly while the coverage decayed. The pull-request trigger is the second half: an edit to
+#   a template's `labels:` changes the obligation, and this is what measures the new one before it
+#   merges.
+#
+# ▶ NO `paths:` FILTER ON THE PULL-REQUEST TRIGGER, and that is a decision rather than an omission.
+#   The measurement is about the account's state, not about this diff, so there is no diff that makes
+#   it uninteresting. It also keeps this workflow out of the shape README.md measured in `#46`: a
+#   workflow skipped by path filtering leaves its check PENDING, which blocks a merge for anyone who
+#   ever requires the context, and a job skipped by a conditional satisfies its context while proving
+#   nothing. Neither trap is available to a workflow that simply runs.
+#
+# ▶ THE AUTOMATIC TOKEN, AND NOTHING ELSE. Every read is a GET, and the credential is the workflow's
+#   own `GITHUB_TOKEN`. This check adds no secret, no credential and no third-party package: the
+#   script is zero-dependency Node, which is why there is no install step and no lockfile here.
+#   That token's permissions are limited to the repository that contains this workflow, so what it
+#   enumerates of the account's other repositories is what any anonymous reader sees: the public
+#   ones. The report says so, in the run, rather than leaving a reader to assume otherwise.
+#
+# ▶ NO `continue-on-error` AND NO `|| true`. A check that cannot fail is documentation. The script
+#   refuses, naming the repository and the read, on anything it could not read, and that refusal has
+#   to reach the run as a failure.
+#
+# ▶ THE REPORT IS WRITTEN BY THE CHECK ITSELF, BEFORE IT EXITS. The script appends its measurement to
+#   `$GITHUB_STEP_SUMMARY`, so the finding is on the completed run's own page whether the run passed
+#   or failed, and can be read without running the check again. Deliberately NOT a later step that
+#   uploads it: a step after a failed one does not run, so such a report would publish itself exactly
+#   when there was something to publish, and reaching for `if: always()` to fix that would put a
+#   failure-suppressing condition on the check's own path.
+#
+# Run it locally with `node scripts/org-defaults-coverage.mjs --repository cosyte/.github`.
+
+on:
+  schedule:
+    # Weekly, Tuesday 06:37 UTC. Off the top of the hour on purpose: GitHub delays and drops
+    # scheduled runs that queue at :00 with everyone else's, and a dropped weekly run is a week.
+    - cron: "37 6 * * 2"
+  pull_request:
+    branches: [main]
+  # A maintainer who has just created a missing label needs to re-measure without waiting a week or
+  # opening a pull request. Re-running a past run would measure the old event; this measures now.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The job id is the check-run context name a branch ruleset would require. Read the real context
+  # off a live check run before requiring it, never off this file's `name:`.
+  org-defaults-coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      # Exactly the two the reads need, and naming any permission sets every unnamed one to `none`,
+      # which is the point: this job cannot write anywhere even if the script ever tried to.
+      #
+      # `contents: read` covers the checkout and the contents API reads that decide which
+      # repositories define issue templates of their own; `issues: read` covers the label listings.
+      # The repository and account metadata reads sit under `Metadata: read`, which is not a
+      # `permissions:` key at all and is always present.
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Zero dependencies on purpose: node builtins only, so this repo needs no package.json, no
+          # lockfile and no install step to stay verifiable.
+          node-version: "22"
+
+      - name: Measure which repositories the default issue templates reach, and their labels
+        env:
+          # The workflow's automatic token, and no other credential. `GH_TOKEN` is the name the
+          # sibling gate already uses for it.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/org-defaults-coverage.mjs
