@@ -136,6 +136,75 @@ test('a quoting form this reader does not read is refused rather than mis-unquot
   assert.throws(() => declaredLabels('bug.yml', form('labels: ["a\\"b"]\n')), /quoting form/);
 });
 
+// ---------------------------------------------------------------------------
+// The KEY, not only its value: `[]` means "no obligation", so it has to be earned
+// ---------------------------------------------------------------------------
+//
+// `[]` is the most dangerous answer this function can give. It says "this template declares no
+// labels", the check then reports there is no obligation to measure and exits 0, and a promise
+// GitHub is really making goes unmeasured behind a green run. So `[]` is allowed for exactly one
+// reason - no top-level `labels` key is there - and every line that IS such a key in a spelling
+// this reader cannot read is refused naming the file instead.
+
+const BOM = String.fromCharCode(0xfeff);
+const crlf = (/** @type {string} */ text) => text.replace(/\n/g, '\r\n');
+
+test('a CRLF block sequence declares its label: YAML breaks a line on CRLF', () => {
+  // The spelling GitHub's own issue-form documentation uses, saved by an editor that writes CRLF.
+  // Splitting on LF alone left `labels:\r`, which matched no key and read as declaring nothing.
+  assert.deepEqual(declaredLabels('t.yml', crlf(form('labels:\n  - bug\n'))), ['bug']);
+});
+
+test('a CRLF flow sequence declares its label', () => {
+  assert.deepEqual(declaredLabels('t.yml', crlf(form('labels: ["bug"]\n'))), ['bug']);
+});
+
+test('a lone carriage return breaks a line too, and does not hide the declaration', () => {
+  assert.deepEqual(declaredLabels('t.yml', form('labels:\n  - bug\n').replace(/\n/g, '\r')), ['bug']);
+});
+
+test('a byte order mark opening the stream does not hide the first key', () => {
+  // YAML 1.2 permits a BOM at the start of a stream, so `<BOM>labels: ["bug"]` declares `bug`.
+  assert.deepEqual(declaredLabels('t.yml', `${BOM}labels: ["bug"]\nname: Bug report\n`), ['bug']);
+});
+
+test('a top-level labels key spelled in a form this reader does not read is refused, not answered as none', () => {
+  // Each of these is a `labels` key to YAML and to GitHub. None of them is a key this reader reads,
+  // and the answer it must never give for any of them is `[]`.
+  const spellings = [
+    '"labels": ["bug"]', // a quoted key
+    "'labels': ['bug']",
+    'labels : ["bug"]', // a space before the colon
+    'LABELS: ["bug"]', // a case this reader does not recognise
+    'Labels: ["bug"]',
+    '? labels', // YAML's explicit key form
+    `${BOM}labels: ["bug"]`, // a byte order mark somewhere other than the head of the stream
+  ];
+  for (const spelling of spellings) {
+    assert.throws(
+      () => declaredLabels('bug.yml', `name: Bug\n${spelling}\nbody: []\n`),
+      (error) => {
+        assert.ok(error instanceof TemplateError, `${spelling} refused with ${error}`);
+        assert.equal(error.path, 'bug.yml');
+        assert.match(error.reason, /does not read/);
+        return true;
+      },
+      `${JSON.stringify(spelling)} was not refused`,
+    );
+  }
+});
+
+test('a flow collection at the document root is refused, because a labels key can hide inside one', () => {
+  assert.throws(() => declaredLabels('bug.yml', '{name: Bug, labels: [bug]}\n'), /flow collection/);
+});
+
+test('none of that refusal reaches an indented line, where a labels key is not a declaration', () => {
+  // The refusal scans column zero only. `body:` is full of indented keys, and one of them spelled
+  // `labels:` or `"labels":` declares nothing at the top level and must not red the check.
+  const text = 'name: Bug\nbody:\n  - type: dropdown\n    attributes:\n      "labels": ["not-a-declaration"]\n';
+  assert.deepEqual(declaredLabels('t.yml', text), []);
+});
+
 test('config.yml contributes no labels and is still listed as a default file', () => {
   const outcome = readDefaultTemplates([
     { name: 'bug_report.yml', text: form('labels: ["bug"]\n') },
@@ -532,6 +601,44 @@ test('a file at the ISSUE_TEMPLATE path is not the folder the clause names', () 
   ]);
 });
 
+test('a type the source stores in one place only is looked for in that one place', () => {
+  // "Discussion category forms must be in a folder called `.github/DISCUSSION_TEMPLATE`. Issue
+  // templates and their configuration file must be in a folder called `.github/ISSUE_TEMPLATE`. A
+  // `FUNDING.yml` file must be in the `.github` folder. All other supported files may be in the root
+  // of the repository, the `.github` folder, or the `docs` folder." The order of precedence is
+  // introduced as being for files that CAN be stored in more than one location, and these cannot.
+  const entries = {
+    github: [entry('workflows', 'dir')],
+    root: [entry('ISSUE_TEMPLATE', 'dir'), entry('FUNDING.yml'), entry('DISCUSSION_TEMPLATE', 'dir')],
+    docs: [entry('ISSUE_TEMPLATE', 'dir')],
+  };
+  assert.deepEqual(overridesOf(entries), []);
+  assert.equal(issueTemplateOverride(entries), null);
+});
+
+test('the report never says default-in-effect and not-in-effect about the same repository', async () => {
+  // An `ISSUE_TEMPLATE` folder at a repository's root is not a folder GitHub renders issue templates
+  // from, so the default IS in effect there and the label IS owed. Reporting it as an override would
+  // leave one row contradicting another, in a report whose whole job is to be readable after the
+  // fact, and the only way to silence that red would be to create a label nothing would ever apply.
+  const repos = [
+    { name: DEFAULTS_REPO, github: [TEMPLATE_FOLDER], root: [], docs: null, labels: BOTH_LABELS },
+    { name: 'cosyte/hl7', github: [], root: [entry('ISSUE_TEMPLATE', 'dir')], docs: null, labels: BOTH_LABELS },
+  ];
+  const outcome = await measureAgainst({ repos });
+  const item = outcome.report.repositories.find((entryOf) => entryOf.name === 'cosyte/hl7');
+  assert.equal(item.state, 'default-in-effect');
+  assert.deepEqual(item.overrides, []);
+  assert.equal(outcome.failing, false);
+  for (const row of outcome.report.repositories) {
+    const claimsOverride = row.overrides.some((over) => over.type === 'issue templates and config.yml');
+    assert.ok(
+      !(row.state === 'default-in-effect' && claimsOverride),
+      `${row.name} is charged the label obligation while the report says its issue-template default is not in effect`,
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Near misses
 // ---------------------------------------------------------------------------
@@ -778,6 +885,35 @@ test('an unparseable default template fails naming the file, before anything is 
   assert.deepEqual(outcome.report.coverage, []);
   // Nothing was enumerated: the set of obligations was never established.
   assert.equal(outcome.requests.length, 0);
+});
+
+test('CRLF templates carry a real obligation end to end, and an account missing it fails', async () => {
+  // The whole check over an account where NO repository holds `bug` or `enhancement`. Reading the
+  // key wrongly took the `no-label-obligation` branch here and exited 0, which is the green run over
+  // an unmeasured obligation this check exists to end.
+  const repos = [
+    { name: DEFAULTS_REPO, github: [TEMPLATE_FOLDER], root: [], docs: null, labels: [] },
+    { name: 'cosyte/hl7', github: [], root: [], docs: null, labels: [] },
+  ];
+  const outcome = await measureAgainst(
+    { repos },
+    {
+      templateFiles: [
+        { name: 'bug_report.yml', text: crlf(form('labels:\n  - bug\n')) },
+        { name: 'feature_request.yml', text: crlf(form('labels:\n  - enhancement\n')) },
+      ],
+    },
+  );
+  assert.notEqual(outcome.report.outcome, 'no-label-obligation');
+  assert.equal(outcome.report.outcome, 'uncovered');
+  assert.equal(outcome.failing, true);
+  assert.deepEqual(
+    outcome.report.coverage.map((item) => item.label),
+    BOTH_LABELS,
+  );
+  for (const item of outcome.report.coverage) {
+    assert.deepEqual([...item.missing].sort(), [DEFAULTS_REPO, 'cosyte/hl7'].sort(), `${item.label} missing`);
+  }
 });
 
 test('no declared label reports no obligation to measure, and does not report full coverage', async () => {
@@ -1099,6 +1235,19 @@ test('nothing on the check\'s path suppresses a failure', () => {
       );
     }
   }
+});
+
+test('only a superseded pull-request run is cancelled, so a measurement never concludes as cancelled', () => {
+  // A cancelled run concludes as `cancelled`: neither the failing conclusion an unmet obligation is
+  // owed nor an honest green. Every run on one ref shares the concurrency group, so an unconditional
+  // `cancel-in-progress` lets a `workflow_dispatch` on `main` cancel the scheduled measurement in
+  // flight there. A newer push to a pull request is the one case that really does supersede.
+  const concurrency = under(workflow(CHECK_WORKFLOW).lines, 'concurrency');
+  const cancel = concurrency === null ? null : scalar(concurrency, 'cancel-in-progress');
+  assert.ok(
+    cancel === null || cancel === 'false' || /github\.event_name\s*==\s*'pull_request'/.test(cancel),
+    `${CHECK_WORKFLOW} cancels runs it does not supersede (\`cancel-in-progress: ${cancel}\`)`,
+  );
 });
 
 test('the job grants the least the reads need, and no write anywhere', () => {

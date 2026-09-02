@@ -62,7 +62,13 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # ONLY A SUPERSEDED PULL-REQUEST RUN IS CANCELLED. A cancelled run concludes as `cancelled`, which
+  # is neither the failure an unmet obligation is owed nor an honest green, and on a branch the group
+  # is shared: a `workflow_dispatch` on `main` would otherwise cancel the scheduled run in flight
+  # there and replace a real measurement with a conclusion nobody reads as either. On a pull request
+  # the newer push measures the same account over the same templates, so the run it replaces has
+  # nothing left to say.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

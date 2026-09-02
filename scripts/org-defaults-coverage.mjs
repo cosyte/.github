@@ -106,8 +106,24 @@ export const LOCATIONS = Object.freeze([
 ]);
 
 /**
+ * The locations of the three types the source says live in exactly one place.
+ *
+ * "Discussion category forms must be in a folder called `.github/DISCUSSION_TEMPLATE`. Issue
+ * templates and their configuration file must be in a folder called `.github/ISSUE_TEMPLATE`. A
+ * `FUNDING.yml` file must be in the `.github` folder. All other supported files may be in the root
+ * of the repository, the `.github` folder, or the `docs` folder."
+ *
+ * So the order of precedence above applies to the types that CAN be stored in more than one place,
+ * and only to those. A repository keeping an `ISSUE_TEMPLATE` folder at its root keeps a folder
+ * GitHub does not read issue templates from: the default still renders there and the label is still
+ * owed, and calling that an override would put one row saying `default-in-effect` beside another
+ * saying the default is not in effect, in a report whose whole job is to be readable after the fact.
+ */
+const DOT_GITHUB_ONLY = Object.freeze(['github']);
+
+/**
  * The supported community-health types, from the table in the committed copy of "Creating a default
- * community health file".
+ * community health file", each with the locations that source reads it from.
  *
  * `GOVERNANCE.md` is deliberately NOT here. A paraphrase of this table in the umbrella's research
  * notes lists it and the live page's table does not, and the committed source is what this check is
@@ -116,9 +132,13 @@ export const LOCATIONS = Object.freeze([
 export const SUPPORTED_TYPES = Object.freeze([
   { type: 'code of conduct', names: ['CODE_OF_CONDUCT.md'] },
   { type: 'contributing guide', names: ['CONTRIBUTING.md'] },
-  { type: 'discussion category forms', names: ['DISCUSSION_TEMPLATE'] },
-  { type: 'funding file', names: ['FUNDING.yml'] },
-  { type: 'issue templates and config.yml', names: ['ISSUE_TEMPLATE', 'ISSUE_TEMPLATE.md'] },
+  { type: 'discussion category forms', names: ['DISCUSSION_TEMPLATE'], locations: DOT_GITHUB_ONLY },
+  { type: 'funding file', names: ['FUNDING.yml'], locations: DOT_GITHUB_ONLY },
+  {
+    type: 'issue templates and config.yml',
+    names: ['ISSUE_TEMPLATE', 'ISSUE_TEMPLATE.md'],
+    locations: DOT_GITHUB_ONLY,
+  },
   { type: 'pull request template', names: ['PULL_REQUEST_TEMPLATE', 'PULL_REQUEST_TEMPLATE.md'] },
   { type: 'security policy', names: ['SECURITY.md'] },
   { type: 'support file', names: ['SUPPORT.md'] },
@@ -146,7 +166,47 @@ export class TemplateError extends Error {
   }
 }
 
-const INDENT_OF = (/** @type {string} */ line) => line.length - line.trimStart().length;
+/**
+ * A line belongs to the top level when nothing indents it.
+ *
+ * Deliberately a test on the first BYTE rather than on `trimStart()`. JavaScript counts U+FEFF as
+ * whitespace, so a byte-order-marked line would trim to look indented by one and hide a key that
+ * YAML puts squarely at the top level.
+ */
+const TOP_LEVEL = (/** @type {string} */ line) => line !== '' && !/^[ \t]/.test(line);
+
+/**
+ * The one spelling of the key this reader reads: `labels:` at column zero, then a space, a tab or
+ * the end of the line.
+ */
+const LABELS_KEY = /^labels:( |\t|$)/;
+
+/** The byte order mark, spelled by code point so no editor can lose it out of this file. */
+const BOM = String.fromCharCode(0xfeff);
+
+/** Every other spelling of that key folds to this. A stray BOM is stripped so it cannot hide one. */
+const FOLD_KEY = (/** @type {string} */ name) => name.split(BOM).join('').trim().toLowerCase();
+
+/**
+ * The name a top-level line spells its key with, or `null` when the line begins no key.
+ *
+ * Only ever used to ask "is this line a `labels` key this reader cannot read?", so it recognises the
+ * spellings YAML allows and stops there: an explicit key (`? labels`), a quoted key (`"labels":`),
+ * and the plain form, whose name is everything before the first colon and therefore also catches
+ * `labels :` and `LABELS:`.
+ *
+ * @param {string} line
+ * @returns {string | null}
+ */
+function topLevelKey(line) {
+  const explicit = /^\?(?:\s+(.*))?$/.exec(line.trimEnd());
+  const text = explicit ? (explicit[1] ?? '').trim() : line;
+  const quoted = /^(['"])(.*?)\1\s*:(\s|$)/.exec(text);
+  if (quoted) return quoted[2];
+  if (explicit) return text;
+  const colon = text.indexOf(':');
+  return colon === -1 ? null : text.slice(0, colon);
+}
 
 /**
  * Unquote one scalar out of a `labels:` value, or refuse.
@@ -198,15 +258,44 @@ function scalarValue(raw, path) {
  * declares no labels" is the one wrong answer that turns into a green run over an unmeasured
  * obligation.
  *
+ * THAT REFUSAL COVERS THE KEY AND NOT ONLY ITS VALUE. `[]` is returned for one reason: no top-level
+ * `labels` key is there at all. A line that IS such a key in a spelling this reader does not read is
+ * refused naming the file, never answered `[]`, because `[]` means "no obligation" and a wrong "no
+ * obligation" is a green run over a promise nobody measured. Two spellings YAML's own grammar allows
+ * are read rather than refused, because they say exactly what the plain spelling says: CRLF (and
+ * lone-CR) line breaks, and a byte order mark opening the stream.
+ *
  * @param {string} path the template's path, for the refusal
  * @param {string} text its contents
  * @returns {string[]}
  */
 export function declaredLabels(path, text) {
-  const lines = String(text).split('\n');
+  // YAML 1.2 breaks a line on CRLF, on a lone CR and on LF alike, and permits a BOM to open a
+  // stream. Splitting on LF alone left `labels:\r` unmatched by the key test below, and a BOM left
+  // the first key unmatched: both read as "declares no labels" while GitHub read a real label.
+  const stream = String(text);
+  const lines = (stream.startsWith(BOM) ? stream.slice(BOM.length) : stream).split(/\r\n|\r|\n/);
   const opens = [];
   for (let i = 0; i < lines.length; i += 1) {
-    if (/^labels:( |$|\t)/.test(lines[i])) opens.push(i);
+    const line = lines[i];
+    if (LABELS_KEY.test(line)) {
+      opens.push(i);
+      continue;
+    }
+    if (!TOP_LEVEL(line)) continue;
+    const key = topLevelKey(line);
+    if (key !== null && FOLD_KEY(key) === 'labels') {
+      throw new TemplateError(
+        path,
+        `spells its top-level labels key as ${JSON.stringify(line.trim())}, which this reader does not read`,
+      );
+    }
+    if (/^[[{]/.test(line)) {
+      throw new TemplateError(
+        path,
+        'opens a flow collection at the document root, so a `labels:` key inside it is one this reader does not read',
+      );
+    }
   }
   if (opens.length === 0) return [];
   if (opens.length > 1) {
@@ -241,7 +330,7 @@ export function declaredLabels(path, text) {
   for (let i = at + 1; i < lines.length; i += 1) {
     const line = lines[i];
     if (line.trim() === '' || line.trim().startsWith('#')) continue;
-    if (INDENT_OF(line) === 0) break;
+    if (TOP_LEVEL(line)) break;
     if (line.includes('\t')) throw new TemplateError(path, 'uses a tab in `labels:`, which YAML does not allow');
     const item = /^\s*-\s*(.*)$/.exec(line);
     if (item === null) {
@@ -479,6 +568,11 @@ async function readDirectory({ base, repository, path, fetchImpl, token }) {
  * Every supported community-health file a repository defines for itself, with the path that defines
  * it, in the documented order of precedence.
  *
+ * A type is looked for only where the source says GitHub reads it from. The order of precedence is
+ * introduced as being "for supported files that can be stored in more than one location", and three
+ * of these types cannot: a `FUNDING.yml` at the root, or an `ISSUE_TEMPLATE` folder there, overrides
+ * nothing, so it is not reported as overriding anything.
+ *
  * @param {Record<string, {name: string, type: string}[]|null>} entries by location key
  * @returns {{type: string, path: string}[]}
  */
@@ -487,6 +581,7 @@ export function overridesOf(entries) {
   const found = [];
   for (const supported of SUPPORTED_TYPES) {
     for (const location of LOCATIONS) {
+      if (supported.locations && !supported.locations.includes(location.key)) continue;
       const listing = entries?.[location.key];
       if (!Array.isArray(listing)) continue;
       const hit = listing.find((entry) =>
@@ -648,6 +743,23 @@ export function decide(measurement) {
     return { report, failing: report.failing };
   }
 
+  // A repository the obligation applies to whose labels were never read. It is not covered and it is
+  // not overridden: it is unread, and it is reported as one. Settled ONCE, before the first label is
+  // measured, so every label in one report is measured over the same population: reclassifying
+  // mid-loop would leave an earlier label counting a repository the later ones no longer count, and
+  // two `required` totals over one population make a report nobody can reconstruct a finding from.
+  for (const entry of report.repositories) {
+    if (entry.state !== 'default-in-effect' || Array.isArray(holders.get(entry.name))) continue;
+    report.unreadable.push({
+      repository: entry.name,
+      read: `/repos/${entry.name}/labels`,
+      kind: 'other',
+      reason: `the labels of ${entry.name} were never read, so its obligation cannot be measured`,
+    });
+    unreadableRepositories.add(entry.name);
+    entry.state = 'unreadable';
+  }
+
   const obligated = report.repositories.filter((entry) => entry.state === 'default-in-effect');
   for (const declaration of declared) {
     /** @type {string[]} */
@@ -656,21 +768,9 @@ export function decide(measurement) {
     const held = [];
     for (const entry of obligated) {
       const labels = holders.get(entry.name);
-      if (!Array.isArray(labels)) {
-        // A repository the obligation applies to whose labels were never read. It is not covered and
-        // it is not overridden: it is unread, and it is reported as one.
-        if (!unreadableRepositories.has(entry.name)) {
-          report.unreadable.push({
-            repository: entry.name,
-            read: `/repos/${entry.name}/labels`,
-            kind: 'other',
-            reason: `the labels of ${entry.name} were never read, so its obligation cannot be measured`,
-          });
-          unreadableRepositories.add(entry.name);
-          entry.state = 'unreadable';
-        }
-        continue;
-      }
+      // Unreachable after the pass above, which moved every unread repository out of `obligated`.
+      // Kept so a later edit cannot quietly count an unread repository as one holding the label.
+      if (!Array.isArray(labels)) continue;
       const exact = labels.some((name) => name === declaration.label);
       if (exact) {
         held.push(entry.name);

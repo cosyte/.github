@@ -1959,6 +1959,16 @@ label. Any other supported community-health file a repository defines suppresses
 its own type**, which the report says and which changes no label obligation. A legacy
 `ISSUE_TEMPLATE.md` is reported and does **not** waive the labels: the clause names the folder.
 
+**Each type is looked for only where GitHub reads it from.** The documented order of precedence
+(`.github`, then the root, then `docs`) is introduced as being "for supported files that can be
+stored in more than one location", and three types cannot be: issue templates and their `config.yml`
+must be in `.github/ISSUE_TEMPLATE`, discussion category forms in `.github/DISCUSSION_TEMPLATE`, and
+`FUNDING.yml` in `.github`. So an `ISSUE_TEMPLATE` folder at a repository's **root** overrides
+nothing, is not reported as overriding anything, and the default still renders there and the label is
+still owed. The alternative would put one row saying `default-in-effect` beside another saying the
+default is not in effect, and the only way to silence that red would be to create a label nothing
+would ever apply.
+
 **This repository is inside the population, not outside it.** The clause above names it first, so
 `cosyte/.github` is classified `default-in-effect` like any repository the templates reach and is
 required to hold `bug` and `enhancement` itself. Its own `ISSUE_TEMPLATE` folder is the defaults'
@@ -1984,6 +1994,12 @@ run** naming what could not be read, and none is ever reported as coverage:
   uses and refuses on anything else, naming the file. Reading an unparseable template as "declares no
   labels" would leave a real obligation unmeasured while the run went green. **If you add a shape it
   does not know, widen the reader and pin the new shape as a test; do not loosen it.**
+- **a `labels` key spelled in a form the reader does not read**, quoted (`"labels":`), spaced
+  (`labels :`), cased differently, or written as YAML's explicit key. The empty list is what the
+  reader answers for a template that declares nothing, and "declares nothing" is the answer that
+  turns into a green run over an unmeasured obligation, so it has to be earned rather than fallen
+  into. CRLF and lone-CR line breaks and a byte order mark opening the file are **read**, not
+  refused: YAML says those spell the same declaration.
 - **a near miss.** A label differing from a declared one only by letter case or surrounding
   whitespace is reported as a near miss naming both spellings and does **not** satisfy the
   obligation.
