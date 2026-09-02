@@ -118,13 +118,12 @@ function keysOf(lines) {
     .map((line) => line.trim().split(':')[0]);
 }
 
-/** A workflow, read once: its code lines, its `on:` block and its `jobs:` block. */
+/** A workflow read as configuration: its code lines, its `on:` block and its `jobs:` block. */
 function workflow(name) {
-  const text = read(join(WORKFLOWS, name));
-  const lines = code(text);
+  const lines = code(read(join(WORKFLOWS, name)));
   const triggers = under(lines, 'on');
   assert.notEqual(triggers, null, `${name} declares no \`on:\` block`);
-  return { name, text, lines, triggers, jobs: under(lines, 'jobs') };
+  return { name, lines, triggers, jobs: under(lines, 'jobs') };
 }
 
 /** The one job of a caller: its id and its block. These callers have exactly one job each. */
@@ -159,25 +158,38 @@ const SAME_REPO_CALL = /^\.\/\.github\/workflows\/([\w.-]+)$/;
 /** A `uses:` value reaching this repository from outside it, whatever ref it names. */
 const CROSS_REPO_CALL = /[\w.-]+\/[\w.-]+\/\.github\/workflows\/[\w.-]+@\S+/;
 
-const CALLERS = [STATIC_CALLER, SUPPLY_CALLER].map((name) => {
+/** The two files this repository analyses itself from. Names only: nothing is read at module scope. */
+const CALLER_NAMES = [STATIC_CALLER, SUPPLY_CALLER];
+
+/**
+ * One caller, read: the workflow, its single job, and the `uses:` value that job names.
+ *
+ * Every assertion in this file lives inside a `test()`, this one included, deliberately. An assert
+ * thrown while the module loads aborts the whole file and reports ONE failure, so a broken `uses:`
+ * line would hide whether the schedule, the permissions and the language set were still right. The
+ * cost is that each test re-reads its files, which is four small files off a warm page cache.
+ * @param {string} name
+ */
+function caller(name) {
   const flow = workflow(name);
   const job = onlyJob(flow);
-  return { flow, job, uses: scalar(job.block, 'uses') };
-});
-
-for (const caller of CALLERS) {
-  assert.ok(caller.uses !== null, `${caller.flow.name}'s job declares no \`uses:\``);
+  const uses = scalar(job.block, 'uses');
+  assert.notEqual(uses, null, `${name}'s ${job.id} job declares no \`uses:\``);
+  return { flow, job, uses };
 }
 
 /** The two callers plus the reusable each one names: every file a failed analysis passes through. */
-const ANALYSIS_PATH = [
-  ...CALLERS.map((caller) => caller.flow.name),
-  ...CALLERS.map((caller) => {
-    const match = SAME_REPO_CALL.exec(caller.uses);
-    assert.notEqual(match, null, `${caller.flow.name} calls ${caller.uses}, which AC7 refuses`);
-    return match[1];
-  }),
-];
+function analysisPath() {
+  const callers = CALLER_NAMES.map((name) => caller(name));
+  return [
+    ...callers.map((entry) => entry.flow.name),
+    ...callers.map((entry) => {
+      const match = SAME_REPO_CALL.exec(entry.uses);
+      assert.notEqual(match, null, `${entry.flow.name} calls ${entry.uses}, which AC7 refuses`);
+      return match[1];
+    }),
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // AC3: seven quiet days still start the supply-chain analysis
@@ -257,8 +269,8 @@ const SUPPRESSORS = [
   { what: 'a condition that survives a cancellation', pattern: /!\s*cancelled\s*\(\s*\)/ },
 ];
 
-for (const name of ANALYSIS_PATH) {
-  test(`AC4: nothing in ${name} suppresses a failure`, () => {
+test('AC4: nothing on the analysis path suppresses a failure', () => {
+  for (const name of analysisPath()) {
     for (const line of code(read(join(WORKFLOWS, name)))) {
       for (const { what, pattern } of SUPPRESSORS) {
         assert.ok(
@@ -268,14 +280,14 @@ for (const name of ANALYSIS_PATH) {
         );
       }
     }
-  });
-}
+  }
+});
 
 test('AC4: the analysis path is the four files a failed analysis passes through', () => {
   // Asserted so that a caller repointed at something else, or a second job quietly added to one of
   // these callers, cannot shrink the scan above without this test saying so.
   assert.deepEqual(
-    ANALYSIS_PATH.slice().sort(),
+    analysisPath().slice().sort(),
     ['codeql.yml', 'scorecard.yml', SUPPLY_CALLER, STATIC_CALLER].sort(),
   );
 });
@@ -285,8 +297,8 @@ test('AC4: the analysis path is the four files a failed analysis passes through'
 // ---------------------------------------------------------------------------
 
 test('AC5: the language set this repository analyses itself with is non-empty', () => {
-  const caller = CALLERS.find((entry) => entry.flow.name === STATIC_CALLER);
-  const passed = under(caller.job.block, 'with');
+  const entry = caller(STATIC_CALLER);
+  const passed = under(entry.job.block, 'with');
   const fromCaller = passed === null ? null : scalar(passed, 'languages');
 
   // Defaulted or passed: whichever the caller does, the value that reaches `fromJSON` is what this
@@ -303,7 +315,7 @@ test('AC5: the language set this repository analyses itself with is non-empty', 
   let languages;
   try {
     languages = JSON.parse(raw);
-  } catch (error) {
+  } catch {
     assert.fail(`the language set ${JSON.stringify(raw)} is not JSON, so \`fromJSON\` cannot read it`);
   }
   assert.ok(Array.isArray(languages), `the language set ${JSON.stringify(raw)} is not a JSON array`);
@@ -322,24 +334,27 @@ test('AC5: the language set this repository analyses itself with is non-empty', 
 // AC6: a calling job grants every permission the reusable it calls declares
 // ---------------------------------------------------------------------------
 
-for (const caller of CALLERS) {
-  test(`AC6: ${caller.flow.name} grants every permission ${caller.uses.split('/').pop()} declares`, () => {
-    const called = workflow(SAME_REPO_CALL.exec(caller.uses)[1]);
+for (const name of CALLER_NAMES) {
+  test(`AC6: ${name} grants every permission the reusable it calls declares`, () => {
+    const entry = caller(name);
+    const target = SAME_REPO_CALL.exec(entry.uses);
+    assert.notEqual(target, null, `${name} calls ${entry.uses}, which AC7 refuses`);
+    const called = workflow(target[1]);
     const calledJobs = keysOf(called.jobs);
     assert.equal(calledJobs.length, 1, `${called.name} declares ${calledJobs.length} jobs, expected one`);
     const needed = permissionsOf(under(called.jobs, calledJobs[0]), `${called.name}'s ${calledJobs[0]} job`);
-    const granted = permissionsOf(caller.job.block, `${caller.flow.name}'s ${caller.job.id} job`);
+    const granted = permissionsOf(entry.job.block, `${name}'s ${entry.job.id} job`);
 
     for (const [scope, level] of needed) {
       assert.ok(
         granted.has(scope),
-        `${caller.flow.name} does not grant ${scope}, which ${called.name} declares. A called ` +
+        `${name} does not grant ${scope}, which ${called.name} declares. A called ` +
           'workflow can only downgrade the caller token, never escalate it, so the run either ' +
           'startup-fails or completes having uploaded nothing.',
       );
       assert.ok(
         LEVEL[granted.get(scope)] >= LEVEL[level],
-        `${caller.flow.name} grants ${scope}: ${granted.get(scope)} where ${called.name} needs ${level}`,
+        `${name} grants ${scope}: ${granted.get(scope)} where ${called.name} needs ${level}`,
       );
     }
   });
@@ -349,30 +364,31 @@ for (const caller of CALLERS) {
 // AC7: the analysis definition comes from the commit under analysis
 // ---------------------------------------------------------------------------
 
-for (const caller of CALLERS) {
-  test(`AC7: ${caller.flow.name} resolves its analysis from the commit under analysis`, () => {
+for (const name of CALLER_NAMES) {
+  test(`AC7: ${name} resolves its analysis from the commit under analysis`, () => {
+    const entry = caller(name);
     assert.match(
-      caller.uses,
+      entry.uses,
       SAME_REPO_CALL,
-      `${caller.flow.name} calls ${caller.uses}. GitHub documents \`./.github/workflows/{filename}\` ` +
+      `${name} calls ${entry.uses}. GitHub documents \`./.github/workflows/{filename}\` ` +
         'as the form for a reusable workflow in the same repository, and only that form is resolved ' +
         'from the same commit as the caller.',
     );
     assert.ok(
-      !caller.uses.includes('@'),
-      `${caller.flow.name} names a ref (${caller.uses}); the same-repository form takes none, and a ` +
+      !entry.uses.includes('@'),
+      `${name} names a ref (${entry.uses}); the same-repository form takes none, and a ` +
         'ref is a thing that can move independently of the commit being analysed',
     );
   });
 
-  test(`AC7: nothing anywhere in ${caller.flow.name} reaches this repository from outside it`, () => {
+  test(`AC7: nothing anywhere in ${name} reaches this repository from outside it`, () => {
     // The whole file, comments included, in the same spirit as `caller-reference-docs.test.mjs`:
     // an example in a header is copied at least as readily as the line under it, and this is the
     // repository whose entire point is that a reference at a branch is the defect.
-    for (const line of caller.flow.text.split('\n')) {
+    for (const line of read(join(WORKFLOWS, name)).split('\n')) {
       assert.ok(
         !CROSS_REPO_CALL.test(line),
-        `${caller.flow.name} spells a cross-repository self reference: ${line.trim()}`,
+        `${name} spells a cross-repository self reference: ${line.trim()}`,
       );
     }
   });
@@ -436,8 +452,8 @@ test('the supply-chain result is published, which is the public and one-way part
   // Asserted because it is the only irreversible effect either of these files has: a score already
   // sent to the public OpenSSF API is not retracted by a later run. If someone turns it off, that
   // is a decision this test makes them make on purpose rather than by deleting a line.
-  const caller = CALLERS.find((entry) => entry.flow.name === SUPPLY_CALLER);
-  const passed = under(caller.job.block, 'with');
+  const entry = caller(SUPPLY_CALLER);
+  const passed = under(entry.job.block, 'with');
   const publish = passed === null ? null : scalar(passed, 'publish-results');
   assert.equal(publish, 'true', `${SUPPLY_CALLER} passes publish-results: ${publish}`);
 });
@@ -445,10 +461,10 @@ test('the supply-chain result is published, which is the public and one-way part
 test('neither caller is a reusable workflow itself', () => {
   // These two carry `security-events: write` and `id-token: write` on this repository. A
   // `workflow_call` trigger would offer those jobs to any repository that named the file.
-  for (const caller of CALLERS) {
+  for (const name of CALLER_NAMES) {
     assert.ok(
-      !keysOf(caller.flow.triggers).includes('workflow_call'),
-      `${caller.flow.name} declares \`workflow_call\`, which offers this repository's token to a caller`,
+      !keysOf(workflow(name).triggers).includes('workflow_call'),
+      `${name} declares \`workflow_call\`, which offers this repository's token to a caller`,
     );
   }
 });
