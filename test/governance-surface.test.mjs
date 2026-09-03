@@ -42,6 +42,9 @@ const LICENSE_PATH = 'LICENSE';
 /** The long-form governance document. Reached by link from anywhere; served to nowhere. */
 const GOVERNANCE_PATH = 'GOVERNANCE.md';
 
+/** The address a defaulted file has to use for it, because a relative one resolves elsewhere. */
+const GOVERNANCE_URL = 'https://github.com/cosyte/.github/blob/main/GOVERNANCE.md';
+
 /** The org-wide contributing guide, which IS a supported type and does carry the answer everywhere. */
 const CONTRIBUTING_PATH = 'CONTRIBUTING.md';
 
@@ -448,10 +451,11 @@ for (const path of DEFAULTED_FILES) {
 }
 
 test('AC3: the pointer from the contributing guide to the long-form document is a full URL', () => {
-  assert.match(
-    CONTRIBUTING_GOVERNANCE,
-    /https:\/\/github\.com\/cosyte\/\.github\/blob\/main\/GOVERNANCE\.md/,
-    'the guide renders in repositories that do not contain GOVERNANCE.md',
+  // A plain substring, not a pattern. An unanchored regular expression carrying a host is a
+  // `js/regex/missing-regexp-anchor` finding, and the assertion wants an exact string anyway.
+  assert.ok(
+    CONTRIBUTING_GOVERNANCE.includes(GOVERNANCE_URL),
+    `the guide renders in repositories that do not contain GOVERNANCE.md, so it must link ${GOVERNANCE_URL}`,
   );
   assert.match(CONTRIBUTING_GOVERNANCE, /written as a full URL because this guide is served into repositories that\s+do not contain it/);
 });
