@@ -344,20 +344,33 @@ test('AC-2: the dependency route carries the primary source\'s own consequence a
   );
 });
 
+/**
+ * Every URL cited in a stretch of markdown, whole, with the autolink brackets and the sentence
+ * punctuation after them trimmed off.
+ *
+ * The citation is matched as a WHOLE URL and never as a substring of the section. A substring test
+ * would be satisfied by a link to a different host that merely carries this path inside it, which is
+ * the ordinary shape of a phishing link and, here, a citation that sends a reader somewhere else.
+ */
+const urlsIn = (text) =>
+  [...text.matchAll(/https?:\/\/[^\s<>)\]]+/g)].map((match) => match[0].replace(/[).,;]+$/, ''));
+
 test('AC-3: the section cites the primary source page by URL, for all three routes at once', () => {
   const body = section(OWNING_HEADING);
+  const cited = urlsIn(body);
   assert.ok(
-    body.includes(PRIMARY_SOURCE),
-    `${OWNER}'s "${OWNING_HEADING}" does not carry ${PRIMARY_SOURCE}, so a reader cannot reach the ` +
-      'evidence from the rule',
+    cited.includes(PRIMARY_SOURCE),
+    `${OWNER}'s "${OWNING_HEADING}" cites ${cited.join(', ') || 'no URL at all'} and not ` +
+      `${PRIMARY_SOURCE}, so a reader cannot reach the evidence from the rule`,
   );
   // One page for all three routes: the third route must not arrive citing something else.
   const third = body.slice(body.indexOf('### The third route'));
   assert.ok(third.length > 0, 'the third route has no subsection of its own');
-  const otherPages = [...third.matchAll(/https?:\/\/\S+/g)]
-    .map((match) => match[0].replace(/[).,]+$/, ''))
-    .filter((url) => url !== PRIMARY_SOURCE);
-  assert.deepEqual(otherPages, [], 'the third route cites a page the rest of the section does not');
+  assert.deepEqual(
+    urlsIn(third).filter((url) => url !== PRIMARY_SOURCE),
+    [],
+    'the third route cites a page the rest of the section does not',
+  );
 });
 
 /** Every tracked path, NUL separated so a newline in a name cannot split one. */
