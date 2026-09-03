@@ -412,6 +412,12 @@ nothing. That is the false-green direction, and it is quiet. The loud direction,
 stranded forever, has a different cause and is a different row of the same table: a context that is
 **never reported at all**.
 
+**Three routes reach that false green, and this section is the only place any of them is written
+down here.** A required context is skipped by a **job-level** condition, or its work is skipped by a
+**step-level** condition, or the job is skipped **because a job it depends on failed**. The first
+two are settled below against the live run; the third is "The third route: a job skipped because a
+job it depends on failed", further down, and it is the one this repository now refuses to build.
+
 ### The primary source
 
 GitHub, *Troubleshooting required status checks*,
@@ -420,12 +426,13 @@ Under "Required check needs to succeed against the latest commit SHA", verbatim:
 
 > Successful check statuses are `success`, `skipped`, and `neutral`.
 
-And under "Handling skipped but required checks", the two rows that separate the directions, verbatim:
+And under "Handling skipped but required checks", all three rows of that table, verbatim:
 
 | Cause | Result | How to fix or check |
 | --- | --- | --- |
 | A workflow is skipped by path filtering, branch filtering, or a commit message | Associated checks stay in a "Pending" state and block merging | Avoid requiring workflows that can be skipped. |
 | A job is skipped by a conditional | The job reports "Success" | ... |
+| A job depends on a failed job | The dependent job is skipped and may not block merging | Use `always()` with `needs` for required checks that depend on other jobs. |
 
 ### The live run
 
@@ -475,6 +482,40 @@ gate into a step behind an `if:` un-requires it exactly as completely, and the c
 `success` rather than `skipped`, so it is invisible to anyone auditing conclusions. The rule that
 follows from the whole table is one sentence: **a context that does not do its work on every pull
 request cannot gate every pull request**, whether the skip is at the job level or the step level.
+
+### The third route: a job skipped because a job it depends on failed
+
+**The two routes above are reached by a condition somebody wrote. This one is reached by a
+dependency, and nothing in this repository produced it when the rest of this section was settled.**
+A job that declares `needs:` on another job does not run when that job fails. The consequence, in
+the primary source's own words, is that **the dependent job is skipped and may not block merging**:
+the conclusion is `skipped`, `skipped` is a successful check status, and so a required context is
+satisfied by a job that never ran. That is the same false green as the conditional route, reached
+without anyone writing a condition at all, and it arrives at exactly the moment the pipeline was
+supposed to be loudest, on a pull request where something already failed.
+
+**The remedy is the source's own, and this repository takes it as a rule.** A required job in a
+reusable workflow published here that depends on another job carries a condition that runs it
+regardless of that dependency's outcome. GitHub states it as "Use `always()` with `needs` for
+required checks that depend on other jobs", so `if: ${{ always() }}` on the dependent job is the
+shape to write. The job then runs, reaches a real conclusion against whatever the dependency left
+behind, and the context reports something rather than being satisfied by a skip.
+
+**It is enforced, not only written.** No job in any workflow here declares `needs:` today, so there
+is nothing to repair; `test/skipped-required-context.test.mjs` holds the rule going forward over
+every workflow carrying a `workflow_call` trigger, and names the file and the job id when one
+appears without the condition. That check also refuses an examination that found no reusable
+workflow at all, and refuses a workflow file it cannot read or that declares no `on:` block, because
+either of those measures nothing while reporting the rest of the tree clean.
+
+**Where this rule stops, which matters because the same word means the opposite one line over.** A
+condition that survives a failed dependency belongs on a job that declares a dependency. On a
+check's OWN failure path it does the reverse: `always()`, `failure()` and `!cancelled()` there turn
+a real failure into a green run, which is why `test/self-scan.test.mjs` refuses all three anywhere
+on this repository's self-analysis path and `test/org-defaults-coverage.test.mjs` refuses them on
+the org-defaults check's path. Both prohibitions stand unchanged. The rule above permits such a
+condition on one thing only, a job that declares `needs:`, and nothing here relaxes a gate that
+already exists.
 
 ### What deliberately does not follow here
 
