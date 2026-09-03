@@ -358,8 +358,11 @@ const urlsIn = (text) =>
 test('AC-3: the section cites the primary source page by URL, for all three routes at once', () => {
   const body = section(OWNING_HEADING);
   const cited = urlsIn(body);
+  // Whole-URL EQUALITY, never containment. `includes` and `startsWith` are both satisfied by a URL
+  // that merely carries this one inside it, on any host, which is a citation pointing somewhere
+  // else. CodeQL's `js/incomplete-url-substring-sanitization` names that shape and it is right to.
   assert.ok(
-    cited.includes(PRIMARY_SOURCE),
+    cited.some((url) => url === PRIMARY_SOURCE),
     `${OWNER}'s "${OWNING_HEADING}" cites ${cited.join(', ') || 'no URL at all'} and not ` +
       `${PRIMARY_SOURCE}, so a reader cannot reach the evidence from the rule`,
   );
