@@ -10,6 +10,38 @@ package-specific detail (for example, `@cosyte/hl7` documents how to add a
 vendor-quirk fixture and author a profile). When a repo has its own, that one
 wins.
 
+## Who decides, and how
+
+The answer is here rather than behind a link, because this guide is the file you
+are reading in whichever repo you arrived at, and a file that lives only in
+`cosyte/.github` is not.
+
+- **Who decides.** One maintainer holds the final call: `noah`, the account owner
+  of record for `cosyte`. No committee, no vote, no tie to break.
+- **How a decision is reached.** In the open, on the issue or pull request, in
+  writing. Propose it as an issue (for anything larger than a small fix, before
+  you build). The maintainer accepts it, declines it, or says what would change
+  the answer, on that thread. A declined proposal gets a reason. Silence is not
+  consent: an unanswered proposal has not been accepted.
+- **How you escalate.** On the thread first, and in public. Say what you think is
+  wrong and what you expected. If the thread has stalled, open an issue naming the
+  stall and linking it. If you still disagree once a decision is given, say so on
+  the issue and ask for the reason in writing; you are entitled to a reason, and
+  the maintainer's call stands once it is given with one. Two things never use
+  this route: a security vulnerability goes to the
+  [security policy](https://github.com/cosyte/.github/security/policy), never a
+  public issue, and conduct goes to the route in
+  [CODE_OF_CONDUCT.md](https://github.com/cosyte/.github/blob/main/CODE_OF_CONDUCT.md).
+
+The long version, including how those terms themselves change, is
+[GOVERNANCE.md in `cosyte/.github`](https://github.com/cosyte/.github/blob/main/GOVERNANCE.md).
+It is written as a full URL because this guide is served into repositories that
+do not contain it, where a relative path would resolve somewhere else or nowhere.
+
+**And the limit, in the same breath: a repo with its own `CONTRIBUTING.md` gets
+none of the above.** Its guide replaces this one whole, and its governance answer
+is that repo's to state. Nothing here claims to govern it.
+
 ## Before you start
 
 - **Use synthetic data only, never real PHI.** Swap names, MRNs, and dates for
@@ -111,6 +143,19 @@ reason not to.
 
 The parsers are MIT-licensed. By contributing, you agree your contribution is
 licensed under the same terms as the repository you're contributing to.
+
+**Those terms are a file, not a phrase, and they are per repository.** Read the
+`LICENSE` file in the repo you are contributing to; that is the one your
+contribution is licensed under. GitHub cannot serve a license from this account
+the way it serves this guide, and the reason is in its own words: "You cannot
+create a default license file. License files must be added to individual
+repositories so the file will be included when a project is cloned, packaged, or
+downloaded." So a repo with no `LICENSE` file has stated no terms, and neither
+this guide nor any file in `cosyte/.github` supplies them for it. Say so on an
+issue if you find one; it is a defect in that repo.
+
+For `cosyte/.github` itself, the terms are the MIT License at
+[LICENSE](https://github.com/cosyte/.github/blob/main/LICENSE), copyright Cosyte.
 
 ---
 
