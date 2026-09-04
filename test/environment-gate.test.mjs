@@ -1386,6 +1386,25 @@ test('AC1: the "Version Packages" job references no deployment environment and c
     undefined,
     'the version job must not declare a publish input in any form, not even a withheld one',
   );
+
+  // AND THE NEAR END OF THE DISCRIMINATOR CHAIN IS PINNED WHOLE, THE WAY THE FAR END IS. The split
+  // turned one hop into two: the gate's own answer, `steps.notes.outputs.is-release`, is republished
+  // here as `jobs.version.outputs.is-release`, and only then read by the environment-held job's `if:`.
+  // That `if:` is pinned whole below and in test/release-notes.test.mjs, but a pin on the reader says
+  // nothing about the value it reads. With this line unpinned, `is-release: 'true'` - one edit, in a
+  // block no test looked at - starts the environment-held job on EVERY push to a caller's default
+  // branch: every merge enters an approval wait, every merge puts NPM_TOKEN on a runner, and the
+  // 30-day expiry clock is back on requests that buy nothing. That is the approval-per-merge defect
+  // this split exists to remove, restored under thirteen callers at once, with both suites green.
+  // Deleting the line instead fails the other way and just as silently: `needs.version.outputs.
+  // is-release` then reads empty forever and `release` never starts again. So the value is pinned to
+  // the gate's own output and nothing else, and its absence is a failure rather than a default.
+  assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
+  assert.equal(
+    version.blocks.outputs['is-release'],
+    '${{ steps.notes.outputs.is-release }}',
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, whole',
+  );
 });
 
 test('AC2 and AC10: every step that can reach the registry is in the job named `release`, which holds the environment', () => {

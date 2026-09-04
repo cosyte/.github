@@ -858,6 +858,21 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
     /^ {6}release-notes-b64: \$\{\{ steps\.notes-transfer\.outputs\.release-notes-b64 \}\}$/m,
     'the carried notes must be declared as a job output or nothing downstream can read them',
   );
+
+  // ITS SIBLING ON THE SAME BLOCK IS PINNED HERE TOO, and it is not incidental to this file: the
+  // publish job's `if:` is pinned whole below, but that pins the READER of the discriminator, not the
+  // value it reads. The split added the hop `steps.notes.outputs.is-release` ->
+  // `jobs.version.outputs.is-release` -> `needs.version.outputs.is-release`, and with the middle link
+  // unpinned, `is-release: 'true'` starts the environment-held job on every push to a caller's default
+  // branch with the `if:` untouched and every suite green. Deleting the line stops `release` starting
+  // at all, just as silently. Both faces are the same gap, so the value is pinned to the gate's own
+  // output and its absence is a failure rather than an empty string.
+  assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
+  assert.equal(
+    version.blocks.outputs['is-release'],
+    '${{ steps.notes.outputs.is-release }}',
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, whole',
+  );
   const restores = release.steps.filter((step) => /base64 -d/.test(step.body));
   assert.equal(restores.length, 1, 'exactly one step restores the notes in the publish job');
   assert.match(restores[0].env.RELEASE_NOTES_B64, /needs\.version\.outputs\.release-notes-b64/);
