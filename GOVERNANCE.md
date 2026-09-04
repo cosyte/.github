@@ -7,9 +7,9 @@ below, and the short version of the first three is answered inline in
 readers will meet it.
 
 Read ["What this document reaches"](#what-this-document-reaches-and-what-it-does-not) before you
-assume this file governs the repository you arrived from. A governance file is not one of the
-community-health types GitHub serves account-wide, so this file is not rendered into any repository
-but its own, and only the contributing guide carries the answer everywhere.
+assume this file governs the repository you arrived from. A governance file is not a community-health
+type GitHub serves account-wide, so this file is not rendered into any repository but its own, and
+only the contributing guide carries the answer everywhere.
 
 ## Who decides
 

@@ -2094,13 +2094,13 @@ fetched 2026-09-03:
 | **a governance file** | absent from that table. The string `governance` occurs zero times on the page |
 | **a licence** | ruled out in the page's own words: "You cannot create a default license file. License files must be added to individual repositories so the file will be included when a project is cloned, packaged, or downloaded." |
 
-**So the answer to "who decides, and how" travels in the contributing guide.** It is written inline
-in [`CONTRIBUTING.md`](CONTRIBUTING.md) under "Who decides, and how", which is a supported type and
-does render into every repository this account owns that has none of its own.
-[`GOVERNANCE.md`](GOVERNANCE.md) holds the long version and is reached by a link, never served: it
-is not a supported type, so it appears in no repository but this one. Putting the answer only in
-`GOVERNANCE.md` and linking to it would have shipped the reach without the answer, which is the
-shape of the claim this section exists to refuse.
+**So the answer to "who decides, and how" travels in the contributing guide.**
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is served account-wide, and the governance answer is written
+inline in it under "Who decides, and how", so a reader who only ever sees that one file still gets
+it; [`GOVERNANCE.md`](GOVERNANCE.md) holds the long version for whoever follows the link. That long
+version is reached by a link and is never served: it is not a supported type, so it appears in no
+repository but this one. Putting the answer only in `GOVERNANCE.md` and linking to it would have
+shipped the reach without the answer, which is the shape of the claim this section exists to refuse.
 
 **And the licence is this repository's own.** [`LICENSE`](LICENSE) is MIT, copyright Cosyte, and it
 covers `cosyte/.github` and nothing else. Every other `@cosyte/*` repository states its terms in its
@@ -2117,10 +2117,19 @@ read from a page belonging to the repository it renders in, and the source docum
 for a relative link in that position, in either direction. An absolute URL is correct under both
 readings and a relative one is correct under at most one, so the defaulted files carry absolute
 URLs and [`test/governance-surface.test.mjs`](test/governance-surface.test.mjs) fails the run on a
-relative link in any of them. That test also holds the rest of this section: it reads the tracked
-tree and fails naming the document if one ever claims that a governance file or a licence is served
-account-wide, which neither is, and it fails if `LICENSE` and the contributing guide's
-`## Licensing` section stop agreeing.
+relative link in any of them, the defaulted issue templates and their `config.yml` included, where
+the pointer is a `url:` field rather than a link.
+
+**That test also holds the rest of this section, and a negation counts where it attaches.** It reads
+every tracked markdown document and fails naming the one that asserts account-wide reach for a
+governance file or for the licence, and it fails if `LICENSE` and the contributing guide's
+`## Licensing` section stop agreeing. The assertion it hunts is ordinarily written with a negative
+in it, because the mechanism it borrows is "a repository with no file of its own gets this
+account's", so a check that skipped every sentence carrying `no` would skip the ordinary spellings
+of the claim along with it: that is a green run over prose nothing read. A denial therefore has to
+sit beside the assertion, inside the same clause, to cover it. Correct prose that puts one a few
+words the wrong side of that line reads as a claim and reds this repository's own run, which is the
+cheap direction to be wrong in: one edit here, against a promise nobody out there can see is false.
 
 ## The em-dash gate
 

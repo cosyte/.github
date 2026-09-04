@@ -55,6 +55,10 @@ const README_PATH = 'README.md';
  * repositories. A pointer in one of these is read from a page belonging to the repository it renders
  * in, which is why the link rule below applies to exactly this list and not to `README.md` or
  * `GOVERNANCE.md`, neither of which is a supported type and neither of which travels.
+ *
+ * The issue templates and their `config.yml` are on the list because the source names them among the
+ * supported types, and this repository publishes three. Their pointers are `url:` fields rather than
+ * markdown links and every one of them is absolute today; the rule is what keeps the next one so.
  */
 const DEFAULTED_FILES = Object.freeze([
   'CODE_OF_CONDUCT.md',
@@ -62,6 +66,9 @@ const DEFAULTED_FILES = Object.freeze([
   'SECURITY.md',
   'SUPPORT.md',
   '.github/PULL_REQUEST_TEMPLATE.md',
+  '.github/ISSUE_TEMPLATE/bug_report.yml',
+  '.github/ISSUE_TEMPLATE/feature_request.yml',
+  '.github/ISSUE_TEMPLATE/config.yml',
 ]);
 
 /**
@@ -134,14 +141,35 @@ function trackedFiles() {
  * glue a row of denials onto the claim below it and read the denial as covering both. Splitting on
  * the markdown boundaries as well keeps each claim beside its own words.
  *
+ * A link is reduced to the words a reader sees first: a claim is made in prose, and leaving the
+ * target in would put a URL's punctuation in the middle of the sentence carrying it.
+ *
  * @param {string} text
  * @returns {string[]}
  */
 function units(text) {
   return text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .split(/(?<=[.!?])\s+|\n\s*\n|\n(?=\s*(?:[-*>#]|\d+\.)\s)|\|/g)
     .map((unit) => unit.replace(/\s+/g, ' ').trim())
     .filter((unit) => unit.length > 0);
+}
+
+/**
+ * The clauses of a unit: what an assertion and the file it is about have to share to be one claim.
+ *
+ * One sentence routinely names a supported type in one clause and this repository's own governance
+ * file in the next, and reading the two as a single statement invents a claim nobody made. A full
+ * stop ends a clause only when whitespace follows it, so `GOVERNANCE.md` stays one token.
+ *
+ * @param {string} unit
+ * @returns {string[]}
+ */
+function clauses(unit) {
+  return unit
+    .split(/[,;:!?()]|\.(?=\s|$)/)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
 }
 
 /** A mention of the governance FILE, not of the word "governance" in prose. */
@@ -150,31 +178,86 @@ const GOVERNANCE_MENTION = /GOVERNANCE\.md|governance (?:file|document)/i;
 /** A mention of the licence FILE. Uppercase, or the words, never the bare word "licensed". */
 const LICENSE_MENTION = /\bLICENSE(?:\.md|\.txt)?\b|licen[sc]e file|license files/;
 
-/** Phrases that assert account-wide default rendering, rather than merely discussing it. */
-const SERVED_ACCOUNT_WIDE = Object.freeze([
-  /account[- ]wide default/i,
-  /org(?:anization)?[- ]wide default/i,
-  /default community[- ]health file/i,
-  /default (?:license|licence) file/i,
-  /supported[\w\s-]{0,24}\btypes?\b/i,
-  /(?:rendered|renders|render|served|serves|serve|delivered|delivers) (?:it )?account[- ]wide/i,
-  /as (?:an?|the) (?:GitHub )?default\b/i,
-  /inherit(?:s|ed)? from (?:this|the) (?:account|repository)/i,
-]);
+/**
+ * A mention of a file the source DOES list, by filename or by the name the page gives its type.
+ * Used only to answer which file an assertion is about: a clause naming one of these has said.
+ */
+const SUPPORTED_MENTION = new RegExp([
+  'CODE_OF_CONDUCT\\.md', 'CONTRIBUTING\\.md', 'SECURITY\\.md', 'SUPPORT\\.md', 'FUNDING\\.yml',
+  'PULL_REQUEST_TEMPLATE\\.md', 'config\\.yml', 'issue templates?', 'pull request templates?',
+  'contributing guide', 'code of conduct', 'security policy', 'support file',
+  'discussion category forms?',
+].join('|'), 'i');
 
 /**
- * Words that turn a unit from a claim into a denial of one.
+ * Words that deny.
  *
- * The direction of the error matters. A missed denial fails a run over prose that is correct, which
- * a human fixes in one edit; a missed claim ships a promise the platform does not keep, silently.
- * This list is therefore short and literal, and every document here is written to deny in the same
- * unit it mentions the file.
+ * They are NOT a reason to skip a unit, and reading them as one is how this check first went wrong.
+ * The default mechanism cannot be stated in English without one of them, because the mechanism IS
+ * "a repository that has no file of its own gets this account's": the claim this file exists to
+ * refuse carries `no` for that reason, and so does every idiomatic spelling of it. Skipping on the
+ * word made the whole tree scan green by suppression, over units nothing ever weighed.
+ *
+ * So a denial counts where it ATTACHES. This vocabulary is spliced into every serving pattern below
+ * as a lookbehind, so a negation reaching the assertion stops it being one, and a negation elsewhere
+ * in the sentence leaves the assertion standing.
  */
 const DENIAL = /\b(?:not|never|cannot|can't|no|none|nothing|neither|nor|absent|without|excluded?|refus\w+|zero)\b/i;
 
 /**
+ * How far back a denial reaches: 48 characters, about eight words, and stopped by any clause
+ * boundary before that.
+ *
+ * Short on purpose, and the direction of the error decides the number. A denial read too narrowly
+ * fails a run over prose that is correct, which a human fixes in one edit; a denial read too widely
+ * swallows the assertion in the main clause because a subordinate clause said "no" somewhere, which
+ * ships a promise the platform does not keep and says nothing. "a repository that has no GOVERNANCE
+ * file of its own gets this account's" has to read as a claim, and it is the negation next to the
+ * verb ("is not rendered", "cannot create a default license file") that reads as a denial.
+ */
+const DENIAL_REACH = 48;
+
+/**
+ * "no denial attached here", as a lookbehind: no word of `DENIAL` within `DENIAL_REACH` characters
+ * before this point, and no clause boundary crossed to reach it.
+ *
+ * Because the reach stops at a boundary, a pattern carrying it answers the same whether it is asked
+ * about one clause or about the whole sentence that clause sits in.
+ */
+const UNDENIED = `(?<!${DENIAL.source}(?:[^.,;:!?()]|\\.(?!\\s)){0,${DENIAL_REACH}})`;
+
+/**
+ * Phrases that ASSERT account-wide default rendering, rather than discussing it or denying it.
+ *
+ * The vocabulary is the platform's own. Each is compiled with the negation lookbehind in front of
+ * it, which is what makes the list an assertion detector rather than a topic detector.
+ */
+const SERVED_ACCOUNT_WIDE = Object.freeze([
+  'account[- ]wide default',
+  'org(?:anization)?[- ]wide default',
+  'default community[- ]health file',
+  'default (?:license|licence) file',
+  'supported[\\w\\s-]{0,24}\\btypes?\\b',
+  '(?:rendered|renders|render|served|serves|serve|delivered|delivers) (?:it )?account[- ]wide',
+  'as (?:an?|the) (?:GitHub )?default\\b',
+  'inherit(?:s|ed)? from (?:this|the) (?:account|repository)',
+].map((phrase) => new RegExp(UNDENIED + phrase, 'i')));
+
+/** The two subjects a finding can have, in the order a finding names them. */
+const SUBJECTS = Object.freeze(['a governance file', 'a license file']);
+
+/** Whether a clause names any community-health file at all, and so answers what it is about. */
+function namesAFile(clause) {
+  return GOVERNANCE_MENTION.test(clause) || LICENSE_MENTION.test(clause) || SUPPORTED_MENTION.test(clause);
+}
+
+/**
  * Every unit of `text` that claims account-wide default rendering for a type the source does not
  * list, with the document named.
+ *
+ * A claim is an assertion with no denial attached to it, about the governance file or the licence.
+ * The assertion's own clause answers which file it is about; where that clause names no file, the
+ * rest of the sentence answers, so a subject held one relative clause away is still read.
  *
  * @param {string} path the document, named because the refusal has to say which one
  * @param {string} text
@@ -183,10 +266,16 @@ const DENIAL = /\b(?:not|never|cannot|can't|no|none|nothing|neither|nor|absent|w
 function overreachFindings(path, text) {
   const findings = [];
   for (const unit of units(text)) {
-    if (!SERVED_ACCOUNT_WIDE.some((phrase) => phrase.test(unit))) continue;
-    if (DENIAL.test(unit)) continue;
-    if (GOVERNANCE_MENTION.test(unit)) findings.push({ path, subject: 'a governance file', unit });
-    if (LICENSE_MENTION.test(unit)) findings.push({ path, subject: 'a license file', unit });
+    const subjects = new Set();
+    for (const clause of clauses(unit)) {
+      if (!SERVED_ACCOUNT_WIDE.some((phrase) => phrase.test(clause))) continue;
+      const about = namesAFile(clause) ? clause : unit;
+      if (GOVERNANCE_MENTION.test(about)) subjects.add(SUBJECTS[0]);
+      if (LICENSE_MENTION.test(about)) subjects.add(SUBJECTS[1]);
+    }
+    for (const subject of SUBJECTS) {
+      if (subjects.has(subject)) findings.push({ path, subject, unit });
+    }
   }
   return findings;
 }
@@ -212,6 +301,32 @@ function linkTargets(text) {
 }
 
 /**
+ * The `url:` values of an issue form's contact links, which point the same way a markdown link does.
+ *
+ * This repository ships no YAML parser, so the reader recognises the one shape these files use, the
+ * way `scripts/org-defaults-coverage.mjs` reads their `labels:` key.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function yamlUrlTargets(text) {
+  return [...text.matchAll(/^\s*(?:-\s+)?url:\s*(?:"([^"]*)"|'([^']*)'|(\S+))\s*$/gm)]
+    .map((match) => match[1] ?? match[2] ?? match[3]);
+}
+
+/**
+ * Every pointer a defaulted file carries, read by what the file is: markdown links everywhere, and
+ * `url:` fields as well in an issue form or its configuration.
+ *
+ * @param {string} path
+ * @param {string} text
+ * @returns {string[]}
+ */
+function pointerTargets(path, text) {
+  return /\.ya?ml$/.test(path) ? [...linkTargets(text), ...yamlUrlTargets(text)] : linkTargets(text);
+}
+
+/**
  * Link targets in a defaulted file that would not resolve to this repository from wherever the
  * default is rendered.
  *
@@ -225,7 +340,7 @@ function linkTargets(text) {
  * @returns {{path: string, target: string}[]}
  */
 function unresolvableLinks(path, text) {
-  return linkTargets(text)
+  return pointerTargets(path, text)
     .filter((target) => !/^(?:https?:\/\/|mailto:|#)/i.test(target))
     .map((target) => ({ path, target }));
 }
@@ -440,7 +555,7 @@ test('AC1: the contributing guide says why the answer is inline rather than behi
 // ---------------------------------------------------------------------------
 
 for (const path of DEFAULTED_FILES) {
-  test(`AC3: every link in ${path} resolves to this repository from wherever the default renders`, () => {
+  test(`AC3: every pointer in ${path} resolves to this repository from wherever the default renders`, () => {
     const findings = unresolvableLinks(path, readTracked(path));
     assert.deepEqual(
       findings,
@@ -449,6 +564,30 @@ for (const path of DEFAULTED_FILES) {
     );
   });
 }
+
+test('AC3: the defaulted set is the supported one, so a type that travels is not left unchecked', () => {
+  // The gap this closes: the issue templates and their config.yml are supported types and this
+  // repository publishes three of them, so a relative pointer in one renders inside another
+  // repository and resolves there. Absent from the list, the rule above would never read them.
+  for (const path of ['.github/ISSUE_TEMPLATE/bug_report.yml', '.github/ISSUE_TEMPLATE/feature_request.yml', '.github/ISSUE_TEMPLATE/config.yml']) {
+    assert.ok(DEFAULTED_FILES.includes(path), `${path} is published as a default and is not held to the link rule`);
+    assert.ok(TRACKED.includes(path), `${path} is not tracked, so the rule above is graded over nothing`);
+  }
+});
+
+test('AC3: a url: field in an issue form is read, and a relative one is a finding', () => {
+  const config = 'blank_issues_enabled: false\ncontact_links:\n'
+    + '  - name: Documentation\n    url: https://docs.cosyte.com\n    about: Guides.\n'
+    + '  - name: Governance\n    url: GOVERNANCE.md\n    about: Who decides.\n'
+    + '  - name: Quoted\n    url: "../CONTRIBUTING.md"\n';
+  assert.deepEqual(unresolvableLinks('.github/ISSUE_TEMPLATE/config.yml', config), [
+    { path: '.github/ISSUE_TEMPLATE/config.yml', target: 'GOVERNANCE.md' },
+    { path: '.github/ISSUE_TEMPLATE/config.yml', target: '../CONTRIBUTING.md' },
+  ]);
+  // The same field in a markdown document is prose, not a pointer, so the reader stays with the file
+  // type it belongs to rather than matching the key wherever it appears.
+  assert.deepEqual(unresolvableLinks(README_PATH, 'url: GOVERNANCE.md\n'), []);
+});
 
 test('AC3: the pointer from the contributing guide to the long-form document is a full URL', () => {
   // A plain substring, not a pattern. An unanchored regular expression carrying a host is a
@@ -520,19 +659,42 @@ test('AC5: no tracked document claims a governance file or a licence is served a
   assert.deepEqual(findings.map(describe), [], findings.map(describe).join('\n'));
 });
 
+/** The roadmap phase's own assertion, which is the claim AC 5 names. Verbatim, negative included. */
+const PHASE_CLAIM = 'WHEN a repository owned by the organization has no GOVERNANCE file of its own THE SYSTEM SHALL '
+  + 'render this repository GOVERNANCE.md as an account-wide default, stating who decides and how.';
+
 test('AC5: the claim the roadmap phase carried is caught, and the finding names the document', () => {
-  const claim = 'WHEN a repository owned by the organization has no GOVERNANCE file of its own THE SYSTEM SHALL '
-    + 'render this repository GOVERNANCE.md as an account-wide default, stating who decides and how.';
-  // The phase's own sentence carries "no ... of its own", which is why the detector is asked about
-  // the assertion on its own rather than about a sentence that happens to contain a negative.
-  const asserted = 'GOVERNANCE.md is rendered as an account-wide default for every repository this account owns.';
-  const findings = overreachFindings(GOVERNANCE_PATH, asserted);
+  // The phase's own sentence, unedited. It carries "no ... of its own" because the mechanism it
+  // borrows cannot be stated without a negative, and that is exactly the sentence to ask about: a
+  // positive control rewritten to drop the negative proves the detector on prose nobody writes.
+  const findings = overreachFindings(GOVERNANCE_PATH, PHASE_CLAIM);
   assert.equal(findings.length, 1);
   assert.equal(findings[0].path, GOVERNANCE_PATH);
   assert.equal(findings[0].subject, 'a governance file');
   assert.match(describe(findings[0]), /^GOVERNANCE\.md claims a governance file is served account-wide/);
-  assert.ok(claim.includes('GOVERNANCE'), 'the phase sentence is kept here as the record of what was claimed');
+  assert.match(describe(findings[0]), /has no GOVERNANCE file of its own/, 'the finding quotes the sentence back');
 });
+
+for (const claim of [
+  'GOVERNANCE.md is rendered as an account-wide default in every repository this account owns that has no governance file of its own.',
+  'When a repository owned by the organization has no GOVERNANCE file of its own, GitHub renders this repository GOVERNANCE.md as an account-wide default.',
+  'Our GOVERNANCE.md is rendered account-wide as a GitHub default, and no repository has to copy it.',
+  'GOVERNANCE.md is one of the supported types, so it renders in every repository with none of its own.',
+  'GOVERNANCE.md, which nobody has to copy, is rendered as an account-wide default.',
+  'CODE_OF_CONDUCT.md, CONTRIBUTING.md and GOVERNANCE.md are all rendered account-wide.',
+  'GOVERNANCE.md is rendered as an account-wide default for every repository this account owns.',
+]) {
+  test(`AC5: the claim is caught spelled as: ${claim.slice(0, 56)}`, () => {
+    // Four of these carry a negative in the same sentence, in the place the mechanism puts it: a
+    // check that skipped a unit on the word would miss all four and report a clean tree. The last
+    // three vary the shape instead, holding the subject behind a relative clause, hiding it in a
+    // list of types that really are supported, and stating it flat.
+    const findings = overreachFindings(README_PATH, claim);
+    assert.equal(findings.length, 1, `no finding for ${JSON.stringify(claim)}`);
+    assert.equal(findings[0].subject, 'a governance file');
+    assert.equal(findings[0].path, README_PATH);
+  });
+}
 
 test('AC5: the same claim about a licence is caught, because the source rules that one out by name', () => {
   const findings = overreachFindings(README_PATH, 'The LICENSE here is rendered as a default in every repository we own.');
@@ -541,9 +703,33 @@ test('AC5: the same claim about a licence is caught, because the source rules th
   assert.match(describe(findings[0]), /^README\.md claims a license file is served account-wide/);
 });
 
-test('AC5: a denial in the same unit is read as a denial, not as the claim it denies', () => {
-  assert.deepEqual(overreachFindings(GOVERNANCE_PATH, 'A governance file is not one of the types served account-wide.'), []);
-  assert.deepEqual(overreachFindings(README_PATH, 'You cannot create a default license file.'), []);
+test('AC5: the licence claim is caught with the negative the mechanism needs, too', () => {
+  const findings = overreachFindings(README_PATH, 'The LICENSE here is rendered as an account-wide default for every repository that has none of its own.');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].subject, 'a license file');
+});
+
+for (const denial of [
+  'A governance file is not one of the types served account-wide.',
+  'You cannot create a default license file.',
+  'GOVERNANCE.md is not rendered as an account-wide default.',
+  'GOVERNANCE.md is never rendered account-wide, in any repository.',
+  'No governance file is served account-wide.',
+  'A governance file is not one of the community-health types GitHub serves account-wide, so this file is not rendered into any repository but its own.',
+  'It is not a supported type, so GOVERNANCE.md appears in no repository but this one.',
+]) {
+  test(`AC5: a denial attached to the assertion is read as a denial: ${denial.slice(0, 46)}`, () => {
+    assert.deepEqual(overreachFindings(GOVERNANCE_PATH, denial), [], `${JSON.stringify(denial)} reads as a claim`);
+  });
+}
+
+test('AC5: the denial has to reach the assertion, and one that does not leaves it standing', () => {
+  // The pair that decides the whole design. Both sentences carry `no`; only one of them denies the
+  // assertion, and the difference is where the word sits rather than whether it is there.
+  assert.deepEqual(overreachFindings(README_PATH, 'GOVERNANCE.md is not served account-wide to a repository that has none of its own.'), []);
+  const findings = overreachFindings(README_PATH, 'GOVERNANCE.md is served account-wide to a repository that has none of its own.');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].subject, 'a governance file');
 });
 
 test('AC5: a denial one unit away does not cover a claim in the next', () => {
@@ -555,8 +741,28 @@ test('AC5: a denial one unit away does not cover a claim in the next', () => {
   assert.equal(findings[0].subject, 'a governance file');
 });
 
+test('AC5: an assertion about a supported type is not an assertion about the file named after it', () => {
+  // The other half of the same rule. The clause carrying the assertion says what it is about, and a
+  // sentence that goes on to name the long-form document is not claiming reach for that document.
+  assert.deepEqual(
+    overreachFindings(README_PATH, 'CONTRIBUTING.md is served account-wide, and GOVERNANCE.md holds the long version for whoever follows the link.'),
+    [],
+  );
+});
+
 test('AC5: prose using the word governance without naming the file is not a claim about a file', () => {
   assert.deepEqual(overreachFindings(README_PATH, 'The governance answer travels as a supported type, inside the guide.'), []);
+});
+
+test('AC5: the tree scan is reaching units rather than skipping them, and this proves it reaches one', () => {
+  // A green scan over a set nothing weighed looks exactly like a green scan over a clean tree. This
+  // asserts the difference: at least one tracked unit really is an assertion of account-wide
+  // rendering that names one of these two files elsewhere in the sentence, and it passes on the
+  // rule rather than on a skip.
+  const weighed = TRACKED_DOCS.flatMap((path) => units(readTracked(path)))
+    .filter((unit) => SERVED_ACCOUNT_WIDE.some((phrase) => phrase.test(unit)))
+    .filter((unit) => GOVERNANCE_MENTION.test(unit) || LICENSE_MENTION.test(unit));
+  assert.ok(weighed.length > 0, 'no tracked unit asserts account-wide rendering near either file, so the scan proved nothing');
 });
 
 // ---------------------------------------------------------------------------
