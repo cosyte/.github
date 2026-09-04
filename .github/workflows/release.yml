@@ -509,7 +509,7 @@ jobs:
       # PR, so the tooling checkout has to be invisible to the caller's git or it lands in that PR.
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       # NO `registry-url` IN THIS JOB, AND THE OMISSION IS THE POINT. `registry-url` is the input that
       # makes setup-node write an `.npmrc` holding `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
       # and point `NPM_CONFIG_USERCONFIG` at it. This job publishes nothing and is handed no
@@ -857,7 +857,7 @@ jobs:
       # checkout has to be invisible to the caller's git or it lands in a commit.
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       # `registry-url` makes setup-node write an .npmrc holding
       # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it.
       # It is declared in THIS job and nowhere else, because this is the only job that authenticates
