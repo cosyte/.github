@@ -345,7 +345,7 @@ So the job is split on the one line that matters, which is **reversibility**:
 | job | environment | what it does | what it is handed |
 |---|---|---|---|
 | `version` | **none** | the protection gate, the caller checkout, `Verify`, the release-notes derivation, the changelog gate, and `changesets/action` with **no publish command at all** | `RELEASE_PR_TOKEN` (or its `GITHUB_TOKEN` fallback) |
-| `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The npm publish, the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
+| `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
 
 **Merging the Version PR is the release decision; the environment approval is that same decision
 confirmed on the runner about to make it permanent.** One approval per release, on the irreversible
@@ -383,6 +383,18 @@ base64-encodes it into a job output, and the `release` job decodes it back to th
 the two `assert` calls that bracket the publish. Base64 rather than a multi-line output because the
 body is human-written markdown and the transport must not be able to eat a trailing newline or be
 terminated early by a line of the body itself.
+
+**The publish-path floor gate stays in `release`, which is the opposite answer to the protection
+gate's and for the opposite reason.** `publish-floor.mjs` asks which tool will perform *this*
+caller's publish, whether that tool clears the floor its staging mode needs, and whether the package
+exists on the registry at all; three step conditions in `release` read its answer as
+`steps.publish-floor.outputs.mode`. A step output does not cross a job boundary, and the tool it
+measures is the one on the runner that publishes, so the step belongs in the job that publishes,
+ahead of that job's `pnpm install` and `Verify` ladder. It carries no `if:` of its own: the
+predicate it used to run on, `is-release`, is now this job's own condition, so a step condition
+would be a tautology in front of the step that decides the publish arm. The protection gate goes the
+other way because what it proves has to be proved on **every** path, including the ones that never
+reach `release`.
 
 **One caller-side residual, and it is the only one this split creates: `RELEASE_PR_TOKEN` must not
 be an environment secret.** An environment secret is scoped to jobs that reference that environment.
@@ -583,21 +595,39 @@ required checks that depend on other jobs", so `if: ${{ always() }}` on the depe
 shape to write. The job then runs, reaches a real conclusion against whatever the dependency left
 behind, and the context reports something rather than being satisfied by a skip.
 
-**It is enforced, not only written.** No job in any workflow here declares `needs:` today, so there
-is nothing to repair; `test/skipped-required-context.test.mjs` holds the rule going forward over
+**It is enforced, not only written.** `test/skipped-required-context.test.mjs` holds the rule over
 every workflow carrying a `workflow_call` trigger, and names the file and the job id when one
 appears without the condition. That check also refuses an examination that found no reusable
 workflow at all, and refuses a workflow file it cannot read or that declares no `on:` block, because
 either of those measures nothing while reporting the rest of the tree clean.
 
+**One job here declares `needs:`, and the remedy is forbidden on it rather than merely unnecessary.**
+`release.yml`'s `release` job depends on `version`, and it is the job that publishes to npm behind
+the caller's `release` environment. `always()` there would do one of two things and neither is the
+thing the source's remedy is for. Either the dependency's job outputs survive its failure, in which
+case the publish runs on a commit whose release-environment gate, release-notes gate, changelog gate,
+verification or publish-floor check has just failed, and **an npm publish is permanent**. Or they do
+not, in which case the condition reading them is false, the job skips exactly as it does now, and the
+only thing that changed is that the file **looks** compliant. So for a job that references a
+deployment environment the rule asks for the opposite, in the same breath and by the same check: it
+must **not** survive a failed dependency, and `always()` or `!cancelled()` on such a job is a
+finding that nothing refused before. That is keyed on the `environment:` key and on nothing else, so
+no job that is not making a deployment can reach it.
+
+**The residual that leaves, stated rather than traded away.** When `version` fails, `release` still
+concludes `skipped`, and a caller ruleset naming only `<caller job>/release` still counts that as a
+pass. What answers it is that the failure is loud where a ruleset can see it: the run itself is red,
+and `version` emits its own check-run context, which **fails**. `version` is therefore the context to
+require for this workflow, as "Which job the environment holds" says above.
+
 **Where this rule stops, which matters because the same word means the opposite one line over.** A
-condition that survives a failed dependency belongs on a job that declares a dependency. On a
-check's OWN failure path it does the reverse: `always()`, `failure()` and `!cancelled()` there turn
-a real failure into a green run, which is why `test/self-scan.test.mjs` refuses all three anywhere
-on this repository's self-analysis path and `test/org-defaults-coverage.test.mjs` refuses them on
-the org-defaults check's path. Both prohibitions stand unchanged. The rule above permits such a
-condition on one thing only, a job that declares `needs:`, and nothing here relaxes a gate that
-already exists.
+condition that survives a failed dependency belongs on a job that declares a dependency **and makes
+no deployment**. On a check's OWN failure path it does the reverse: `always()`, `failure()` and
+`!cancelled()` there turn a real failure into a green run, which is why `test/self-scan.test.mjs`
+refuses all three anywhere on this repository's self-analysis path and
+`test/org-defaults-coverage.test.mjs` refuses them on the org-defaults check's path. Both
+prohibitions stand unchanged. The rule above permits such a condition on one thing only, a job that
+declares `needs:` and holds no environment, and nothing here relaxes a gate that already exists.
 
 ### What deliberately does not follow here
 
