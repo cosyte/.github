@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | **the release environment gate** → Changesets → **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first and refuses the run, before any caller tree is checked out, unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **two jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed in the job that publishes, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 
@@ -322,10 +322,91 @@ below.
 ## The release environment gate
 
 **Nothing reaches npm from a `@cosyte/*` repository without a human who could have stopped it, and
-this is where that stops being a claim.** `release.yml` puts its one job in `environment: release`,
-and until 2026-08-23 a comment above that key asserted every caller had configured that environment
-with a required reviewer and a main-only deployment branch policy. **Nothing read a caller's actual
-configuration.**
+this is where that stops being a claim.** `release.yml` puts its **publishing** job in
+`environment: release`, and until 2026-08-23 a comment above that key asserted every caller had
+configured that environment with a required reviewer and a main-only deployment branch policy.
+**Nothing read a caller's actual configuration.**
+
+### Which job the environment holds, and why it is not all of them
+
+**Until 2026-08-25 this workflow was one job, and that one job did two unrelated things**: it either
+opened or refreshed the "Version Packages" pull request, or it published to npm. A GitHub
+environment attaches to a **job**, never to a step, so putting one on that job asked a human to
+approve **every merge to a caller's default branch**, including the overwhelming majority that would
+never touch a registry.
+
+**The measured result was not extra safety. It was that nothing released at all**: the approval
+request that would have *opened* a Version PR was itself unapproved, so the queue of unshipped
+changesets grew while every approval anyone was asked for bought nothing. GitHub also fails a job
+that is not approved within 30 days, so those requests did not merely wait, they expired.
+
+So the job is split on the one line that matters, which is **reversibility**:
+
+| job | environment | what it does | what it is handed |
+|---|---|---|---|
+| `version` | **none** | the protection gate, the caller checkout, `Verify`, the release-notes derivation, the changelog gate, and `changesets/action` with **no publish command at all** | `RELEASE_PR_TOKEN` (or its `GITHUB_TOKEN` fallback) |
+| `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
+
+**Merging the Version PR is the release decision; the environment approval is that same decision
+confirmed on the runner about to make it permanent.** One approval per release, on the irreversible
+half, instead of one per merge on both halves. Nothing is skipped and no approval is traded away.
+
+**The job id `release` is load-bearing and did not change.** A caller's check context for a reusable
+workflow is `<caller job id> / <called job id>`, so every caller's required-check configuration names
+`release`. Renaming the publishing job would leave those contexts reporting nothing at all, which is
+the failure mode that leaves a pull request **pending and unmergeable by anyone** (see "What a
+skipped required context does to a merge", below). On a run that only opens a Version PR the
+`release` job is skipped by its job-level `if:`, which the same measurement shows concludes `skipped`
+and **satisfies** a required context.
+
+**A refused gate lands on `version`, not on `release`.** The gate refuses by failing a step of
+`version`; the **run** concludes failure, and `release` never starts because it `needs: version`, so
+the `release` context concludes `skipped` on that run too. The refusal itself is not softened by
+this: the run fails, no Version PR is opened and the registry is never reached. What changed with the
+split is only which context carries it. Before the split there was one job and one context, so the
+question could not arise; after it, `version` is the context that runs on **every** path and the one
+a refusal shows up on, and it is therefore the context to require if a caller requires one for this
+workflow.
+
+**The gate does not move into the publish job**, and that is the whole reason the split is safe. It
+stays in `version`, unconditional, so it runs on every path this workflow has. A gate that only ran
+on the publish arm would stop proving anything on the arm that runs every day, and it would stop
+**silently**: a job or step skipped by a conditional concludes `skipped`, which a required context
+counts as success. The gate needs `actions: read` and an API call, not membership of the environment
+it reads; the **publish** is the thing that has to be inside it.
+
+**The release notes cross the job boundary rather than being re-derived.** `$RUNNER_TEMP` is
+per-job, and re-deriving after the publish is impossible in principle: `changeset publish` creates
+the `v<version>` tag locally, and "is a release pending" is answered by whether that tag exists, so a
+second derivation always finds nothing. The `version` job therefore derives the body **once**,
+base64-encodes it into a job output, and the `release` job decodes it back to the same path before
+the two `assert` calls that bracket the publish. Base64 rather than a multi-line output because the
+body is human-written markdown and the transport must not be able to eat a trailing newline or be
+terminated early by a line of the body itself.
+
+**The publish-path floor gate stays in `release`, which is the opposite answer to the protection
+gate's and for the opposite reason.** `publish-floor.mjs` asks which tool will perform *this*
+caller's publish, whether that tool clears the floor its staging mode needs, and whether the package
+exists on the registry at all; three step conditions in `release` read its answer as
+`steps.publish-floor.outputs.mode`. A step output does not cross a job boundary, and the tool it
+measures is the one on the runner that publishes, so the step belongs in the job that publishes,
+ahead of that job's `pnpm install` and `Verify` ladder. It carries no `if:` of its own: the
+predicate it used to run on, `is-release`, is now this job's own condition, so a step condition
+would be a tautology in front of the step that decides the publish arm. The protection gate goes the
+other way because what it proves has to be proved on **every** path, including the ones that never
+reach `release`.
+
+**One caller-side residual, and it is the only one this split creates: `RELEASE_PR_TOKEN` must not
+be an environment secret.** An environment secret is scoped to jobs that reference that environment.
+Before the split the single job referenced `release`, so a `RELEASE_PR_TOKEN` stored there resolved;
+the Version PR is now opened from `version`, which references no environment on purpose, so a token
+stored that way reads **empty** in the job that needs it and this workflow falls back to
+`GITHUB_TOKEN`, which is the zero-checks trap described under "Who authors the 'Version Packages'
+PR" below. It degrades rather than breaking, and it announces itself: the "Version PR will land with
+zero checks" warning fires exactly as it would for a caller that never set the token, so the log is
+the diagnosis. The fix is caller-side and takes no change to this file: **store `RELEASE_PR_TOKEN`
+as a repository or organization secret**. `NPM_TOKEN` and `DOCS_REPO_DISPATCH_TOKEN` are unaffected
+from either placement, because both are consumed in `release`, which does reference the environment.
 
 The failure that hides in is quiet in the worst way: a `release` environment carrying **no protection
 rules** produces a run that looks identical to a genuinely gated one. Same environment badge on the
@@ -334,9 +415,10 @@ approve. Whether such an environment was created by a maintainer and left unprot
 being on first reference, is not a distinction any run can draw: the payload is the same either way.
 So this pipeline does not draw it, and neither does the refusal.
 
-`scripts/environment-gate.mjs` now runs as the **first thing the release job does** and reads the
-calling repository's own environment configuration. It exits non-zero, before any caller tree is on
-disk and long before anything is packed, unless that environment carries **both**:
+`scripts/environment-gate.mjs` now runs as the **first thing the `version` job does**, on every run
+of this workflow, and reads the calling repository's own environment configuration. It exits
+non-zero, before any caller tree is on disk and long before anything is packed, unless that
+environment carries **both**:
 
 | rule | what passes | what refuses |
 |---|---|---|
@@ -385,9 +467,17 @@ The declaration in `release.yml` is **additive**, and that word is load-bearing 
 descriptive: "if you specify the access for any of these permissions, all of those that are not
 specified are set to `none`", so a block whose only key was `actions: read` would not add a
 permission, it would strip `contents` off the job and 403 the very next checkout, on a **fully
-compliant** caller, with none of the fail-closed refusal above. The block therefore names all four
-keys, `contents` stays at `write` because this job creates tags and a GitHub release, and
-`test/install-check.test.mjs` pins the set whole.
+compliant** caller, with none of the fail-closed refusal above. The workflow-level block therefore
+names all four keys, `contents` stays at `write` because the publish job creates tags and a GitHub
+release, and `test/install-check.test.mjs` pins that set whole. It is what this file **requests** of
+a caller, and it is unchanged by the split: no caller grants anything new.
+
+**Each job then narrows it, and a job block replaces the workflow one rather than adding to it**, so
+each names every key it needs. `version` is `contents: write` + `pull-requests: write` +
+`actions: read`; `release` is those three plus `id-token: write`. **`id-token` is deliberately absent
+from `version`**: it is npm provenance, provenance is a publish-time concern, and that job cannot
+publish, so the token that signs a publish has no business existing on a runner nobody approved.
+`test/environment-gate.test.mjs` pins **both** sets whole, in both directions.
 
 The default branch itself is in **neither** environment payload, though four of the refusal wordings
 name it. It comes from `GET /repos/{owner}/{repo}`, which sits under `Metadata: read`: not a
@@ -505,21 +595,39 @@ required checks that depend on other jobs", so `if: ${{ always() }}` on the depe
 shape to write. The job then runs, reaches a real conclusion against whatever the dependency left
 behind, and the context reports something rather than being satisfied by a skip.
 
-**It is enforced, not only written.** No job in any workflow here declares `needs:` today, so there
-is nothing to repair; `test/skipped-required-context.test.mjs` holds the rule going forward over
+**It is enforced, not only written.** `test/skipped-required-context.test.mjs` holds the rule over
 every workflow carrying a `workflow_call` trigger, and names the file and the job id when one
 appears without the condition. That check also refuses an examination that found no reusable
 workflow at all, and refuses a workflow file it cannot read or that declares no `on:` block, because
 either of those measures nothing while reporting the rest of the tree clean.
 
+**One job here declares `needs:`, and the remedy is forbidden on it rather than merely unnecessary.**
+`release.yml`'s `release` job depends on `version`, and it is the job that publishes to npm behind
+the caller's `release` environment. `always()` there would do one of two things and neither is the
+thing the source's remedy is for. Either the dependency's job outputs survive its failure, in which
+case the publish runs on a commit whose release-environment gate, release-notes gate, changelog gate,
+verification or publish-floor check has just failed, and **an npm publish is permanent**. Or they do
+not, in which case the condition reading them is false, the job skips exactly as it does now, and the
+only thing that changed is that the file **looks** compliant. So for a job that references a
+deployment environment the rule asks for the opposite, in the same breath and by the same check: it
+must **not** survive a failed dependency, and `always()` or `!cancelled()` on such a job is a
+finding that nothing refused before. That is keyed on the `environment:` key and on nothing else, so
+no job that is not making a deployment can reach it.
+
+**The residual that leaves, stated rather than traded away.** When `version` fails, `release` still
+concludes `skipped`, and a caller ruleset naming only `<caller job>/release` still counts that as a
+pass. What answers it is that the failure is loud where a ruleset can see it: the run itself is red,
+and `version` emits its own check-run context, which **fails**. `version` is therefore the context to
+require for this workflow, as "Which job the environment holds" says above.
+
 **Where this rule stops, which matters because the same word means the opposite one line over.** A
-condition that survives a failed dependency belongs on a job that declares a dependency. On a
-check's OWN failure path it does the reverse: `always()`, `failure()` and `!cancelled()` there turn
-a real failure into a green run, which is why `test/self-scan.test.mjs` refuses all three anywhere
-on this repository's self-analysis path and `test/org-defaults-coverage.test.mjs` refuses them on
-the org-defaults check's path. Both prohibitions stand unchanged. The rule above permits such a
-condition on one thing only, a job that declares `needs:`, and nothing here relaxes a gate that
-already exists.
+condition that survives a failed dependency belongs on a job that declares a dependency **and makes
+no deployment**. On a check's OWN failure path it does the reverse: `always()`, `failure()` and
+`!cancelled()` there turn a real failure into a green run, which is why `test/self-scan.test.mjs`
+refuses all three anywhere on this repository's self-analysis path and
+`test/org-defaults-coverage.test.mjs` refuses them on the org-defaults check's path. Both
+prohibitions stand unchanged. The rule above permits such a condition on one thing only, a job that
+declares `needs:` and holds no environment, and nothing here relaxes a gate that already exists.
 
 ### What deliberately does not follow here
 
@@ -737,10 +845,13 @@ registry-tarball installs, so the claim stands.
 must be re-decided first.**
 
 On the publish arm the PAT buys nothing at all, since `createGithubReleases: false` leaves the
-action's octokit unused there. Narrowing it to the version-PR arm is not done: the only predicate
-available is `steps.notes.outputs.is-release`, which is not the action's own arm predicate, and a
-disagreement would hand `GITHUB_TOKEN` back to the Version PR. The exposure is accepted and written
-down rather than traded for that risk.
+action's octokit unused there. **Handing it to the `version` job alone is not done**, even though
+that is the job whose whole purpose is the Version PR: the action picks its arm from **its own**
+reading of the pending changesets, not from the job it is in, so a changeset landing on main between
+the two jobs puts the publish job on the version arm. A publish job without the token would then open
+a Version PR authored by `GITHUB_TOKEN`, which is the exact trap this credential exists to close. The
+exposure is accepted and written down rather than traded for that risk. **What the split did remove
+is the other credential**: `NPM_TOKEN` is handed to the environment-held job and to nothing else.
 
 **If the netrc fallback does not apply**, the push fails loudly and the run goes red with npm
 untouched, because the publish arm does not push at all (`createGithubReleases: false` means the
@@ -1107,7 +1218,7 @@ published". That reasoning is right and **it does not reach this gate**:
 3. **"Invites a re-run" does not carry the same cost here.** `changeset publish` queries npm and skips
    a version already on the registry, so a re-run cannot double-publish, **unconditionally**. A second
    mechanism usually also applies, that the release step has by then pushed the `v<version>` tag so a
-   re-run classifies `already-released` and the publish command is withheld, but it is **not**
+   re-run classifies `already-released` and the publish job never starts, but it is **not**
    unconditional: this step runs under `!cancelled()` precisely so it still reports when the release
    step failed, and in that case the tag may never have been pushed. The property holds once always,
    and twice in the ordinary case.
@@ -1347,10 +1458,11 @@ governs whoever reads it; a gate governs everyone. The run **fails and names the
 | Wrong release | a body that disagrees with the version or package that reached npm |
 
 **Every refusal above bar the last fires before npm is reached**, and structurally rather than by
-arrangement: `changesets/action` is only handed a publish command once the body has been derived and
-its bytes proved fit, so a run that cannot say what it is shipping cannot publish. Only "wrong
-release" can fire afterwards, because the version it reconciles against is what Changesets reported
-publishing and does not exist any sooner.
+arrangement: the body is derived in the `version` job, which is handed no publish command at all, and
+the `release` job that is handed one starts only when that derivation succeeded and then proves the
+arrived bytes fit before `changesets/action` runs. A run that cannot say what it is shipping cannot
+publish. Only "wrong release" can fire afterwards, because the version it reconciles against is what
+Changesets reported publishing and does not exist any sooner.
 
 The renderer **translates** first (identifiers belong in the changeset, the changelog, the commit and
 the roadmap, never in a release body) and the gate then proves the translation worked. Translation is
@@ -1426,29 +1538,31 @@ so only the unambiguously-internal determiner forms are rewritten.
 
 - **Every change needs a changeset with a real summary.** `pnpm changeset` with a blank description
   now stops a release rather than producing an empty bullet.
-- **The notes are derived exactly once, before the publish step**, and the publish step asserts and
-  publishes that same file. The ordinary failure therefore costs nothing: npm is untouched and the
-  fix is to amend the changeset and re-run. Deriving a second time after publishing cannot work,
-  because `changeset publish` creates the `v<version>` tag locally and that tag is how the script
-  answers "is a release pending".
+- **The notes are derived exactly once, in the `version` job**, and the `release` job publishes those
+  same bytes, carried across the job boundary as a base64 job output because `$RUNNER_TEMP` is
+  per-job. The ordinary failure therefore costs nothing: npm is untouched, nobody has been asked to
+  approve anything, and the fix is to amend the changeset and re-run. Deriving a second time after
+  publishing cannot work, because `changeset publish` creates the `v<version>` tag locally and that
+  tag is how the script answers "is a release pending".
 - **npm is downstream of the gate.** `prepare` is the permission to publish, not a report on it: its
-  `is-release` output is what `release.yml` passes to `changesets/action` as the publish command, so
-  a run that could not derive a fit release body never reaches the registry. The body is proved a
-  second time, from the finished bytes, in the step immediately before that one. Until 2026-07-28 the
-  order was publish first and check second, with an error afterwards saying npm had the package and
-  the gate had not run. **A published version is permanent, so that was a correction, not a gate.**
+  `is-release` output is what `release.yml` conditions the whole environment-held `release` job on,
+  so a run that could not derive a fit release body never starts the job that can reach the registry.
+  The body is proved a second time, from the finished bytes, in that job, in the step before the
+  publish. Until 2026-07-28 the order was publish first and check second, with an error afterwards
+  saying npm had the package and the gate had not run. **A published version is permanent, so that
+  was a correction, not a gate.**
 - **The one check that still follows the publish is the reconciliation**, which compares the body
   against the version Changesets reported publishing. That version does not exist any earlier. A
   disagreement there still leaves the package on npm with no GitHub release, and that remains the
   intended trade: a loud red beats a silent green carrying a meaningless release. Recovery is to
   create the release by hand, since re-running finds nothing left to publish.
 - **The "Version Packages" PR body tells you to publish by hand. Do not.** `changesets/action` writes
-  that sentence whenever it is opening the PR without a publish command set, and the command is
-  withheld until the notes gate has passed. Merging the PR is still what
-  releases; the publish then runs behind the protected `release` environment. The wording is left
-  wrong on purpose: the only way to correct it is to re-derive "are there pending changesets"
-  ourselves, and a predicate that disagrees with the action's own by one empty changeset file would
-  hand the publish command back on the arm that actually publishes.
+  that sentence whenever it is opening the PR without a publish command set, and the `version` job
+  never sets one. Merging the PR is still what releases; the publish then runs in the separate
+  `release` job, behind the protected `release` environment. The wording is left wrong on purpose:
+  the only way to correct it is to re-derive "are there pending changesets" ourselves, and a
+  predicate that disagrees with the action's own by one empty changeset file would hand a publish
+  command to the arm that actually publishes.
 - **A commit the gate cannot classify is a red run, not a quiet skip.** "No release pending" is
   benign on exactly three readings, and the script distinguishes them by a `code` rather than by
   prose: `already-released` (`v<version>` is tagged, which is every ordinary push to main between
@@ -1640,7 +1754,7 @@ PR**, which bumps back up, consumes the reworded changesets, and goes through th
 
 **It cannot be wrong in the dangerous direction, and that does not rest on the detector being
 accurate.** A `version-reverted` verdict **grants nothing**: it sets `is-release=false`, which is
-precisely what *withholds* the publish command from `changesets/action`. There is no path from this
+precisely what *withholds* the environment-held `release` job. There is no path from this
 verdict to npm, so the worst a false positive can do is decline to publish, which a fresh Version PR
 then undoes.
 
@@ -1701,7 +1815,7 @@ skip the gate:
 
 **It cannot be wrong in the dangerous direction, and that does not rest on the test being accurate.**
 A `never-versioned` verdict grants nothing: it sets `is-release=false`, which is precisely what
-*withholds* the publish command from `changesets/action`. The worst a false positive can do is
+*withholds* the environment-held `release` job. The worst a false positive can do is
 decline to publish. There is no path from this verdict to npm, and the gate is never *passed* here,
 only deferred.
 
@@ -1710,7 +1824,7 @@ is the run that opens the Version PR; merging it produces a version commit with 
 version and real consumed changesets, and *that* run derives notes and is checked in full. Nothing
 is skipped, it is deferred by one commit, to the commit that has something to say. A package that
 has been versioned does not re-enter this state without a history rewrite, and if it ever did the
-verdict would still withhold the publish command rather than hand it over.
+verdict would still withhold the publish job rather than start it.
 
 **A shallow checkout is not read as never-versioned.** Its oldest commit has no parent and reads as
 a root commit, so the question is unanswerable rather than answered `false`; `hasPriorVersion`
