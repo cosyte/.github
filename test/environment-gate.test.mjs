@@ -37,6 +37,20 @@ import {
   normalizeRepository,
   ruleKind,
 } from '../scripts/environment-gate.mjs';
+import {
+  allSteps,
+  conditionsOf,
+  decomment,
+  dependsOn,
+  effectivePermissions,
+  NPM_SECRET_REF,
+  optsBackInAfterFailure,
+  parseWorkflow,
+  readWorkflow,
+  STEP_CONDITION_LINE,
+  workflowEnv,
+  workflowPreamble,
+} from './workflow-reader.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, '../scripts/environment-gate.mjs');
@@ -695,374 +709,13 @@ test('the two rules are reported independently, so a satisfied one is never name
 // author happened to write first. The properties below are per-job facts (which job holds the
 // environment, which job is handed the npm credential, what precedes the gate INSIDE its own job)
 // plus one cross-job fact (`needs:`), and they are asserted as such.
-
-/** Drop whole-line comments. A `#` inside a shell heredoc goes too, which no assertion here reads. */
-function decomment(text) {
-  return text.split('\n').filter((line) => !/^\s*#/.test(line));
-}
-
-/** `write # create tags` -> `write`. Only ` # ` counts, so a `${{ }}` expression is never cut. */
-function stripTrailingComment(value) {
-  return value.replace(/\s+#\s.*$/, '').trim();
-}
-
-/** A step's own keys sit here, one level under the `- ` that opens the list entry. */
-const STEP_KEY_INDENT = 8;
-
-/**
- * A key-line value that is not the value: the key's real value is on the lines below it.
- *
- * Empty, or a block-scalar indicator (`|`, `>`, either with a chomping or an indentation modifier).
- * YAML says all of those mean "read on", and a line-oriented reader that stops at the colon comes
- * back holding `""` or `">-"` and believes it. That is the failure this constant exists to name:
- * not a line the reader could not read, which it refuses, but a line it read and got WRONG, which
- * it used to hand on to an assertion as if it were a condition.
- */
-const VALUE_LIVES_BELOW = /^(?:[|>][+-]?\d*)?$/;
-
-/**
- * The value that lives on the lines below `lines[at]`, folded onto one line.
- *
- * Everything more indented than the key, blanks skipped, joined with single spaces - which is what
- * a folded scalar (`>-`) means and is close enough for a literal one (`|`) too, because every
- * caller here matches patterns against the result rather than executing it. Stops at the first line
- * that is not deeper than the key, which is where the key's value ends.
- */
-function valueBelow(lines, at) {
-  if (at < 0) return '';
-  const indentOf = (line) => line.length - line.replace(/^[ \t]*/, '').length;
-  const keyIndent = indentOf(lines[at]);
-  const folded = [];
-  for (const line of lines.slice(at + 1)) {
-    if (line.trim() === '') continue;
-    if (indentOf(line) <= keyIndent) break;
-    folded.push(line.trim());
-  }
-  return folded.join(' ');
-}
-
-/**
- * Parse ONE step from the raw lines of a `- ` list entry under a job's `steps:`.
- *
- * `fields` are the step's own keys; `with` and `env` are their nested maps, read only while the
- * parser is positioned inside those two blocks, so a `run: |` script line can never be mistaken for
- * an input or a variable.
- *
- * IT REFUSES A LINE IT CANNOT READ, WHICH IS THE WHOLE POINT AND WAS NOT TRUE OF THE FIRST VERSION.
- * That version dropped a line at step-key level that its key pattern did not match, and the pattern
- * requires the colon to touch the key: `        if : ${{ ... }}` - one space before the colon - is
- * valid YAML, a real condition GitHub acts on and actionlint typechecks, and it went straight onto
- * the floor. `fields.if` then came back `undefined` for a step that carries a condition, and every
- * step-condition assertion in this file (AC1's version arm, AC3's gate, AC9's opt-back-in set) read
- * such a step as unconditional and stayed green. That is the asymmetry this now removes: the JOB
- * reader below has always thrown on the same class of input, and AC12 states the principle in as
- * many words - a parser that cannot read its subject must fail explicitly rather than assert over
- * what it managed to salvage. A dropped line is exactly that, one line at a time.
- *
- * SO EVERY LINE HANDED TO THIS FUNCTION IS ACCOUNTED FOR, at one of three levels:
- *
- *   - at `STEP_KEY_INDENT`, it is a step key or it is a parse failure naming the job and the step;
- *   - inside an open `with:`/`env:` block, at whatever indent that block's FIRST child established
- *     (ten spaces here, but discovered rather than hardcoded, so a block written at nine is read
- *     rather than skipped), it is a child key, or a `- ` item continuing the child key above it, or
- *     it is a parse failure;
- *   - deeper than either, it is the body of a block scalar (`run: |` and friends) or the wrapped
- *     continuation of a plain one, and it carries no key this file asserts on.
- *
- * THE SEQUENCE ITEM IS READ RATHER THAN REFUSED, and that is the one direction this reader was
- * wrong in the other way. YAML lets a sequence sit at its parent key's own indent, so
- * `path:` followed by `- dist-artifacts/a` at the SAME column is legal, common in
- * `actions/upload-artifact` inputs, and was refused here as illegible. Refusing legal YAML fails
- * closed, so it never let a criterion go unenforced - but it spends the next maintainer's afternoon
- * on a parse failure that is not a real finding, and this parser's contract is to refuse what it
- * cannot READ, not what it has not SEEN. The item is appended to the key it belongs to, so nothing
- * is dropped: an input written as a sequence still has a value, and every absence assertion over
- * `with`/`env` still sees it. An item under no key at all, or under a key that already carries a
- * scalar, is not legal YAML and still refuses.
- *
- * Shallower than a step key means the step list has ended and something this parser does not model
- * has begun, so that refuses too. `run:` bodies in release.yml sit at ten spaces or more, verified
- * rather than assumed by `probe_0161_eight_space_indent.mjs` beside the spec, so the eight-space
- * rule cannot fire on a script line.
- *
- * A `with:` or `env:` carrying a value instead of opening a block (a flow mapping, `env: {A: b}`)
- * refuses for the same reason: this parser cannot read one, and returning an empty map for it would
- * report "no such input" about inputs that are there.
- */
-function parseStep(index, jobId, rawLines) {
-  const lines = [`        ${rawLines[0]}`, ...rawLines.slice(1)];
-  /** @type {Record<string, string>} */
-  const fields = {};
-  const blocks = { with: {}, env: {} };
-  const unreadable = (line, where) =>
-    new Error(
-      `parse failure: unreadable line in step ${index} of job \`${jobId}\`${where}: ${JSON.stringify(line)}`,
-    );
-
-  /** `null` at step-key level; otherwise the open block and the indent its children were found at. */
-  let open = null;
-  for (const line of lines) {
-    if (line.trim() === '') continue;
-    const indent = line.length - line.replace(/^ */, '').length;
-
-    if (open && open.indent === null && indent > STEP_KEY_INDENT) open.indent = indent;
-    if (open && open.indent !== null && indent >= open.indent) {
-      if (indent > open.indent) continue; // the body of a child's own scalar
-      const item = new RegExp(`^ {${open.indent}}- (.*)$`).exec(line);
-      if (item) {
-        const under = open.last === null ? null : blocks[open.key][open.last];
-        if (under === null || !(under === '' || under.startsWith('\n- '))) {
-          throw unreadable(line, `, a sequence item inside \`${open.key}:\` under no key it can belong to`);
-        }
-        blocks[open.key][open.last] = `${under}\n- ${stripTrailingComment(item[1])}`;
-        continue;
-      }
-      const child = new RegExp(`^ {${open.indent}}([\\w-]+):\\s?(.*)$`).exec(line);
-      if (!child) throw unreadable(line, `, inside \`${open.key}:\``);
-      blocks[open.key][child[1]] = stripTrailingComment(child[2]);
-      open.last = child[1];
-      continue;
-    }
-    open = null; // anything shallower than the children closes the block
-
-    if (indent > STEP_KEY_INDENT) continue; // a block scalar's body, or a wrapped plain scalar
-    if (indent < STEP_KEY_INDENT) throw unreadable(line, ', shallower than this step');
-    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
-    if (!key) throw unreadable(line, '');
-    fields[key[1]] = stripTrailingComment(key[2]);
-    if (key[1] === 'with' || key[1] === 'env') {
-      if (fields[key[1]] !== '') throw unreadable(line, `, a \`${key[1]}:\` this parser cannot read`);
-      open = { key: key[1], indent: null, last: null };
-    } else {
-      open = null;
-    }
-  }
-  // AND A CONDITION WHOSE VALUE IS NOT ON ITS OWN LINE IS STILL THIS STEP'S CONDITION. `if: >-` with
-  // the expression on the next line, and a bare `if:` with the same, are the identical condition to
-  // Actions and used to leave `fields.if` holding the block-scalar indicator `">-"`. That is legible
-  // to the reader and WRONG, which is worse than illegible: `undefined` is refused, `">-"` is
-  // believed. AC9 classifies opt-back-in steps by what the condition SAYS, so a step whose
-  // `always()` lived one line down never joined the set it had to be accounted for in.
-  if (fields.if !== undefined && VALUE_LIVES_BELOW.test(fields.if.trim())) {
-    const at = lines.findIndex((line) => /^ {8}if:/.test(line));
-    fields.if = `${fields.if} ${valueBelow(lines, at)}`.trim();
-  }
-  const label = fields.name ?? fields.uses ?? `${jobId} step ${index}`;
-  if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
-    throw new Error(
-      `parse failure: step ${index} of job \`${jobId}\` has neither a name, a uses nor a run: ` +
-        JSON.stringify(lines.join('\n').slice(0, 120)),
-    );
-  }
-  return { index, job: jobId, fields, with: blocks.with, env: blocks.env, label, body: lines.join('\n') };
-}
-
-/**
- * A step-level condition spelled as TEXT, in every spelling of the key, restored from `origin/main`.
- *
- * `["']?` optional and `\s*` before the colon: that sees `if:`, `if :` and `"if":`, which are the
- * three spellings a refuter has already got past a version of these suites. It lived in
- * `test/release-notes.test.mjs` before the split, with a comment recording why it had to, and this
- * branch replaced it with a parser read plus a pattern requiring the quotes. The parser could not
- * answer for the middle spelling, so the coverage the comment claimed was gone.
- *
- * IT IS BACK BESIDE THE PARSER FIX RATHER THAN INSTEAD OF IT, and the redundancy is the point. The
- * parser refusing an unreadable line is the guarantee; this is the backstop that keeps biting if a
- * later edit loosens the parser again, which is exactly the edit that already happened once. A guard
- * this repository's own history says it needed is not removed on the strength of the mechanism it
- * exists to check. Constraints 7 of the spec asks for MORE assertion here, not the minimum that
- * closes today's finding.
- *
- * It does NOT match `if-no-files-found:` or a shell `if [ ... ]; then` in a `run:` body: the colon
- * has to follow the key, with only quotes and blanks between.
- */
-const STEP_CONDITION_LINE = /^\s*["']?if["']?\s*:/m;
-
-/**
- * The same, as a scan: every condition a step spells, however it spells the key AND WHEREVER IT PUTS
- * THE VALUE.
- *
- * The second half is what this used to get wrong. Taking the text after the colon is right for
- * `if: ${{ always() }}` and wrong for `if: >-` with the expression on the next line: that returns
- * the block-scalar indicator `">-"`, which is not `undefined`, so every check that only needs a
- * condition to EXIST still fires (AC1's version arm, AC3's gate) while the one that needs the
- * condition's CONTENT quietly reads a step's `always()` as no `always()` at all. AC9 is that check:
- * it pins the set of steps that opt back in after a failure, by name, per job, so a step invisible
- * to the classification never joins the set and the pinned list still matches exactly.
- *
- * So a key line whose value lives below it is folded with the lines below it, in the same helper the
- * parser uses for `fields.if`. This scan is kept BESIDE that parser read rather than replaced by it,
- * for the reason `STEP_CONDITION_LINE` above is: the parser is the guarantee and the text scan is
- * what keeps biting if the parser is loosened again.
- */
-function conditionsOf(step) {
-  const lines = step.body.split('\n');
-  const spelled = [];
-  for (const [at, line] of lines.entries()) {
-    const key = /^[ \t]*["']?if["']?[ \t]*:(.*)$/.exec(line);
-    if (!key) continue;
-    const value = key[1];
-    spelled.push(VALUE_LIVES_BELOW.test(value.trim()) ? `${value} ${valueBelow(lines, at)}` : value);
-  }
-  return [step.fields.if ?? '', ...spelled].join(' ');
-}
-
-/**
- * Parse release.yml into its jobs, each with its own keys, its nested blocks and its ordered steps.
- *
- * NOT a general YAML parser, deliberately: this repository has no dependencies and no install step
- * on purpose, so `node:test` and `node:assert` are the whole toolbox. What it IS, is a parser that
- * THROWS, naming what it could not read, rather than returning an empty list. An empty job list or
- * an empty step list makes every assertion in this section pass while asserting nothing, and a suite
- * whose subject is workflow composition has to fail loudly the moment the composition stops being
- * legible to it.
- */
-function parseWorkflow(text) {
-  const lines = decomment(text);
-  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
-  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
-
-  const jobs = [];
-  let job = null;
-  let openBlock = null;
-  let inSteps = false;
-  /** @type {string[][]} */
-  let rawSteps = [];
-
-  const closeJob = () => {
-    if (!job) return;
-    job.steps = rawSteps.map((raw, index) => parseStep(index, job.id, raw));
-    if (job.steps.length === 0) throw new Error(`parse failure: job \`${job.id}\` parsed to zero steps`);
-  };
-
-  for (const line of lines.slice(jobsAt + 1)) {
-    if (line.trim() === '') continue;
-    if (/^\S/.test(line)) break; // a new top-level key closes the jobs block
-
-    const jobStart = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (jobStart) {
-      closeJob();
-      job = { id: jobStart[1], keys: {}, blocks: {}, raw: {}, preamble: [], steps: [] };
-      jobs.push(job);
-      openBlock = null;
-      inSteps = false;
-      rawSteps = [];
-      continue;
-    }
-    if (!job) throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`jobs:\` but inside no job`);
-
-    if (!inSteps) {
-      if (/^ {4}steps:\s*$/.test(line)) {
-        inSteps = true;
-        openBlock = null;
-        continue;
-      }
-      job.preamble.push(line);
-      const key = /^ {4}([\w-]+):\s?(.*)$/.exec(line);
-      if (key) {
-        job.keys[key[1]] = stripTrailingComment(key[2]);
-        job.raw[key[1]] = key[2];
-        if (job.keys[key[1]] === '') {
-          job.blocks[key[1]] = {};
-          openBlock = key[1];
-          continue;
-        }
-        openBlock = null;
-        // A JOB-LEVEL `env:` THAT DOES NOT OPEN A BLOCK IS STILL EVERY STEP'S ENVIRONMENT. The
-        // one-line flow mapping `env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }` is the same
-        // thing Actions does with the block spelling, and this reader used to store it as an
-        // ordinary key value and create no block at all, so a read of `job.blocks.env` came back
-        // EMPTY about a job that hands the npm write credential to every step it has. That is the
-        // shape of AC6's whole family of findings, one scope in: the spelling someone thought to
-        // write is closed and the one they did not is open. It is read here the way `workflowEnv`
-        // reads it one scope up, and a value that is neither a block nor a flow mapping this reader
-        // can close refuses outright, which is what `parseStep` already does one scope down.
-        if (key[1] === 'env') {
-          if (!/^\{.*\}$/.test(job.keys.env)) {
-            throw new Error(
-              `parse failure: unreadable line in job \`${job.id}\`, a \`env:\` this parser cannot read: ` +
-                JSON.stringify(line),
-            );
-          }
-          job.blocks.env = flowMappingPairs(job.keys.env);
-        }
-        continue;
-      }
-      const child = /^ {6}([\w-]+):\s?(.*)$/.exec(line);
-      if (child && openBlock) {
-        job.blocks[openBlock][child[1]] = stripTrailingComment(child[2]);
-        job.raw[openBlock] = `${job.raw[openBlock]}\n${line}`;
-        continue;
-      }
-      throw new Error(`parse failure: unreadable line in job \`${job.id}\`: ${JSON.stringify(line)}`);
-    }
-
-    const stepStart = /^ {6}- (.*)$/.exec(line);
-    if (stepStart) {
-      rawSteps.push([stepStart[1]]);
-      continue;
-    }
-    if (rawSteps.length === 0) {
-      throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`${job.id}.steps:\` but inside no step`);
-    }
-    rawSteps[rawSteps.length - 1].push(line);
-  }
-  closeJob();
-
-  if (jobs.length === 0) throw new Error('parse failure: release.yml declares `jobs:` but no job under it');
-  return { jobs, byId: Object.fromEntries(jobs.map((j) => [j.id, j])) };
-}
-
-/** Every step of every job, in file order, so a whole-workflow property is asserted over all of it. */
-function allSteps(workflow) {
-  return workflow.jobs.flatMap((job) => job.steps);
-}
-
-/** The permissions in force on a job: its own block if it has one, else the workflow's. */
-function effectivePermissions(text, job) {
-  if (job.blocks.permissions) return job.blocks.permissions;
-  const lines = decomment(text);
-  const at = lines.findIndex((line) => /^permissions:\s*$/.test(line));
-  if (at < 0) return null;
-  /** @type {Record<string, string>} */
-  const out = {};
-  for (const line of lines.slice(at + 1)) {
-    const match = /^ {2}([\w-]+):\s?(.*)$/.exec(line);
-    if (!match) break;
-    out[match[1]] = stripTrailingComment(match[2]);
-  }
-  return out;
-}
-
-/**
- * The npm write credential, in EVERY form a workflow expression can name it.
- *
- * WHY THIS IS A CONSTANT AND NOT A LITERAL AT EACH SITE. Every absence check for this credential is
- * ultimately a TEXT match, and a text match is only as complete as the spelling it was written
- * against. Four of them were written against `secrets.NPM_TOKEN`, which is one of the two forms
- * GitHub's expression language has: property dereference, and the INDEX form
- * `secrets['NPM_TOKEN']`, which the docs give as an exact equivalent ("you can use the index syntax
- * to access properties"). `secrets["NPM_TOKEN"]` is the same thing again with the other quote. All
- * of them evaluate to the same secret and reach the same steps, and none of the index ones contains
- * the substring `secrets.NPM_TOKEN`, so a guard written against that substring alone is closed for
- * the spelling its author had in mind and open for the other. That is the shape of the finding this
- * whole family of checks exists to answer, one turn further out.
- *
- * WHY THIS ENDS IT RATHER THAN ADDING ONE MORE SPELLING TO THE LIST. The key that carries the
- * credential has unboundedly many spellings, which is why the sweeps below read text instead of
- * parsing it. The credential REFERENCE does not: an expression names a context member by `.` or by
- * `[...]`, those are the two the language has, and both are enumerated here. There is no third form
- * left to be surprised by, so this is a closure and not a patch.
- *
- * DELIBERATELY BROADER THAN THE FOUR LITERALS IT REPLACES, never narrower: everything the old
- * `/secrets\.NPM_TOKEN/` matched still matches (no word boundary is added, so `NPM_TOKEN_OLD` is
- * still caught the way it was), and the index forms are added on top. Whitespace is tolerated
- * around the dot and inside the brackets because the expression lexer tolerates it there. What it
- * must NOT match is the `workflow_call` declaration's own `NPM_TOKEN:` key, which names the secret
- * without reading it and which the preamble sweep runs straight over; that is asserted below rather
- * than assumed.
- */
-const NPM_SECRET_REF = /secrets\s*(?:\.\s*NPM_TOKEN|\[\s*['"]NPM_TOKEN)/;
+//
+// AND THE READER ITSELF LIVES IN `test/workflow-reader.mjs`, imported at the top of this file. It is
+// the SAME reader `test/release-notes.test.mjs` and `test/install-check.test.mjs` use, which it was
+// not: it was three near-identical copies, and a spelling closed in one of them stayed open in the
+// other two, four separate times. One reader is the only arrangement in which "every suite refuses
+// this construct" is a fact rather than a hope, and its subset and its refusals are documented
+// there rather than restated here.
 
 /**
  * Refuse a `secrets[...]` index whose key is not a literal this check can read.
@@ -1095,112 +748,6 @@ function assertNoUnresolvableSecretIndex(text, where) {
   }
 }
 
-/**
- * The WORKFLOW-level `env:` block, above `jobs:`, with the raw text it was read out of.
- *
- * Read the way `effectivePermissions` reads the workflow-level `permissions:` block, and here for
- * the same reason: a key written once at the top of the file is in force inside every job without
- * appearing in any of them. It is the one spelling that neither a per-step sweep nor a read of
- * `job.blocks.env` can see, and after the split it is the spelling that would hand the npm write
- * credential to a job no human approved.
- *
- * TWO DIFFERENCES FROM THE PERMISSIONS READ, both because this one is used for an ABSENCE claim and
- * that one for a presence claim, so the failure directions are opposite. A blank line inside the
- * block does not end it (ending there would silently stop reading and report "no credential"), and
- * the raw text comes back alongside the parsed map so a value this line-oriented parser cannot read
- * -- a folded scalar, say -- is still swept for the secret rather than passing as unreadable.
- *
- * THREE SPELLINGS OF THE KEY, because YAML has three and Actions accepts all three: the bare block
- * `env:`, the quoted `"env":` (the same dodge M12 of the gate probe writes against `if:`), and the
- * one-line flow mapping `env: { A: b }`. Reading only the first is how a guard ends up closed for
- * the spelling someone thought to write and open for the one they did not, which is the defect this
- * function was added for in the first place. The flow-mapping read is deliberately best-effort - it
- * exists so the failure message can NAME the variable - and the guarantee sits in the raw sweeps in
- * `assertNoAmbientNpmCredential`, which read text rather than parsing it and so cannot be
- * out-spelled BY THE KEY. Being out-spelled by the CREDENTIAL REFERENCE is a separate axis and a
- * separate closure: see `NPM_SECRET_REF` above, which is what every one of those sweeps matches
- * with. An earlier version of this sentence claimed the text sweeps "cannot be out-spelled" full
- * stop, and they could, in the index form.
- */
-/**
- * The pairs of a one-line YAML flow mapping, `{ A: b, C: "d" }`.
- *
- * ONE READER, USED AT BOTH SCOPES THAT CAN CARRY ONE, which is the point of extracting it. The
- * workflow-level `env:` has read this spelling since F4; the job-level `env:` did not, and a
- * job-level flow mapping hands the npm write credential to every step of the un-approved job while
- * `job.blocks.env` reports an empty map. Two scopes reading the same syntax with two different
- * pieces of code is how one of them ends up a spelling behind the other, so there is now one.
- *
- * Best-effort, deliberately, and it is not the guarantee: it exists so a failure message can NAME
- * the variable. The guarantees are the raw text sweeps in `assertNoAmbientNpmCredential`, which
- * cannot be out-spelled by the key at all.
- */
-function flowMappingPairs(text) {
-  /** @type {Record<string, string>} */
-  const vars = {};
-  for (const [, name, value] of String(text).matchAll(/([\w-]+)\s*:\s*("[^"]*"|'[^']*'|[^,}]*)/g)) {
-    vars[name] = value.trim().replace(/^["']|["']$/g, '');
-  }
-  return vars;
-}
-
-function workflowEnv(text) {
-  const lines = decomment(text);
-  const at = lines.findIndex((line) => /^(?:env|"env"|'env'):/.test(line));
-  if (at < 0) return { vars: {}, raw: '' };
-  /** @type {Record<string, string>} */
-  const vars = {};
-  const raw = [];
-
-  // FLOW MAPPING FIRST: everything after the colon on the key's own line. `env: { A: b, C: d }` is
-  // the whole block, so there is no indented body below it to walk.
-  const inline = /^(?:env|"env"|'env'):\s*(\S.*)$/.exec(lines[at]);
-  if (inline) {
-    raw.push(inline[1]);
-    return { vars: flowMappingPairs(inline[1]), raw: raw.join('\n') };
-  }
-
-  for (const line of lines.slice(at + 1)) {
-    if (line.trim() === '') continue;
-    if (/^\S/.test(line)) break; // a new top-level key closes the block
-    raw.push(line);
-    const match = /^ {2}([\w-]+):\s?(.*)$/.exec(line);
-    if (match) vars[match[1]] = stripTrailingComment(match[2]);
-  }
-  return { vars, raw: raw.join('\n') };
-}
-
-/**
- * Everything above `jobs:`, comments removed - the workflow preamble as text.
- *
- * The backstop under every parsed read of the workflow-level environment. A parser can always be
- * out-spelled: a multi-line flow mapping, an anchor, a key this line-oriented reader does not
- * recognise. Text cannot. The npm write credential is `secrets.NPM_TOKEN` and there is no legitimate
- * reason for that expression to appear above `jobs:`, where the only key that evaluates it into
- * every job at once is `env:`, so its ABSENCE from the preamble is asserted directly and no spelling
- * of the key has to be anticipated to get there.
- */
-function workflowPreamble(text) {
-  const lines = decomment(text);
-  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
-  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
-  return lines.slice(0, jobsAt).join('\n');
-}
-
-/** Does `jobId` transitively depend on `targetId` through `needs:`? */
-function dependsOn(workflow, jobId, targetId, seen = new Set()) {
-  if (jobId === targetId) return true;
-  if (seen.has(jobId)) return false;
-  seen.add(jobId);
-  const raw = workflow.byId[jobId]?.keys.needs ?? '';
-  const parents = raw
-    .replace(/^\[|\]$/g, '')
-    .split(',')
-    .map((name) => name.trim().replace(/^["']|["']$/g, ''))
-    .filter(Boolean);
-  return parents.some((parent) => dependsOn(workflow, parent, targetId, seen));
-}
-
 const isCheckout = (step) => /uses: actions\/checkout@/.test(step.body);
 const isToolingCheckout = (step) => isCheckout(step) && step.with.repository === 'cosyte/.github';
 const isGate = (step) => /environment-gate\.mjs/.test(step.body);
@@ -1230,7 +777,7 @@ const reachesRegistry = (step) =>
   /pnpm run release|changeset publish|npm publish|pnpm publish/.test(step.body);
 
 test('AC12: the parser still understands release.yml, or every assertion below is vacuous', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
 
   // THE TOPOLOGY ITSELF IS THE CANARY NOW. One job is the shape this file had before the split and
   // three is a shape nobody has reasoned about, so either is a change that has to come here first.
@@ -1297,9 +844,29 @@ test('AC12: the parser still understands release.yml, or every assertion below i
     () => parseWorkflow('jobs:\n  version:\n    env: {\n    steps:\n      - run: x\n'),
     /unreadable line in job `version`, a `env:` this parser cannot read/,
   );
+  // ... and an ALIAS is refused for the reason above it and one further: `*defaults` is inside the
+  // subset this reader models (it is a job key with a value) and still cannot be resolved to a
+  // single value, because its referent is an anchor somewhere else in the document that nothing here
+  // follows. Choosing one is not available, so the answer is a refusal naming the job and the key.
   assert.throws(
     () => parseWorkflow('jobs:\n  version:\n    env: *defaults\n    steps:\n      - run: x\n'),
-    /unreadable line in job `version`, a `env:` this parser cannot read/,
+    /`env:` in job `version` is a YAML alias or anchor whose referent this reader does not resolve/,
+  );
+  assert.throws(
+    () => parseWorkflow('jobs:\n  version:\n    <<: *defaults\n    steps:\n      - run: x\n'),
+    /`<<:` in job `version` is a merge key whose referent this reader does not resolve/,
+  );
+  assert.throws(
+    () => parseWorkflow('jobs:\n  version:\n    if: a\n    if: b\n    steps:\n      - run: x\n'),
+    /duplicate key `if` in job `version`, which cannot be resolved to a single value/,
+  );
+  assert.throws(
+    () => parseWorkflow('jobs:\n  version:\n    outputs:\n    steps:\n      - run: x\n'),
+    /`outputs:` in job `version` opens a mapping with nothing in it/,
+  );
+  assert.throws(
+    () => parseWorkflow("jobs:\n  version:\n    if: >-\n      ${{ github.event_name == 'push' }}\n    steps:\n      - run: x\n"),
+    /`if:` in job `version` opens a `>-` block scalar this reader does not fold/,
   );
 
   // AND IT READS WHAT IT CAN READ, which is the other half of a fail-closed contract and the half
@@ -1314,7 +881,11 @@ test('AC12: the parser still understands release.yml, or every assertion below i
   const nested = parseWorkflow(
     'jobs:\n  release:\n    steps:\n      - name: x\n        with:\n          path:\n            - a\n',
   );
-  assert.equal(nested.byId.release.steps[0].with.path, '', 'the indented sequence spelling is read too');
+  assert.equal(
+    nested.byId.release.steps[0].with.path,
+    '- a',
+    'the indented sequence spelling is read too, and it is read as its ITEM rather than as the empty string',
+  );
   const flow = parseWorkflow('jobs:\n  version:\n    env: { A: b, C: "d" }\n    steps:\n      - run: x\n');
   assert.deepEqual(flow.byId.version.blocks.env, { A: 'b', C: 'd' }, 'a job-level flow mapping is a job-level env');
   const folded = parseWorkflow(
@@ -1322,7 +893,7 @@ test('AC12: the parser still understands release.yml, or every assertion below i
   );
   assert.equal(
     folded.byId.release.steps[0].fields.if,
-    '>- ${{ always() }}',
+    '${{ always() }}',
     'a condition whose value is on the next line is that step\'s condition, not the string ">-"',
   );
   assert.match(conditionsOf(folded.byId.release.steps[0]), /always\(/, 'and AC9 can see it');
@@ -1353,8 +924,174 @@ test('AC12: the parser still understands release.yml, or every assertion below i
   }
 });
 
+// ── The reader's own contract, proved against text held HERE rather than read from disk ─────────
+//
+// The battery above proves the shapes the reader refuses. These three prove the shapes it must
+// never REPORT: a value that is really an indicator, a construct inside the subset that cannot be
+// resolved to one value, and a subject it could not open at all. Each is a way for a suite to pass
+// while asserting nothing, and each is a way this repository has already been bitten, so each turns
+// this suite red on its own if a later edit restores silent-skip behaviour.
+
+test('a key is never handed back holding a block indicator, or an empty string, as if that were its value', () => {
+  // The delivered workflow first, exhaustively: every value this reader returns, at every scope it
+  // returns one, either carries content or belongs to a key that opened a mapping the reader read.
+  // An assertion elsewhere that believes `">-"` or `""` is a condition is the failure this closes,
+  // and a table over the real file is the only version of it that cannot go stale.
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
+  const indicator = /^(?:[|>][+-]?\d*)?$/;
+  for (const job of workflow.jobs) {
+    for (const [key, value] of Object.entries(job.keys)) {
+      if (job.opened.has(key)) {
+        assert.ok(
+          Object.keys(job.blocks[key]).length > 0,
+          `job \`${job.id}\`'s \`${key}:\` opened a mapping and the mapping is empty`,
+        );
+        continue;
+      }
+      assert.doesNotMatch(value, indicator, `job \`${job.id}\`'s \`${key}:\` reads back as ${JSON.stringify(value)}`);
+    }
+    for (const step of job.steps) {
+      for (const [key, value] of Object.entries(step.fields)) {
+        if (step.opened.has(key)) continue;
+        assert.doesNotMatch(
+          value,
+          indicator,
+          `"${step.label}"'s \`${key}:\` reads back as ${JSON.stringify(value)}, which is not its content`,
+        );
+      }
+      for (const scope of ['with', 'env']) {
+        for (const [key, value] of Object.entries(step[scope])) {
+          assert.doesNotMatch(
+            value,
+            indicator,
+            `"${step.label}"'s \`${key}:\` inside \`${scope}:\` reads back as ${JSON.stringify(value)}`,
+          );
+        }
+      }
+    }
+  }
+
+  // ... and the same claim where it BITES, which the delivered file cannot show because it writes
+  // none of these. Each of the four is the value GitHub Actions would use, and each used to come
+  // back as the two characters that introduced it.
+  const step = (body) => parseWorkflow(`jobs:\n  release:\n    steps:\n      - name: x\n${body}`).byId.release.steps[0];
+  assert.equal(step('        if: >-\n          ${{ always() }}\n        run: y\n').fields.if, '${{ always() }}');
+  assert.equal(step('        if: |\n          ${{ always() }}\n        run: y\n').fields.if, '${{ always() }}');
+  assert.equal(step('        if:\n          ${{ failure() }}\n        run: y\n').fields.if, '${{ failure() }}');
+  assert.equal(
+    step('        with:\n          publish: >-\n            pnpm run release\n').with.publish,
+    'pnpm run release',
+    'a withheld publish command written folded is that command, not the string ">-"',
+  );
+  assert.equal(
+    step('        run: |\n          echo one\n          echo two\n').fields.run,
+    'echo one echo two',
+    'a `run:` body is the script, not the literal-block indicator that opened it',
+  );
+  // ... and a wrapped PLAIN scalar is folded too, which is the case with no indicator to notice.
+  assert.equal(
+    step('        with:\n          publish: pnpm run\n            release\n').with.publish,
+    'pnpm run release',
+    'a plain scalar wrapped onto a second line is one value, not the first line of one',
+  );
+  // ... while a key that promises a value below it and has none is refused rather than answered.
+  assert.throws(
+    () => step('        if:\n        run: y\n'),
+    /`if:` in step 0 of job `release` is empty and nothing below it supplies a value/,
+  );
+  assert.throws(
+    () => step('        run: |\n'),
+    /`run:` in step 0 of job `release` opens a `\|` block scalar with no body/,
+  );
+});
+
+test('a construct inside the subset that cannot be resolved to ONE value is refused, naming the job and the key', () => {
+  const step = (body) => () => parseWorkflow(`jobs:\n  release:\n    steps:\n      - name: x\n${body}`);
+
+  // A KEY WRITTEN TWICE IS NOT A KEY WITH A VALUE. Last-one-wins is what a naive reader does and it
+  // is not what a reviewer reading the file does, so the two disagree about what the workflow says
+  // and the disagreement is silent. Refused at all four scopes that can carry a mapping.
+  assert.throws(
+    step('        if: ${{ always() }}\n        if: ${{ failure() }}\n        run: y\n'),
+    /duplicate key `if` in step 0 of job `release`, which cannot be resolved to a single value/,
+  );
+  assert.throws(
+    step('        with:\n          publish: a\n          publish: b\n'),
+    /duplicate key `publish` in step 0 of job `release`, inside `with:`, which cannot be resolved to a single value/,
+  );
+  assert.throws(
+    step('        env:\n          NPM_TOKEN: a\n          NPM_TOKEN: b\n'),
+    /duplicate key `NPM_TOKEN` in step 0 of job `release`, inside `env:`, which cannot be resolved to a single value/,
+  );
+  assert.throws(
+    () => parseWorkflow('jobs:\n  version:\n    permissions:\n      contents: read\n      contents: write\n    steps:\n      - run: x\n'),
+    /duplicate key `contents` inside `permissions:` of job `version`, which cannot be resolved to a single value/,
+  );
+
+  // AN ALIAS AND A MERGE KEY NAME A NODE SOMEWHERE ELSE IN THE DOCUMENT, and this reader does not
+  // follow anchors. Reading `*defaults` as the literal five characters would report "the value of
+  // this key is `*defaults`" about a key whose value is whatever the anchor holds, which is the
+  // exact shape of every finding this file exists to close: an answer, confidently wrong.
+  assert.throws(
+    step('        if: *always\n        run: y\n'),
+    /`if:` in step 0 of job `release` is a YAML alias or anchor whose referent this reader does not resolve/,
+  );
+  assert.throws(
+    step('        with:\n          publish: *cmd\n'),
+    /`publish:` in step 0 of job `release` is a YAML alias or anchor whose referent this reader does not resolve/,
+  );
+  assert.throws(
+    step('        <<: *defaults\n        run: y\n'),
+    /`<<:` in step 0 of job `release` is a merge key whose referent this reader does not resolve/,
+  );
+  // ... and the ANCHOR spelling refuses too, which is the same node written from the other end.
+  assert.throws(
+    step('        if: &here ${{ always() }}\n        run: y\n'),
+    /`if:` in step 0 of job `release` is a YAML alias or anchor/,
+  );
+  // ... while an ordinary expression that merely CONTAINS a star or an ampersand is read, because
+  // the refusal is about a node reference and not about a character.
+  assert.equal(
+    parseWorkflow(
+      "jobs:\n  release:\n    steps:\n      - name: x\n        if: ${{ a && b }}\n        run: echo 2*3\n",
+    ).byId.release.steps[0].fields.if,
+    '${{ a && b }}',
+  );
+});
+
+test('a workflow this suite cannot OPEN fails naming the path, rather than reading as an empty workflow', async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  // THE ABSENCE OF A SUBJECT IS NOT THE ABSENCE OF A DEFECT. `readFileSync` throwing is only useful
+  // if nothing catches it into a default: a suite that reads its workflow lazily, or wraps the read
+  // to "handle" a missing file, asserts over `''` and passes every absence check it has. All three
+  // ways the file can be unopenable are the same answer here, and all three name the path.
+  const dir = mkdtempSync(join(tmpdir(), 'workflow-unreadable-'));
+  const absent = join(dir, 'no-such-release.yml');
+  assert.throws(() => readWorkflow(absent, readFileSync), new RegExp(`cannot read the workflow at ${absent}`));
+  assert.throws(() => readWorkflow(absent, readFileSync), /ENOENT/);
+
+  const asDirectory = join(dir, 'release.yml');
+  mkdirSync(asDirectory);
+  assert.throws(() => readWorkflow(asDirectory, readFileSync), new RegExp(`cannot read the workflow at ${asDirectory}`));
+  assert.throws(() => readWorkflow(asDirectory, readFileSync), /EISDIR/);
+
+  // ... and an EMPTY file, which opens cleanly and is the case a raw read cannot tell from a real
+  // one. `parseWorkflow('')` would refuse it too; this refuses it one layer earlier, where the
+  // message can still name the path instead of naming a missing `jobs:` key.
+  const empty = join(dir, 'empty.yml');
+  writeFileSync(empty, '   \n\n');
+  assert.throws(() => readWorkflow(empty, readFileSync), new RegExp(`the workflow at ${empty} is empty`));
+
+  // NOT VACUOUS: the same helper reads the delivered file, and this suite's own assertions go
+  // through it.
+  assert.match(readWorkflow(WORKFLOW, readFileSync), /^name: Release/m);
+});
+
 test('AC1: the "Version Packages" job references no deployment environment and cannot publish', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
   const version = workflow.byId.version;
   assert.ok(version, 'release.yml must keep a job that opens the Version PR without an approval');
 
@@ -1408,7 +1145,7 @@ test('AC1: the "Version Packages" job references no deployment environment and c
 });
 
 test('AC2 and AC10: every step that can reach the registry is in the job named `release`, which holds the environment', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
   const release = workflow.byId.release;
 
   // THE JOB ID IS THE CHECK CONTEXT. A caller's context for a reusable workflow is
@@ -1452,7 +1189,7 @@ test('AC2 and AC10: every step that can reach the registry is in the job named `
 });
 
 test('AC3: the protection gate runs unconditionally, on every path, ahead of everything', () => {
-  const text = readFileSync(WORKFLOW, 'utf8');
+  const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflow(text);
 
   const gates = allSteps(workflow).filter(isGate);
@@ -1622,7 +1359,7 @@ function assertNoStepNpmCredential(job) {
 }
 
 test('AC6: the npm publish credential never reaches the un-gated job', () => {
-  const text = readFileSync(WORKFLOW, 'utf8');
+  const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflow(text);
   const version = workflow.byId.version;
 
@@ -1737,7 +1474,10 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
     () => assertNoAmbientNpmCredential(plantedInWorkflow, parseWorkflow(plantedInWorkflow).byId.version),
     /hands NODE_AUTH_TOKEN to every step it has, through the workflow-level env:/,
   );
-  // ... including under a name AC6 does not know, carried by a value this parser reads as `>-`.
+  // ... including under a name AC6 does not know, carried by a value that lives on the line BELOW
+  // the key. A reader that stops at the colon comes back holding `">-"` and reports a variable set
+  // to two punctuation characters; this one folds the line below in, so the NAMED check fires and
+  // the failure message says which variable it is.
   const foldedInWorkflow =
     'env:\n' +
     '  RELEASE_HELPER: >-\n' +
@@ -1746,8 +1486,33 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
     '  version:\n' +
     '    steps:\n' +
     '      - run: echo "the name is innocent and the value is not"\n';
+  assert.equal(
+    workflowEnv(foldedInWorkflow).vars.RELEASE_HELPER,
+    '${{ secrets.NPM_TOKEN }}',
+    'a folded value is the value it folds to, never the indicator that introduced it',
+  );
   assert.throws(
     () => assertNoAmbientNpmCredential(foldedInWorkflow, parseWorkflow(foldedInWorkflow).byId.version),
+    /`RELEASE_HELPER`, set in the workflow-level env:.*reads the npm secret/,
+  );
+  // ... and the RAW sweep of that block is what covers the case no pair reader can split, which is
+  // the layer under all of them. A quoted key inside the block defeats the `^ {2}(\w+):` read
+  // completely - it comes back with no variables at all - and the text it came back empty about
+  // still hands the credential to every step of every job.
+  const quotedKeyInWorkflow =
+    'env:\n' +
+    '  "RELEASE_HELPER": ${{ secrets.NPM_TOKEN }}\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "no pair reader here splits this, and Actions does"\n';
+  assert.deepEqual(
+    workflowEnv(quotedKeyInWorkflow).vars,
+    {},
+    'the quoted key is meant to defeat the PARSED read - if it stops doing so, re-derive this proof',
+  );
+  assert.throws(
+    () => assertNoAmbientNpmCredential(quotedKeyInWorkflow, parseWorkflow(quotedKeyInWorkflow).byId.version),
     /the workflow-level env: block reads the npm secret/,
   );
   // ... and under each of the OTHER TWO SPELLINGS OF THE KEY that Actions accepts. Neither changes
@@ -1932,12 +1697,21 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
 });
 
 test('AC9: no packing, registry authentication or publishing is reachable past a failed gate', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
 
-  // A failed step fails its job and skips every step below it, UNLESS that step opts back in with
-  // `always()`, `failure()` or `!cancelled()`. Those three are the only way a step can run after the
-  // gate has refused, so the set of steps carrying them is pinned by name, PER JOB, and none of them
-  // may pack, authenticate or publish.
+  // A failed step fails its job and skips every step below it, UNLESS that step opts back in by
+  // naming a status-check function. That is the mechanism and it is what is classified on: ANY of
+  // `always()`, `failure()`, `cancelled()` or `success()` in a condition removes the implicit
+  // `success()` Actions would otherwise add, so the set of steps carrying one is pinned by name, PER
+  // JOB, and none of them may pack, authenticate or publish.
+  //
+  // `success(` IS IN THE SET AND WAS NOT. Three spellings were enumerated here and `!success()` was
+  // the fourth, which is the same opt-in with a negation in front of it: a packing step carrying it
+  // ran in the un-approved job, after the gate had refused, with all three suites green. Enumerating
+  // negations is the game that produced that hole, so the classification is on the FUNCTION now, not
+  // on the shape of the expression around it. A step conditioned on a plain `success()` joins the
+  // set too and simply has to be listed, which costs a line and cannot be wrong in the open
+  // direction.
   const expected = {
     version: ['Drop the release credentials from disk'],
     release: [
@@ -1953,7 +1727,7 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   // like any other. The parser refuses those spellings outright now; `conditionsOf` is what keeps
   // this list honest if that ever stops being true.
   for (const job of workflow.jobs) {
-    const optsBackIn = job.steps.filter((step) => /always\(|failure\(|cancelled\(/.test(conditionsOf(step)));
+    const optsBackIn = job.steps.filter(optsBackInAfterFailure);
     assert.deepEqual(
       optsBackIn.map((step) => step.label),
       expected[job.id],
@@ -2002,10 +1776,85 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   );
   assert.equal(workflow.byId.release.keys.needs, 'version');
   assert.match(stageReport.body, /staged-publish\.mjs report/, 'it reports; it does not stage or publish');
+
+  // AND THE CLASSIFIER IS ASKED WHAT IT MATCHES, IN BOTH DIRECTIONS. `assert.deepEqual` over the
+  // list above passes whether or not the predicate that built it is any good, which is exactly how
+  // `!success()` stayed out of the set: nothing ever put a step carrying one in front of it. It is
+  // put in front of it here, against workflow text held in this test rather than read from disk, so
+  // a later edit that narrows the predicate back to three spellings turns this suite red on its own.
+  const conditioned = (spelling) =>
+    parseWorkflow(
+      'jobs:\n  version:\n    steps:\n      - name: Pack the docs early\n' +
+        `        if: ${spelling}\n` +
+        '        run: pnpm pack:docs\n',
+    ).byId.version.steps[0];
+  for (const spelling of [
+    '${{ always() }}',
+    '${{ failure() }}',
+    '${{ !cancelled() }}',
+    '${{ !success() }}',
+    "${{ success() || github.event_name == 'push' }}",
+    '${{ always () }}',
+  ]) {
+    assert.ok(
+      optsBackInAfterFailure(conditioned(spelling)),
+      `${spelling} names a status-check function, so the step runs after a failure and has to be accounted for`,
+    );
+  }
+  for (const ordinary of ["${{ github.event_name == 'push' }}", "${{ steps.notes.outputs.is-release == 'true' }}"]) {
+    assert.equal(
+      optsBackInAfterFailure(conditioned(ordinary)),
+      false,
+      `${ordinary} names no status-check function, so the step is skipped after a failure like any other`,
+    );
+  }
+  // ... and it reads the condition WHEREVER its value lives, which is the other half: a folded
+  // `if: >-` used to leave the reader holding `">-"`, and a step whose `always()` was one line down
+  // never joined the set it had to be accounted for in.
+  const foldedOptIn = parseWorkflow(
+    'jobs:\n  version:\n    steps:\n      - name: Pack the docs early\n' +
+      '        if: >-\n          ${{ !success() }}\n        run: pnpm pack:docs\n',
+  ).byId.version.steps[0];
+  assert.ok(optsBackInAfterFailure(foldedOptIn), 'a condition on the line below the key is still that condition');
+
+  // CONTINUE-ON-ERROR IS THE OTHER WAY PAST A FAILED GATE, and it is not a condition at all, so
+  // nothing above this line can see it. At STEP scope it lets the gate run, print its refusal and
+  // NOT fail the run, so the Version PR opens and `release` starts on a caller whose `release`
+  // environment protects nothing. At JOB scope it does the same one level up: the job holding the
+  // gate cannot fail, so `needs:` is satisfied and the publish job starts anyway. Both are legal
+  // YAML, both are one line, and both left every suite green.
+  //
+  // Asserted over EVERY step of BOTH jobs rather than over the gate alone. A tolerated failure
+  // anywhere in the gate's job breaks the same chain: `needs: version` is satisfied by a job that
+  // concluded `success` because a step inside it was allowed to fail. The delivered workflow uses
+  // the key nowhere, so the flat absence claim costs nothing and a first use has to be argued here.
+  for (const job of workflow.jobs) {
+    assert.equal(
+      job.keys['continue-on-error'],
+      undefined,
+      `job \`${job.id}\` cannot fail, so nothing inside it can stop the run, gate included`,
+    );
+    for (const step of job.steps) {
+      assert.equal(
+        step.fields['continue-on-error'],
+        undefined,
+        `"${step.label}" in \`${job.id}\` is allowed to fail without failing the run, which is what a gate must not be`,
+      );
+    }
+  }
+  // ... and neither claim is vacuous, in either scope.
+  const tolerantStep = parseWorkflow(
+    'jobs:\n  version:\n    steps:\n      - name: The gate\n        continue-on-error: true\n        run: node gate.mjs\n',
+  ).byId.version;
+  assert.equal(tolerantStep.steps[0].fields['continue-on-error'], 'true', 'the reader must SEE the key at step scope');
+  const tolerantJob = parseWorkflow(
+    'jobs:\n  version:\n    continue-on-error: true\n    steps:\n      - name: The gate\n        run: node gate.mjs\n',
+  ).byId.version;
+  assert.equal(tolerantJob.keys['continue-on-error'], 'true', 'the reader must SEE the key at job scope');
 });
 
 test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => {
-  const text = readFileSync(WORKFLOW, 'utf8');
+  const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflow(text);
 
   // THE LITERAL ONE-KEY READING, KILLED BY A MANDATED TEST RATHER THAN BY A CALLER'S FIRST RELEASE.
@@ -2042,7 +1891,7 @@ test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => 
 });
 
 test('the gate is handed the credential and the default-branch fallback the script expects', () => {
-  const workflow = parseWorkflow(readFileSync(WORKFLOW, 'utf8'));
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
   const gate = allSteps(workflow).find(isGate);
   // The AUTOMATIC token, handed over under the name this file already uses for it. `GITHUB_TOKEN` in
   // release.yml means the credential `changesets/action` opens the Version PR with, which is
@@ -2098,7 +1947,7 @@ function parseCallContract(text) {
 }
 
 test('AC11: no caller has to change anything, so every input and secret is the one it already had', () => {
-  const { inputs, secrets } = parseCallContract(readFileSync(WORKFLOW, 'utf8'));
+  const { inputs, secrets } = parseCallContract(readWorkflow(WORKFLOW, readFileSync));
 
   assert.deepEqual(Object.keys(inputs), ['package-name', 'dispatch-docs', 'pack-docs-cmd', 'expect-unpublished-deps']);
   assert.deepEqual(Object.keys(secrets), ['NPM_TOKEN', 'DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
@@ -2126,7 +1975,7 @@ test('AC11: no caller has to change anything, so every input and secret is the o
 // it. A file that requests a permission its callers have not granted, and does not say so, spends
 // its first release explaining itself in a startup error instead.
 test('release.yml documents the caller-side `actions: read` grant it now depends on', () => {
-  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const workflow = readWorkflow(WORKFLOW, readFileSync);
   assert.match(workflow, /THE CALLER-SIDE PRECONDITION/);
   assert.match(workflow, /#\s+permissions:.*\n#\s+actions: read/);
   assert.match(workflow, /only be downgraded \(not elevated\)|ELEVATION/);
