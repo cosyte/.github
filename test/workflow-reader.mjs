@@ -36,16 +36,42 @@
 // is content, Actions interpolates `${{ }}` in it before the shell sees it, and the runner executes
 // it. A stripper that deleted every `#`-first line therefore erased a real, credential-carrying line
 // out of the un-approved job before any sweep could read it. `decomment` below tracks block scalars
-// for that reason and for no other.
+// for that reason and for no other - and it tracks them by the WHOLE `c-b-block-header` production,
+// not by the one spelling of it this workflow happens to use, because a header the stripper does not
+// recognise is a body it does not know exists.
 
 const indentOf = (line) => line.length - line.replace(/^[ \t]*/, '').length;
 
 /**
- * A key line that opens a block scalar: `run: |`, `body: >-`, `text: |2`, and the same inside a
- * sequence entry. Its body is every following line indented deeper than the key.
+ * YAML 1.2's `c-b-block-header`, as a regex fragment, so every place that has to recognise one reads
+ * the SAME definition:
+ *
+ *     c-b-block-header(m,t) ::= ( ( c-indentation-indicator(m) c-chomping-indicator(t) )
+ *                               | ( c-chomping-indicator(t) c-indentation-indicator(m) ) )
+ *                               s-b-comment
+ *
+ * A FAMILY OF SPELLINGS, NOT ONE, and it is written out of the production rather than off the file
+ * in front of it because that is precisely the mistake it replaces. The indicators come in EITHER ORDER,
+ * so `|2-` and `|-2` are the same scalar, and a comment may follow them, so `| # write the npmrc` is
+ * still just `|`. The spec's own Example 8.1 prints `| # Empty header` and `>1- # Both indicators`
+ * side by side. A reader that models the bare `|` alone does not merely misread the other two: it
+ * does not see that a block scalar was opened at all, so `decomment` below deletes the `#`-first
+ * lines of the body, which inside a block scalar are CONTENT the runner's shell receives.
+ *
+ * IT OVER-RECOGNISES ON PURPOSE, in the one direction that is safe. `[+-]?\d*[+-]?` accepts orders
+ * and repetitions YAML rejects (`|--`, `|22`), and the comment is allowed to touch the indicator. A
+ * header this fragment accepts and YAML rejects costs nothing, because a workflow YAML rejects never
+ * runs; a header YAML accepts and this fragment rejects is a body silently stripped of content.
  */
-const BLOCK_SCALAR_OPENER =
-  /^([ \t]*(?:-[ \t]+)*)(?:"[^"]*"|'[^']*'|[\w.-]+)[ \t]*:[ \t]*[|>][+-]?\d*[ \t]*$/;
+const BLOCK_HEADER = String.raw`[|>][+-]?\d*[+-]?(?:[ \t]*#.*)?`;
+
+/**
+ * A key line that opens a block scalar: `run: |`, `body: >-`, `text: |2`, `run: | # note`, and the
+ * same inside a sequence entry. Its body is every following line indented deeper than the key.
+ */
+const BLOCK_SCALAR_OPENER = new RegExp(
+  String.raw`^([ \t]*(?:-[ \t]+)*)(?:"[^"]*"|'[^']*'|[\w.-]+)[ \t]*:[ \t]*${BLOCK_HEADER}[ \t]*$`,
+);
 
 /**
  * Drop whole-line comments, and ONLY the ones that are comments.
@@ -86,13 +112,15 @@ export const STEP_KEY_INDENT = 8;
 /**
  * A key-line value that is not the value: the key's real value is on the lines below it.
  *
- * Empty, or a block-scalar indicator (`|`, `>`, either with a chomping or an indentation modifier).
- * YAML says all of those mean "read on", and a line-oriented reader that stops at the colon comes
- * back holding `""` or `">-"` and believes it. That is the failure this constant exists to name: not
- * a line the reader could not read, which it refuses, but a line it read and got WRONG, which it
- * used to hand on to an assertion as if it were a condition.
+ * Empty, or a block-scalar header in any of its spellings (`BLOCK_HEADER` above: the indicators in
+ * either order, with or without a comment after them). YAML says all of those mean "read on", and a
+ * line-oriented reader that stops at the colon comes back holding `""` or `">-"` and believes it.
+ * That is the failure this constant exists to name: not a line the reader could not read, which it
+ * refuses, but a line it read and got WRONG, which it used to hand on to an assertion as if it were
+ * a condition. Built from the same fragment as the opener, because a header one of them recognises
+ * and the other does not is a body kept as content under a key still holding two punctuation marks.
  */
-export const VALUE_LIVES_BELOW = /^(?:[|>][+-]?\d*)?$/;
+export const VALUE_LIVES_BELOW = new RegExp(String.raw`^(?:${BLOCK_HEADER})?[ \t]*$`);
 
 /** A value this reader cannot resolve to a single scalar: a YAML alias, or an anchor. */
 const ALIAS_OR_ANCHOR = /^[*&]\S/;
@@ -566,6 +594,17 @@ export function workflowEnv(text) {
   // the whole block, so there is no indented body below it to walk.
   const inline = /^(?:env|"env"|'env'):\s*(\S.*)$/.exec(lines[at]);
   if (inline) {
+    // ... unless what follows the colon is a block-scalar header rather than a mapping, in which
+    // case the value is on the lines BELOW and the pair reader would come back empty about a block
+    // that has a body. Refused rather than read, at this scope for the same reason as at job scope:
+    // nothing here needs the folded value, and "no variables" is the one answer an absence claim
+    // must never be handed by accident.
+    if (VALUE_LIVES_BELOW.test(stripTrailingComment(inline[1]))) {
+      throw new Error(
+        `parse failure: the workflow-level \`env:\` opens a \`${inline[1]}\` block scalar this reader ` +
+          'does not fold, so it cannot be resolved to a mapping',
+      );
+    }
     raw.push(inline[1]);
     return { vars: flowMappingPairs(inline[1]), raw: raw.join('\n') };
   }
@@ -619,15 +658,25 @@ export function dependsOn(workflow, jobId, targetId, seen = new Set()) {
 }
 
 /**
- * The npm write credential, in EVERY form a workflow expression can name it.
+ * The npm write credential, in every form a workflow expression can name it.
  *
- * An expression names a context member by `.` or by the INDEX form `secrets['NPM_TOKEN']`, which the
- * docs give as an exact equivalent, and none of the index spellings contains the substring
- * `secrets.NPM_TOKEN`. Both are enumerated here, which is a closure rather than a patch: there is no
- * third form the language has. What it must NOT match is the `workflow_call` declaration's own
- * `NPM_TOKEN:` key, which names the secret without reading it.
+ * TWO AXES, AND BOTH OF THEM ARE CLOSED HERE. The SYNTAX axis: an expression names a context member
+ * by `.` or by the INDEX form `secrets['NPM_TOKEN']`, which the docs give as an exact equivalent, and
+ * none of the index spellings contains the substring `secrets.NPM_TOKEN`. Those two are what the
+ * expression grammar has; a third syntax would be a change to the language.
+ *
+ * The NAME axis, which is not the grammar's and which an enumeration of the grammar therefore does
+ * not close: secret names and context names are CASE INSENSITIVE to Actions, so
+ * `${{ secrets.npm_token }}` reads the same credential and reaches the same steps as
+ * `${{ secrets.NPM_TOKEN }}`. A pattern anchored on the upper-case spelling reports "no credential
+ * here" about a job holding it, which is the failure mode every sweep in these suites exists to
+ * refuse. Hence the `i` flag, which is what makes the enumeration above a closure and not a patch.
+ *
+ * What it must NOT match is the `workflow_call` declaration's own `NPM_TOKEN:` key, which names the
+ * secret without reading it: the pattern requires the `secrets` context to be followed by the `.` or
+ * the `[` that READS a member, and a declaration key is followed by a colon.
  */
-export const NPM_SECRET_REF = /secrets\s*(?:\.\s*NPM_TOKEN|\[\s*['"]NPM_TOKEN)/;
+export const NPM_SECRET_REF = /secrets\s*(?:\.\s*NPM_TOKEN|\[\s*['"]NPM_TOKEN)/i;
 
 /**
  * Read the workflow, or fail naming the path that could not be read.

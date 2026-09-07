@@ -1578,6 +1578,38 @@ test('the workflow reader refuses a line it cannot read, at every level, rather 
   );
   assert.match(folded.byId.release.steps[0].body, STEP_CONDITION_LINE, 'and the text guard sees the key line');
 
+  // ... IN EVERY SPELLING OF THE HEADER THAT INTRODUCES ONE, which is the half a reader written from
+  // the file in front of it gets wrong. YAML's `c-b-block-header` takes the chomping and indentation
+  // indicators in either order and allows a comment after them, so `|2-`, `|-2` and `| # note` are
+  // the same block as `|`. A header the reader does not recognise is worse than a misread value: it
+  // does not see that a block was opened, so it strips the body's `#`-first lines, which inside a
+  // block scalar are content the runner's shell receives.
+  for (const header of ['|', '| # the condition, explained', '|2-', '|-2']) {
+    const opened = parseWorkflowJobs(
+      `jobs:\n  release:\n    steps:\n      - name: x\n        if: ${header}\n          \${{ always() }}\n        run: y\n`,
+    ).byId.release.steps[0];
+    assert.equal(
+      opened.fields.if,
+      '${{ always() }}',
+      `a condition under \`if: ${header}\` is the condition, not the header that introduced it`,
+    );
+    const body = parseWorkflowJobs(
+      `jobs:\n  release:\n    steps:\n      - name: x\n        run: ${header}\n          # a line the shell receives\n`,
+    ).byId.release.steps[0];
+    assert.match(
+      body.body,
+      /# a line the shell receives/,
+      `a \`#\`-first line under \`run: ${header}\` is content this reader keeps`,
+    );
+  }
+  // ... while a real comment, outside every block scalar, is still a comment.
+  assert.doesNotMatch(
+    parseWorkflowJobs('jobs:\n  release:\n    steps:\n      # a real comment\n      - name: x\n        run: y\n')
+      .byId.release.steps[0].body,
+    /a real comment/,
+    'widening the header must not start reading comments as content',
+  );
+
   // ... and a construct INSIDE the modelled subset that still cannot be resolved to one value is
   // refused rather than resolved by last-one-wins or by reading an alias as five literal
   // characters. Both spellings name the job and the key, which is what makes the failure actionable

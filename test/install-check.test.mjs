@@ -1602,11 +1602,26 @@ test("this suite refuses an unreadable release.yml rather than reading it as abs
   // `${{ }}` in it, and the runner's shell receives it. A stripper that deleted every `#`-first line
   // erased it before any sweep read it, which put the npm write credential in the un-approved job
   // with all three suites green.
-  const hashLine = parseWorkflow(
-    "jobs:\n  version:\n    steps:\n      - name: Warm the registry cache\n        run: |\n" +
-      "          cat > \"$HOME/.npmrc\" <<EOF\n          # ${{ secrets.NPM_TOKEN }}\n          EOF\n",
-  ).byId.version.steps[0];
-  assert.match(hashLine.body, NPM_SECRET_REF, "a `#`-first line inside a run body is content, not a comment");
+  // AND UNDER EVERY SPELLING OF THE HEADER THAT OPENS ONE, because the stripper has to know a block
+  // was opened before it can leave the body alone, and the indicators come in either order with an
+  // optional comment after them. All four below are the same literal block to YAML; a reader that
+  // modelled the first alone deleted the credential line out of the other three before this suite
+  // read the file, which is this file's own copy of the guarantee, not a restatement of another's.
+  for (const header of ["|", "| # write the npmrc", "|2-", "|-2"]) {
+    const hashLine = parseWorkflow(
+      "jobs:\n  version:\n    steps:\n      - name: Warm the registry cache\n" +
+        `        run: ${header}\n` +
+        "          cat > \"$HOME/.npmrc\" <<EOF\n          # ${{ secrets.NPM_TOKEN }}\n          EOF\n",
+    ).byId.version.steps[0];
+    assert.match(
+      hashLine.body,
+      NPM_SECRET_REF,
+      `under \`run: ${header}\` a \`#\`-first line inside a run body is content, not a comment`,
+    );
+  }
+  // ... and the credential is recognised however Actions' case-insensitive secret name is spelled,
+  // so a sweep in this file cannot be walked past by lower-casing it.
+  assert.match("${{ secrets.npm_token }}", NPM_SECRET_REF, "secret names are case insensitive to Actions");
   // ... while an ordinary comment ABOVE the step, outside any block scalar, is still stripped, which
   // is the other half and the one an over-strict reader loses.
   const commented = parseWorkflow(

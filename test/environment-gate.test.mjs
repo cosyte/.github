@@ -22,9 +22,9 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -739,10 +739,13 @@ test('the two rules are reported independently, so a satisfied one is never name
  * `version` writes the literal, or states its case here.
  */
 function assertNoUnresolvableSecretIndex(text, where) {
-  for (const match of String(text).matchAll(/secrets\s*\[[^\]]*\]?/g)) {
+  // Case insensitive for the same reason `NPM_SECRET_REF` is: context names are case insensitive to
+  // Actions, so `SECRETS[...]` indexes the same context and a sweep anchored on one casing walks
+  // past it.
+  for (const match of String(text).matchAll(/secrets\s*\[[^\]]*\]?/gi)) {
     assert.match(
       match[0],
-      /^secrets\s*\[\s*['"][^'"]*['"]\s*\]$/,
+      /^secrets\s*\[\s*['"][^'"]*['"]\s*\]$/i,
       `${where} reads \`secrets\` through an index nothing here can resolve (\`${match[0].trim()}\`), so it cannot be shown not to name the npm write credential`,
     );
   }
@@ -938,7 +941,11 @@ test('a key is never handed back holding a block indicator, or an empty string, 
   // An assertion elsewhere that believes `">-"` or `""` is a condition is the failure this closes,
   // and a table over the real file is the only version of it that cannot go stale.
   const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
-  const indicator = /^(?:[|>][+-]?\d*)?$/;
+  // Spelled out here rather than imported, so this table states independently what "not a value"
+  // looks like: `|` or `>`, then the chomping and indentation indicators IN EITHER ORDER, then an
+  // optional comment. All three are `c-b-block-header` to YAML, and a table that knew only the first
+  // would pass a key still holding `|2-` or `| # note`, which is the shape it exists to refuse.
+  const indicator = /^(?:[|>][+-]?\d*[+-]?(?:[ \t]*#.*)?)?$/;
   for (const job of workflow.jobs) {
     for (const [key, value] of Object.entries(job.keys)) {
       if (job.opened.has(key)) {
@@ -1003,6 +1010,262 @@ test('a key is never handed back holding a block indicator, or an empty string, 
     () => step('        run: |\n'),
     /`run:` in step 0 of job `release` opens a `\|` block scalar with no body/,
   );
+});
+
+/**
+ * Every spelling of `c-b-block-header` that opens a literal or folded block scalar.
+ *
+ * `|` is the one a reader writes down from the file in front of it. The other three are the same
+ * node to YAML: the indicators come in EITHER ORDER, and a comment may follow them.
+ *
+ *     c-b-block-header ::= ( ( c-indentation-indicator c-chomping-indicator )
+ *                          | ( c-chomping-indicator c-indentation-indicator ) ) s-b-comment
+ */
+const BLOCK_HEADERS = ['|', '| # write the npmrc', '|2-', '|-2', '>- # folded, with a comment'];
+
+test('a block scalar is opened by its WHOLE header, so a `#`-first line in its body is content under every spelling', () => {
+  // WHY A HEADER SPELLING DECIDES WHETHER A CREDENTIAL IS VISIBLE AT ALL. Inside a block scalar YAML
+  // has no comments: a line whose first non-blank character is `#` is content, Actions interpolates
+  // `${{ }}` in it, and the runner's shell receives it. The stripper therefore has to know a block
+  // was opened before it can leave the body alone - and a header it does not recognise is a block it
+  // does not know exists, so the body is comment-stripped and the credential line is DELETED out of
+  // the un-approved job before any sweep in any suite reads the file. Not misparsed: gone.
+  //
+  // So the header is tested as the production and not as the example. Each spelling below is the
+  // same literal block to a YAML processor, and each is asserted twice: once through `decomment`,
+  // which is where the deletion happened, and once through the parsed step body, which is what every
+  // credential sweep in the three suites actually matches against.
+  const hashLineStep = (header) =>
+    '      - name: Warm the registry cache\n' +
+    '        shell: bash\n' +
+    `        run: ${header}\n` +
+    '          umask 077\n' +
+    '          cat > "$HOME/.npmrc" <<EOF\n' +
+    '          # ${{ secrets.NPM_TOKEN }}\n' +
+    '          EOF\n';
+
+  for (const header of BLOCK_HEADERS) {
+    const text = `jobs:\n  version:\n    steps:\n${hashLineStep(header)}`;
+    assert.match(
+      decomment(text).join('\n'),
+      NPM_SECRET_REF,
+      `under \`run: ${header}\` the \`#\`-first line is content the runner receives, and the stripper deleted it`,
+    );
+    const parsed = parseWorkflow(text).byId.version.steps[0];
+    assert.match(
+      parsed.body,
+      NPM_SECRET_REF,
+      `and the parsed step body under \`run: ${header}\`, which every credential sweep reads, must carry it`,
+    );
+    // ... and the key still holds its BODY rather than the header that introduced it, which is the
+    // same claim AC2 makes for the one spelling the reader started with.
+    assert.doesNotMatch(
+      parsed.fields.run,
+      /^[|>]/,
+      `and \`run:\` under \`${header}\` reads back as its script, not as the header`,
+    );
+    // ... and the whole chain bites: this is the un-approved job, so the suite's own step sweep must
+    // refuse it rather than report a job with no credential in it.
+    assert.throws(
+      () => assertNoStepNpmCredential(parseWorkflow(text).byId.version),
+      /"Warm the registry cache" reads the npm secret in the un-approved job/,
+      `the step sweep must refuse the credential under \`run: ${header}\``,
+    );
+  }
+
+  // ▶ AND THE OTHER HALF, which is the one a widened header pattern can lose. A `#` line that is a
+  //   REAL comment is still removed, at every scope one can sit at, or thirteen callers pinned at
+  //   `@main` go red on a legal edit to this workflow. This is the bound AC12 puts on the paragraph
+  //   above, asserted here rather than only in a mutation battery.
+  const commentsEverywhere =
+    '# ${{ secrets.NPM_TOKEN }} above the document\n' +
+    'jobs:\n' +
+    '  # ${{ secrets.NPM_TOKEN }} between jobs\n' +
+    '  version:\n' +
+    '    # ${{ secrets.NPM_TOKEN }} among the job keys\n' +
+    '    steps:\n' +
+    '      # ${{ secrets.NPM_TOKEN }} among the steps\n' +
+    '      - name: Innocent\n' +
+    '        # ${{ secrets.NPM_TOKEN }} among the step keys\n' +
+    '        run: echo ok\n';
+  assert.doesNotMatch(
+    decomment(commentsEverywhere).join('\n'),
+    NPM_SECRET_REF,
+    'a comment outside every block scalar is a comment at every scope, and widening the header must not change that',
+  );
+  assert.doesNotThrow(() => assertNoStepNpmCredential(parseWorkflow(commentsEverywhere).byId.version));
+  // ... and a `#` line indented under a key that opened NO block scalar is still a comment: the
+  // header, not the indentation, is what makes a body.
+  assert.doesNotMatch(
+    decomment(
+      'jobs:\n  version:\n    steps:\n      - name: Innocent\n        with:\n' +
+        '          # ${{ secrets.NPM_TOKEN }}\n          publish: pnpm run release\n',
+    ).join('\n'),
+    NPM_SECRET_REF,
+    'an indented comment under an ordinary mapping key is not block-scalar content',
+  );
+
+  // ▶ AND ONE SCOPE UP. `workflowEnv` and `workflowPreamble` read the file through the same stripper,
+  //   so a workflow-level variable whose header carried a comment used to lose its body the same way,
+  //   and the ambient sweep AC6 depends on reported a preamble with no credential in it.
+  const helperInWorkflow =
+    'env:\n' +
+    '  RELEASE_HELPER: | # the npmrc this job writes\n' +
+    '    # ${{ secrets.NPM_TOKEN }}\n' +
+    'jobs:\n' +
+    '  version:\n' +
+    '    steps:\n' +
+    '      - run: echo "the credential is above me, on a line that looks like a comment"\n';
+  assert.match(
+    workflowPreamble(helperInWorkflow),
+    NPM_SECRET_REF,
+    'the preamble backstop must see a block-scalar body opened by a commented header',
+  );
+  assert.match(
+    workflowEnv(helperInWorkflow).vars.RELEASE_HELPER,
+    NPM_SECRET_REF,
+    'and the parsed variable is its folded body, not the header that opened it',
+  );
+  assert.throws(
+    () => assertNoAmbientNpmCredential(helperInWorkflow, parseWorkflow(helperInWorkflow).byId.version),
+    /the npm secret/,
+  );
+  // ... and a workflow-level `env:` that opens a block scalar instead of a mapping is REFUSED, not
+  // read as a mapping with nothing in it, which is an absence claim about a block that has a body.
+  assert.throws(
+    () =>
+      workflowEnv(
+        'env: | # not a mapping\n  # ${{ secrets.NPM_TOKEN }}\njobs:\n  version:\n    steps:\n      - run: x\n',
+      ),
+    /the workflow-level `env:` opens a `\| # not a mapping` block scalar this reader does not fold/,
+  );
+
+  // ▶ AND AT JOB SCOPE THE SAME HEADERS REFUSE, where AC2 permits a refusal instead of a fold and
+  //   nothing needs the folded value. A job key left holding `|2-` is legible and wrong.
+  for (const header of BLOCK_HEADERS) {
+    assert.throws(
+      () => parseWorkflow(`jobs:\n  version:\n    if: ${header}\n      \${{ always() }}\n    steps:\n      - run: x\n`),
+      /`if:` in job `version` opens a `.*` block scalar this reader does not fold/,
+      `a job key opening \`${header}\` must refuse rather than read back as the header`,
+    );
+  }
+});
+
+test('the npm write credential is recognised however the SECRET NAME is cased, because Actions does not care', () => {
+  // GitHub secret names and context names are case insensitive, so `${{ secrets.npm_token }}` reads
+  // the same credential, in the same steps, as `${{ secrets.NPM_TOKEN }}`. A sweep anchored on one
+  // casing reports "no credential here" about a job holding it, which is the failure mode every
+  // sweep in this file exists to refuse, arriving through the NAME rather than through the syntax.
+  for (const spelling of [
+    '${{ secrets.npm_token }}',
+    '${{ Secrets.Npm_Token }}',
+    "${{ secrets['npm_token'] }}",
+    '${{ SECRETS.NPM_TOKEN }}',
+  ]) {
+    assert.match(spelling, NPM_SECRET_REF, `${spelling} names the npm write credential and must be recognised`);
+  }
+  // ... and the declaration in `workflow_call` still does not match, in either casing: it NAMES the
+  // secret, and naming is not reading. That is the one thing widening the pattern could have broken,
+  // because the preamble sweep runs straight over the declaration on every run.
+  for (const innocent of ['  npm_token:\n    required: true', '  NPM_TOKEN:\n    required: true']) {
+    assert.doesNotMatch(innocent, NPM_SECRET_REF, `${innocent} names the secret without reading it`);
+  }
+  assert.doesNotMatch(workflowPreamble(readWorkflow(WORKFLOW, readFileSync)), NPM_SECRET_REF);
+  // ... and it is WIRED: the lower-case spelling in the un-approved job is refused by the same step
+  // sweep that refuses the upper-case one, rather than passing as an unrecognised string.
+  const lowerCaseInStep =
+    'jobs:\n  version:\n    steps:\n      - name: Warm the registry cache\n        run: |\n' +
+    '          echo "//registry.npmjs.org/:_authToken=${{ secrets.npm_token }}" >> "$HOME/.npmrc"\n';
+  assert.throws(
+    () => assertNoStepNpmCredential(parseWorkflow(lowerCaseInStep).byId.version),
+    /"Warm the registry cache" reads the npm secret in the un-approved job/,
+  );
+});
+
+/**
+ * The suites that read `release.yml` through this repository's ONE reader.
+ *
+ * Not a list to keep in step by hand: the test below discovers the readers and checks the list
+ * against them, so the list going stale is a failing test rather than a silent hole.
+ */
+const CONVERGED_ON_THE_SHARED_READER = [
+  'environment-gate.test.mjs',
+  'install-check.test.mjs',
+  'release-notes.test.mjs',
+];
+
+/**
+ * The suites that read `release.yml` with a reader of their own, RECORDED rather than converged.
+ *
+ * Each of these answers a question about its own script's wiring - which step runs the changelog
+ * gate, where the floor gate sits in the step list, which jobs a `needs:` edge joins - and each does
+ * it with a text slice of the file. They are named here because a list of three that is really a
+ * list of seven is the arrangement every finding in this file came out of.
+ *
+ * WHY NAMING THEM IS THE ANSWER AND CONVERTING THEM IS NOT. The property at stake is that a
+ * construct outside the modelled subset cannot be hidden by moving it into the scope only the
+ * weakest reader owns. That property does not need every reader to be strict: it needs ONE reader
+ * that refuses, reading the SAME file, in the SAME run. The three above parse `release.yml` on every
+ * push, and a construct the shared reader cannot read throws there, so the run is red however
+ * permissively anything else read the file. What a private reader can still do is answer a question
+ * about ITS OWN script too loosely - a weaker claim, in a suite whose subject is that script.
+ *
+ * So the boundary is recorded and asserted instead of being crossed. The set below is exact: a new
+ * suite that starts reading the workflow lands in neither list and fails this test, which is the
+ * decision being forced rather than skipped.
+ */
+const READS_IT_WITH_ITS_OWN_READER = [
+  'changelog-check.test.mjs',
+  'publish-floor.test.mjs',
+  'skipped-required-context.test.mjs',
+  'staged-publish.test.mjs',
+];
+
+/**
+ * The suites that name `release.yml`, or read it as prose, and ask nothing about its composition.
+ *
+ * `caller-reference-docs` checks the `@main` paragraph every reusable workflow documents;
+ * `prepublish-check` compares a fixture and names the spelling this workflow ships;
+ * `self-scan` mentions it in a comment about which paths a suppression rule covers. None of them
+ * asks which job holds the environment, which step precedes the gate, or what a condition says, so
+ * none of them can answer such a question loosely.
+ */
+const NAMES_IT_WITHOUT_ASKING_ABOUT_ITS_COMPOSITION = [
+  'caller-reference-docs.test.mjs',
+  'prepublish-check.test.mjs',
+  'self-scan.test.mjs',
+];
+
+test('AC10: every suite that reads release.yml is either on the shared reader or recorded as not being', () => {
+  const suites = readdirSync(HERE)
+    .filter((name) => name.endsWith('.test.mjs'))
+    .filter((name) => /release\.yml/.test(readFileSync(join(HERE, name), 'utf8')));
+
+  assert.deepEqual(
+    suites.slice().sort(),
+    [
+      ...CONVERGED_ON_THE_SHARED_READER,
+      ...READS_IT_WITH_ITS_OWN_READER,
+      ...NAMES_IT_WITHOUT_ASKING_ABOUT_ITS_COMPOSITION,
+    ].sort(),
+    'a suite that reads `release.yml` appears in none of the three lists: converge it onto ' +
+      '`test/workflow-reader.mjs`, or record it in the list that describes what it does, with the reason',
+  );
+  assert.ok(suites.length > 0, 'the discovery found no readers at all, so this test is measuring nothing');
+
+  // ... and "converged" is checked rather than claimed: each of the three imports the shared reader,
+  // so the refusals it declares are theirs by construction and not by a promise in a comment.
+  for (const name of CONVERGED_ON_THE_SHARED_READER) {
+    assert.match(
+      readFileSync(join(HERE, name), 'utf8'),
+      /from ['"]\.\/workflow-reader\.mjs['"]/,
+      `${name} is listed as converged and does not import the shared reader`,
+    );
+  }
+  // ... and the delivered workflow really does go through that reader on this run, which is what
+  // makes the recorded group above safe: a construct it refuses reds the run before any private
+  // reader gets an answer out of it.
+  assert.ok(parseWorkflow(readWorkflow(WORKFLOW, readFileSync)).jobs.length >= 2);
 });
 
 test('a construct inside the subset that cannot be resolved to ONE value is refused, naming the job and the key', () => {
