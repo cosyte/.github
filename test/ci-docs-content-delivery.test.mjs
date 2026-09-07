@@ -258,13 +258,13 @@ function runDelivery(stub, { sha } = {}) {
 
 const SHA = '856fcf17a9a83f9054fad959855e9a9ef41cb5d4';
 
+/** The exact location the step fetches from at a given ref. */
+const urlFor = (ref) => `https://raw.githubusercontent.com/cosyte/.github/${ref}/scripts/docs-content-check.mjs`;
+
 test('A RESOLVED REF DELIVERS THE CHECKER, from the provider commit the caller resolved', () => {
   const run = runDelivery(STUBS.delivers, { sha: SHA });
   assert.equal(run.code, 0, run.output);
-  assert.equal(
-    run.requestedUrl,
-    `https://raw.githubusercontent.com/cosyte/.github/${SHA}/scripts/docs-content-check.mjs`,
-  );
+  assert.equal(run.requestedUrl, urlFor(SHA));
   assert.equal(run.delivered, readFileSync(CHECKER, 'utf8'), 'what lands is the checker, byte for byte');
   assert.match(run.output, new RegExp(`docs-content delivery: ref ${SHA}, from `), 'the ref is in the log');
 });
@@ -277,11 +277,11 @@ test('AN EMPTY REF IS ANNOUNCED AND SUBSTITUTED, never silently interpolated', (
   assert.match(run.output, /docs-content delivery: ref main, from /);
   assert.equal(
     run.requestedUrl,
-    'https://raw.githubusercontent.com/cosyte/.github/main/scripts/docs-content-check.mjs',
+    urlFor('main'),
     'the substitute ref is the provider default branch, and it is the ref actually used',
   );
   // The empty value never reaches the URL, which is what produced `.../cosyte/.github//scripts/`.
-  assert.doesNotMatch(run.requestedUrl, /\.github\/\/scripts/);
+  assert.equal(run.requestedUrl.includes(urlFor('')), false);
 });
 
 test('AN UNSET REF FAILS THE STEP, because `set -u` is load-bearing rather than decorative', () => {
@@ -295,7 +295,10 @@ test('A 404 REDS THE STEP AND SAYS MORE THAN `curl: (22)`, naming the ref and th
   const run = runDelivery(STUBS.notFound, { sha: SHA });
   assert.notEqual(run.code, 0);
   assert.match(run.output, new RegExp(`docs-content delivery FAILED at ref ${SHA}`));
-  assert.match(run.output, /raw\.githubusercontent\.com\/cosyte\/\.github\//, 'the location it tried is named');
+  // The WHOLE url, compared as a string rather than matched as a pattern. An unanchored regex over
+  // a host is the `js/regex/missing-regexp-anchor` shape, and there is nothing to pattern-match
+  // here anyway: the exact location the step tried is known.
+  assert.ok(run.output.includes(urlFor(SHA)), `the location it tried is named:\n${run.output}`);
   const explanation = run.output.split('\n').filter((line) => line.includes('docs-content delivery FAILED'));
   assert.ok(explanation.length > 0, 'a bare curl exit code must not be the only explanation in the log');
 });
