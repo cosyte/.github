@@ -834,8 +834,12 @@ test("ci.yml wires both layers the way the script expects", async () => {
   // string. If they drift, the contamination guard silently guards nothing.
   assert.match(yml, new RegExp(`path: ${TOOLING_DIR}`));
   // Pinned to the workflow's own commit, so the script can never be a different version from the
-  // workflow that calls it.
-  assert.match(yml, /ref: \$\{\{ github\.job_workflow_sha \}\}/);
+  // workflow that calls it. `job.workflow_sha` and NOT `github.job_workflow_sha`, which is not a
+  // property of the `github` context and therefore evaluated to `''`: the same empty value 404'd the
+  // docs-content delivery loudly and resolved the default branch here silently, since an empty
+  // `ref:` is not an error for `actions/checkout`. `test/ci-docs-content-delivery.test.mjs` owns
+  // that whole story and asserts both call sites resolve the same way.
+  assert.match(yml, /ref: \$\{\{ job\.workflow_sha \}\}/);
 
   // The allowance must actually REACH both invocations.
   assert.equal(yml.match(/--expect-unpublished-deps "\$EXPECT_UNPUBLISHED_DEPS"/g)?.length, 2);

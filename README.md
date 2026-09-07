@@ -98,7 +98,7 @@ demanded of nobody: an input added **with** a default breaks no caller, which is
 
 **What moves the reference is wider than what the note demands.** The state a caller resolves is the
 six workflow files **plus everything under `scripts/`**, because `ci.yml` fetches
-`docs-content-check.mjs` and `prepublish-check.mjs` at `github.job_workflow_sha` and `release.yml`
+`docs-content-check.mjs` and `prepublish-check.mjs` at `job.workflow_sha` and `release.yml`
 runs five more: a caller pinned to a reference runs those scripts as of that commit. So a script fix
 mints a reference (otherwise no caller could ever adopt it) whose note truthfully says there is
 nothing to act on. A README edit or a test change mints nothing.
@@ -191,10 +191,46 @@ edit any caller's branch protection to require it, so a failure there would leav
 required set green; and a job skipped by a conditional **satisfies** its required context (see
 "What a skipped required context does to a merge" below), so hanging the gate off the input-guarded
 `prepublish` or `actionlint` would report success having never run. The checker is fetched into
-`$RUNNER_TEMP`, **outside `$GITHUB_WORKSPACE`**, at `github.job_workflow_sha`: `actions/checkout`
+`$RUNNER_TEMP`, **outside `$GITHUB_WORKSPACE`**, at `job.workflow_sha`: `actions/checkout`
 refuses a path outside the workspace, and a second tree inside it would be visible to `pnpm lint`,
 `pnpm format:check` and `pnpm phi-scan`, whose scanner walks from the repository root. The gate
 creates, modifies and deletes nothing anywhere under the caller's workspace.
+
+### How the checker reaches a caller's runner, and what an unresolvable ref does
+
+**It is fetched, not checked out, and the ref is `job.workflow_sha`.** One unauthenticated
+`curl` of
+`https://raw.githubusercontent.com/cosyte/.github/<ref>/scripts/docs-content-check.mjs` into
+`$RUNNER_TEMP`, before `pnpm install`, needing no secret and no permission beyond the
+`contents: read` this workflow already declares and this repository being public. `job.workflow_sha`
+is **the commit SHA of the workflow file that defines the current job**, which inside a reusable
+workflow is this file rather than the caller's, so the checker that runs is the one belonging to the
+version of `ci.yml` the caller resolved. The `prepublish` job's tooling checkout of
+`cosyte/.github` reads the same property, so both places a caller reaches this repository's code
+resolve one way.
+
+**This did not work for the first caller that opted in, and the failure was silent about why.**
+The step shipped reading `github.job_workflow_sha`, which is not a property of the `github` context:
+that context carries `workflow_sha` and `workflow_ref`, which describe the CALLER's workflow file,
+and the identity of the file defining a called job lives on the `job` context. An unknown property
+is not an expression error, it is the empty string, so the URL collapsed to
+`.../cosyte/.github//scripts/docs-content-check.mjs` and the job died on
+`curl: (22) The requested URL returned error: 404` **before the checker started**, on both matrix
+legs and again on a re-run. Nothing about `docs-content/` was decided: not a pass, not a finding.
+The same empty value in the `prepublish` checkout was invisible, because an empty `ref:` is not an
+error for `actions/checkout`, it resolves the default branch.
+
+**So the step now says which ref it used, every time, and refuses to be quiet about a bad
+delivery.** The ref and the URL are printed before the fetch. If the expression is empty the step
+prints `job.workflow_sha was empty, falling back to main` and proceeds on the provider's default
+branch, which is what the `prepublish` checkout had been silently doing all along: substituting a
+ref is allowed, substituting one without saying so is not. Every other way a delivery can fail (a
+non-2xx status, a network error, a zero-length file, a file that is not the checker) **reds the
+job** with a line naming the ref it used and the location it tried, so a bare `curl: (22)` is never
+the whole explanation. There is no `|| true`, no `continue-on-error` and no trailing `exit 0` on
+either step. Once the checker is on disk the job's docs-content outcome is the checker's own exit
+status and nothing else. The controls are in `test/ci-docs-content-delivery.test.mjs`, which runs
+the step's own script against a stubbed `curl`, one case per failure mode.
 
 ### What it blocks on
 
