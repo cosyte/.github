@@ -232,9 +232,13 @@ test('delivery lands OUTSIDE the workspace, at the workflow SHA, and a failed fe
   assert.doesNotMatch(delivery, /actions\/checkout/);
   assert.doesNotMatch(delivery, /GITHUB_WORKSPACE/);
 
-  // THE VERSION THAT RUNS IS THE ONE THE CALLER RESOLVED, not whatever `main` holds mid-run.
-  assert.match(delivery, /TOOLING_SHA: \$\{\{ github\.job_workflow_sha \}\}/);
-  assert.match(delivery, /raw\.githubusercontent\.com\/cosyte\/\.github\/\$\{TOOLING_SHA\}\/scripts\/docs-content-check\.mjs/);
+  // THE VERSION THAT RUNS IS THE ONE THE CALLER RESOLVED, not whatever `main` holds mid-run. The
+  // expression is asserted in `test/ci-docs-content-delivery.test.mjs`, which owns the whole of why
+  // it is `job.workflow_sha` and not the `github.job_workflow_sha` this step shipped with.
+  assert.match(delivery, /TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}/);
+  assert.match(delivery, /raw\.githubusercontent\.com\/cosyte\/\.github\/\$\{ref\}\/scripts\/docs-content-check\.mjs/);
+  // The URL is BUILT from the resolved ref. A literal branch in it would pin every caller to
+  // whatever `main` holds mid-run, which is the thing the expression exists to avoid.
   assert.doesNotMatch(delivery, /githubusercontent\.com\/cosyte\/\.github\/main\//);
 
   // A MISSING CHECKER MUST NOT READ AS ZERO FINDINGS.

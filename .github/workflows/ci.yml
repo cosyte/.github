@@ -149,12 +149,35 @@ jobs:
       # DELIVERED OUTSIDE `GITHUB_WORKSPACE`. `actions/checkout` refuses a path outside the
       # workspace, and a second tree INSIDE it is visible to `pnpm lint`, `pnpm format:check` and
       # `pnpm phi-scan`, whose scanner walks from the repo root. So the checker is fetched into
-      # `RUNNER_TEMP` instead, unauthenticated (this repository is public), at
-      # `github.job_workflow_sha` rather than `main`: the code that runs must belong to the version
-      # of this workflow the caller resolved, not to whatever `main` holds mid-run. It is ONE
-      # self-contained file importing `node:*` only, asserted in `test/docs-content-check.test.mjs`,
-      # because an entry point importing a sibling under `scripts/` would pass every test there and
-      # die `ERR_MODULE_NOT_FOUND` here.
+      # `RUNNER_TEMP` instead, unauthenticated (this repository is public), at `job.workflow_sha`
+      # rather than `main`: the code that runs must belong to the version of this workflow the
+      # caller resolved, not to whatever `main` holds mid-run. It is ONE self-contained file
+      # importing `node:*` only, asserted in `test/docs-content-check.test.mjs`, because an entry
+      # point importing a sibling under `scripts/` would pass every test there and die
+      # `ERR_MODULE_NOT_FOUND` here.
+      #
+      # THE REF IS `job.workflow_sha`, AND THE EXPRESSION THAT USED TO BE HERE RESOLVED TO THE EMPTY
+      # STRING. This step shipped as `TOOLING_SHA: ${{ github.job_workflow_sha }}`, which is not a
+      # property of the `github` context: the contexts reference gives that context
+      # `github.workflow_sha` and `github.workflow_ref`, both of which describe the CALLER's
+      # workflow file, and puts the identity of the file that defines a CALLED job on the `job`
+      # context instead (`job.workflow_sha`, `job.workflow_repository`, `job.workflow_ref`,
+      # `job.workflow_file_path`). Its own reusable-workflow example checks a workflow's own source
+      # out with that pair. An unknown property is not an expression error, it is `''`, so the URL
+      # degenerated to `.../cosyte/.github//scripts/docs-content-check.mjs` and the first opted-in
+      # caller's `verify` died on `curl: (22) ... 404` BEFORE the checker started, on both matrix
+      # legs and again on a re-run (`cosyte/x12` run 33230794979). The gate emitted no verdict at
+      # all: not a pass, not a finding. `job` is available in `steps.env`, `steps.run` and
+      # `steps.with`, which is what lets it be read here and in `prepublish` below.
+      #
+      # AND THE STEP SAYS WHICH REF IT USED, EVERY TIME, because the failure above was silent about
+      # the one fact that explained it. The ref is echoed with the URL before the fetch; an empty
+      # one is ANNOUNCED and falls back to the default branch rather than building a URL nobody can
+      # read; and every delivery failure prints the ref and the location it tried, so a caller is
+      # never handed a bare `curl: (22)` as the whole explanation. The fallback is not a swallowed
+      # failure: the checker is still fetched, still run, and the step that runs it still decides
+      # the job. It is also not a new behaviour, it is the one the empty value already produced in
+      # `prepublish` below, said out loud.
       #
       # `shell: bash` ON BOTH, because the `os` axis is caller-supplied and may be widened to
       # `windows-latest`, where the default shell is `pwsh`, `$RUNNER_TEMP` expands to nothing and
@@ -168,13 +191,29 @@ jobs:
         if: ${{ inputs.check-docs-content }}
         shell: bash
         env:
-          TOOLING_SHA: ${{ github.job_workflow_sha }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --location \
-            "https://raw.githubusercontent.com/cosyte/.github/${TOOLING_SHA}/scripts/docs-content-check.mjs" \
-            --output "${RUNNER_TEMP}/docs-content-check.mjs"
-          test -s "${RUNNER_TEMP}/docs-content-check.mjs"
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "docs-content delivery: job.workflow_sha was empty, falling back to main" >&2
+            ref=main
+          fi
+          url="https://raw.githubusercontent.com/cosyte/.github/${ref}/scripts/docs-content-check.mjs"
+          echo "docs-content delivery: ref ${ref}, from ${url}"
+          if ! curl --fail --silent --show-error --location "${url}" \
+            --output "${RUNNER_TEMP}/docs-content-check.mjs"; then
+            echo "docs-content delivery FAILED at ref ${ref}: could not download ${url}" >&2
+            exit 1
+          fi
+          if ! test -s "${RUNNER_TEMP}/docs-content-check.mjs"; then
+            echo "docs-content delivery FAILED at ref ${ref}: ${url} left ${RUNNER_TEMP}/docs-content-check.mjs empty" >&2
+            exit 1
+          fi
+          if ! node --check "${RUNNER_TEMP}/docs-content-check.mjs"; then
+            echo "docs-content delivery FAILED at ref ${ref}: what ${url} put in ${RUNNER_TEMP}/docs-content-check.mjs is not the checker" >&2
+            exit 1
+          fi
       - name: docs-content links, images and sidebar ids must resolve
         if: ${{ inputs.check-docs-content }}
         shell: bash
@@ -210,13 +249,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # `github.job_workflow_sha` rather than `main`: the script must be the one that belongs to the
+      # `job.workflow_sha` rather than `main`: the script must be the one that belongs to the
       # version of this workflow the caller resolved, even though every caller pins `@main`.
+      #
+      # THIS IS THE SAME RESOLUTION THE DOCS-CONTENT DELIVERY USES, AND IT IS THE SECOND HALF OF THE
+      # SAME DEFECT. This `ref:` read `${{ github.job_workflow_sha }}` too, and that expression is
+      # `''` for the same reason it was empty there. An empty `ref:` is not an error for
+      # `actions/checkout`: it resolves the repository's DEFAULT BRANCH. So the identical empty
+      # value was fatal in the raw-URL delivery above and silent here, where it quietly contradicted
+      # the sentence directly above it for every one of the thirteen callers, in a job that is ON BY
+      # DEFAULT. Nothing was ever red, and nothing said so. Both sites now read the one property the
+      # contexts reference defines for this, and an empty value here degrades to exactly the default
+      # branch it has been resolving all along.
       - name: Check out the shared CI tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cosyte/.github
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .cosyte-ci-tooling
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
