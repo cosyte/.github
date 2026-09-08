@@ -558,43 +558,36 @@ export function allSteps(workflow) {
 }
 
 /**
- * The permissions in force on a job: its own block if it has one, else the workflow's.
+ * The WORKFLOW-level `permissions:` block, at column 0 above `jobs:`, read WHOLE. `null` where the
+ * workflow declares no `permissions:` key at all, because that absence is real.
+ *
+ * IT IS ITS OWN SCOPE AND ITS OWN QUESTION. This block is what a job that declares no `permissions:`
+ * of its own inherits, and it is what thirteen calling repositories have to grant FIRST: a called
+ * workflow's token can only be equal to or more restrictive than its caller's. A job's own block is a
+ * different set about a different runner, so a pin on one says nothing about the other. `where` names
+ * the scope in the refusals below, so a read taken on a job's behalf can say WHICH job's inherited
+ * permissions could not be resolved while a direct read of the block says only what it read.
  *
  * IT ANSWERS AN ABSENCE CLAIM, so every way of ending the read early is a way of granting a
  * permission nobody asked for. `id-token: write` is npm provenance and is deliberately absent from
  * the un-approved half of this workflow; a suite pins the map WHOLE, and a read that stops before
  * `id-token:` hands that pin the exact map it expects while the job really does carry the
  * publish-signing token. So a line inside the block that this reader cannot read is a REFUSAL naming
- * the job, never the end of the block, and never a key reported absent.
+ * the scope, never the end of the block, and never a key reported absent.
  *
  * WHAT ENDS THE BLOCK IS A KEY AT COLUMN 0, AND NOTHING ELSE. A blank line inside a block mapping is
  * legal YAML that means nothing, so it is stepped over rather than refused - refusing it would turn
  * a legal, harmless regrouping of four permissions into thirteen callers' red releases, and the
  * workflow-level `env:` read below already draws the line in the same place for the same reason.
- *
- * AND A PERMISSIONS KEY THAT IS NOT A BLOCK IS NOT AN ABSENT ONE. `permissions: read-all` at either
- * scope, or a job's `permissions: {}`, says something specific about the job in front of us and is
- * outside the subset this reader models. Falling through to the workflow's block for it, or
- * answering `null`, reports a permission set that is not the one in force. Only a workflow with no
- * `permissions:` key at all answers `null`, because that absence is real.
  */
-export function effectivePermissions(text, job) {
-  if (job.blocks.permissions) return job.blocks.permissions;
-  if (job.keys.permissions !== undefined) {
-    throw new Error(
-      `parse failure: \`permissions:\` in job \`${job.id}\` is ` +
-        `${JSON.stringify(job.raw.permissions ?? job.keys.permissions)} rather than a block this reader ` +
-        'reads, so the permissions in force on that job cannot be resolved',
-    );
-  }
+export function workflowPermissions(text, where = 'the workflow-level `permissions:` block') {
   const lines = decomment(text);
   const at = lines.findIndex((line) => /^["']?permissions["']?[ \t]*:/.test(line));
   if (at < 0) return null;
-  const where = `the workflow-level \`permissions:\` in force on job \`${job.id}\``;
   if (!/^permissions:[ \t]*$/.test(lines[at])) {
     throw new Error(
       `parse failure: ${where} is ${JSON.stringify(lines[at])} rather than a block this reader reads, ` +
-        'so the permissions in force on that job cannot be resolved',
+        'so the permissions it grants cannot be resolved',
     );
   }
   /** @type {Record<string, string>} */
@@ -626,6 +619,31 @@ export function effectivePermissions(text, job) {
     out[match[1]] = value;
   }
   return out;
+}
+
+/**
+ * The permissions in force on a job: its own block if it has one, else the workflow's.
+ *
+ * A PERMISSIONS KEY THAT IS NOT A BLOCK IS NOT AN ABSENT ONE. `permissions: read-all` at either
+ * scope, or a job's `permissions: {}`, says something specific about the job in front of us and is
+ * outside the subset this reader models. Falling through to the workflow's block for it, or
+ * answering `null`, reports a permission set that is not the one in force.
+ *
+ * IT IS NOT A SUBSTITUTE FOR `workflowPermissions` ABOVE. On a workflow where every job declares its
+ * own block this only ever answers about a job, so a suite that pinned the column-0 block and then
+ * swapped in this call stopped reading that block at all while its assertion still looked like
+ * coverage.
+ */
+export function effectivePermissions(text, job) {
+  if (job.blocks.permissions) return job.blocks.permissions;
+  if (job.keys.permissions !== undefined) {
+    throw new Error(
+      `parse failure: \`permissions:\` in job \`${job.id}\` is ` +
+        `${JSON.stringify(job.raw.permissions ?? job.keys.permissions)} rather than a block this reader ` +
+        'reads, so the permissions in force on that job cannot be resolved',
+    );
+  }
+  return workflowPermissions(text, `the workflow-level \`permissions:\` in force on job \`${job.id}\``);
 }
 
 /**

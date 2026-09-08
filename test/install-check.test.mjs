@@ -26,6 +26,7 @@ import {
   parseWorkflow,
   readWorkflow,
   STEP_CONDITION_LINE,
+  workflowPermissions,
 } from "./workflow-reader.mjs";
 
 import {
@@ -1201,6 +1202,21 @@ test("release.yml wires the gate the way the script expects", () => {
   // content the runner's shell receives, and deleting it is how a credential planted on such a line
   // reached the un-approved job with all three suites green.
   assert.doesNotMatch(preamble, /issues:\s*write/);
+  //
+  // TWO SCOPES, TWO PINS, because they are different sets and neither one covers the other. The
+  // COLUMN-0 block above `jobs:` is what the caller's grant is compared against and what a job that
+  // declares no `permissions:` of its own inherits - deleting a job's block is a one-line edit, and
+  // this repository's own regression evidence already treats it as one. The job's block is what that
+  // job runs with. Asking only for "the permissions in force on the release job" resolves to the
+  // JOB's block on this workflow, because both jobs declare one, so it answers nothing about the
+  // block above: a fifth key could arrive there, and `actions: read` could leave, with every suite
+  // green. A guard that retargets itself reads as coverage, so both scopes are read by name.
+  assert.deepEqual(workflowPermissions(yml), {
+    contents: "write",
+    "id-token": "write",
+    "pull-requests": "write",
+    actions: "read",
+  });
   assert.deepEqual(effectivePermissions(yml, release), {
     contents: "write",
     "id-token": "write",

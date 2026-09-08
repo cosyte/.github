@@ -49,6 +49,7 @@ import {
   readWorkflow,
   STEP_CONDITION_LINE,
   workflowEnv,
+  workflowPermissions,
   workflowPreamble,
 } from './workflow-reader.mjs';
 
@@ -1136,6 +1137,23 @@ test('the permissions in force on a job are read whole, or refused naming the jo
     'permissions:\n  contents: write\n  id-token: write\njobs:\n  version:\n' +
     '    permissions:\n      contents: read\n    steps:\n      - run: x\n';
   assert.deepEqual(effectivePermissions(own, parseWorkflow(own).byId.version), { contents: 'read' });
+
+  // ── AND THE COLUMN-0 BLOCK IS ITS OWN QUESTION, WITH ITS OWN READ. On the workflow above, and on
+  //    the delivered one, EVERY job declares a block, so `effectivePermissions` can only ever answer
+  //    about a job and the column-0 block is read by nobody. That block is what the caller's grant is
+  //    compared against and what a job whose own block is deleted inherits, so `workflowPermissions`
+  //    reads it directly - same subset, same refusals, naming the block rather than a job.
+  assert.deepEqual(workflowPermissions(own), { contents: 'write', 'id-token': 'write' });
+  assert.equal(workflowPermissions(jobs), null, 'a workflow with no column-0 block has none, and says so');
+  assert.throws(
+    () => workflowPermissions('permissions:\n  contents: write\n  "id-token": write\n'),
+    /unreadable line inside the workflow-level `permissions:` block: "  \\"id-token\\": write"/,
+    'the direct read refuses everything the job-relative read refuses',
+  );
+  assert.throws(
+    () => workflowPermissions('permissions: read-all\n'),
+    /the workflow-level `permissions:` block is "permissions: read-all" rather than a block/,
+  );
 });
 
 /**
@@ -1449,7 +1467,7 @@ test('a construct inside the subset that cannot be resolved to ONE value is refu
 });
 
 test('a workflow this suite cannot OPEN fails naming the path, rather than reading as an empty workflow', async () => {
-  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { chmodSync, mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
 
@@ -1466,6 +1484,31 @@ test('a workflow this suite cannot OPEN fails naming the path, rather than readi
   mkdirSync(asDirectory);
   assert.throws(() => readWorkflow(asDirectory, readFileSync), new RegExp(`cannot read the workflow at ${asDirectory}`));
   assert.throws(() => readWorkflow(asDirectory, readFileSync), /EISDIR/);
+
+  // ... and PERMISSION-REFUSED, the third case the sentence above names and the one nothing asserted.
+  // Twice over, because the halves prove different things and one of them is not always available. An
+  // injected reader that raises `EACCES` proves this helper wraps that error and names the path the
+  // way it does for the other two, on any filesystem and for any user; a real mode-000 file proves an
+  // actual refusal by the OS arrives here as the same answer. The second half is skipped for uid 0,
+  // for whom mode bits refuse nothing: the file would simply open, and the red would be a statement
+  // about the account running the suite rather than about this repository.
+  const refused = join(dir, 'refused.yml');
+  writeFileSync(refused, 'name: Release\n');
+  assert.throws(
+    () =>
+      readWorkflow(refused, () => {
+        const denied = new Error(`EACCES: permission denied, open '${refused}'`);
+        denied.code = 'EACCES';
+        throw denied;
+      }),
+    new RegExp(`cannot read the workflow at ${refused}: EACCES`),
+  );
+  if (process.getuid?.() !== 0) {
+    chmodSync(refused, 0o000);
+    assert.throws(() => readWorkflow(refused, readFileSync), new RegExp(`cannot read the workflow at ${refused}`));
+    assert.throws(() => readWorkflow(refused, readFileSync), /EACCES/);
+    chmodSync(refused, 0o600);
+  }
 
   // ... and an EMPTY file, which opens cleanly and is the case a raw read cannot tell from a real
   // one. `parseWorkflow('')` would refuse it too; this refuses it one layer earlier, where the
