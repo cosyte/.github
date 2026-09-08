@@ -41,6 +41,11 @@ import {
   toHeadline,
   TRANSLATION_RULES,
 } from '../scripts/release-notes.mjs';
+import {
+  parseWorkflow as parseWorkflowJobs,
+  readWorkflow,
+  STEP_CONDITION_LINE,
+} from './workflow-reader.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, '../scripts/release-notes.mjs');
@@ -57,236 +62,14 @@ const EXPECTED_BODY = join(HERE, 'fixtures/hl7-v0.0.2/expected-release-body.md')
 // `release` job, so "before the publish step" is a fact about which JOB a step is in and where it
 // sits inside it, and a byte offset answers a different question that happens to agree by accident.
 //
-// This parser is deliberately small and deliberately LOUD: it throws, naming what it could not read,
+// The reader is deliberately small and deliberately LOUD: it throws, naming what it could not read,
 // rather than handing back an empty list that would make every assertion below pass while asserting
-// nothing. It is duplicated in `test/environment-gate.test.mjs` rather than shared, because this
-// repository has no package.json, no install step and no test helper directory on purpose, and both
-// suites are meant to be readable on their own.
-
-/** Drop whole-line comments. */
-function decommentLines(text) {
-  return text.split('\n').filter((line) => !/^\s*#/.test(line));
-}
-
-/** `write # create tags` -> `write`. Only ` # ` counts, so a `${{ }}` expression is never cut. */
-function stripInlineComment(value) {
-  return value.replace(/\s+#\s.*$/, '').trim();
-}
-
-/** A step's own keys sit here, one level under the `- ` that opens the list entry. */
-const STEP_KEY_INDENT = 8;
-
-/**
- * A key-line value that is not the value: the key's real value is on the lines below it. Empty, or a
- * block-scalar indicator. Kept in step with `test/environment-gate.test.mjs`, the other copy.
- */
-const VALUE_LIVES_BELOW = /^(?:[|>][+-]?\d*)?$/;
-
-/** The value that lives on the lines below `lines[at]`, folded onto one line. */
-function valueBelow(lines, at) {
-  if (at < 0) return '';
-  const indentOf = (line) => line.length - line.replace(/^[ \t]*/, '').length;
-  const keyIndent = indentOf(lines[at]);
-  const folded = [];
-  for (const line of lines.slice(at + 1)) {
-    if (line.trim() === '') continue;
-    if (indentOf(line) <= keyIndent) break;
-    folded.push(line.trim());
-  }
-  return folded.join(' ');
-}
-
-/**
- * Parse ONE step, REFUSING any line it cannot read rather than skipping it.
- *
- * The first version of this dropped a step-key line its pattern did not match, and the pattern
- * requires the colon to touch the key. `        if : ${{ ... }}` - one space before the colon - is
- * valid YAML, a real condition, and actionlint typechecks the expression inside it, so a step
- * carrying one came back with `fields.if === undefined` and the assertion below that the version arm
- * "must run unconditionally" passed over a conditional step. This repository has been bitten by that
- * exact spelling before; the comment on that assertion says so, and says a refuter got it past an
- * earlier version. A parser that silently discards its subject is how it got past again.
- *
- * Every line is therefore accounted for at one of three levels: a step key at `STEP_KEY_INDENT`; a
- * child of an open `with:`/`env:` block at whatever indent that block's FIRST child established, so
- * a block written at nine spaces is read rather than skipped; or something deeper than both, which
- * is a block scalar's body or a wrapped plain scalar and carries no key asserted on here. Anything
- * else, including a line shallower than a step key and a `with:`/`env:` written as a flow mapping
- * this parser cannot read, is a parse failure naming the job and the step.
- *
- * Kept in step with `parseStep` in `test/environment-gate.test.mjs`, which is the other copy.
- */
-function parseWorkflowStep(index, jobId, rawLines) {
-  const lines = [`        ${rawLines[0]}`, ...rawLines.slice(1)];
-  /** @type {Record<string, string>} */
-  const fields = {};
-  const blocks = { with: {}, env: {} };
-  const unreadable = (line, where) =>
-    new Error(
-      `parse failure: unreadable line in step ${index} of job \`${jobId}\`${where}: ${JSON.stringify(line)}`,
-    );
-
-  /** `null` at step-key level; otherwise the open block and the indent its children were found at. */
-  let open = null;
-  for (const line of lines) {
-    if (line.trim() === '') continue;
-    const indent = line.length - line.replace(/^ */, '').length;
-
-    if (open && open.indent === null && indent > STEP_KEY_INDENT) open.indent = indent;
-    if (open && open.indent !== null && indent >= open.indent) {
-      if (indent > open.indent) continue; // the body of a child's own scalar
-      // A SEQUENCE AT ITS PARENT KEY'S OWN INDENT IS LEGAL YAML AND IS READ, not refused. `path:`
-      // with its items in the same column is how `actions/upload-artifact` inputs are usually
-      // written; refusing it failed closed, so no assertion was ever weakened by it, but it spends
-      // the next maintainer's afternoon on a parse failure that names no real defect, and the
-      // cheapest way out of one of those is to loosen the refusal that matters. The item is
-      // appended to the key it belongs to, so nothing is dropped. An item under no key, or under a
-      // key that already carries a scalar, is not legal YAML and still refuses.
-      const item = new RegExp(`^ {${open.indent}}- (.*)$`).exec(line);
-      if (item) {
-        const under = open.last === null ? null : blocks[open.key][open.last];
-        if (under === null || !(under === '' || under.startsWith('\n- '))) {
-          throw unreadable(line, `, a sequence item inside \`${open.key}:\` under no key it can belong to`);
-        }
-        blocks[open.key][open.last] = `${under}\n- ${stripInlineComment(item[1])}`;
-        continue;
-      }
-      const child = new RegExp(`^ {${open.indent}}([\\w-]+):\\s?(.*)$`).exec(line);
-      if (!child) throw unreadable(line, `, inside \`${open.key}:\``);
-      blocks[open.key][child[1]] = stripInlineComment(child[2]);
-      open.last = child[1];
-      continue;
-    }
-    open = null; // anything shallower than the children closes the block
-
-    if (indent > STEP_KEY_INDENT) continue; // a block scalar's body, or a wrapped plain scalar
-    if (indent < STEP_KEY_INDENT) throw unreadable(line, ', shallower than this step');
-    const key = /^ {8}([\w-]+):\s?(.*)$/.exec(line);
-    if (!key) throw unreadable(line, '');
-    fields[key[1]] = stripInlineComment(key[2]);
-    if (key[1] === 'with' || key[1] === 'env') {
-      if (fields[key[1]] !== '') throw unreadable(line, `, a \`${key[1]}:\` this parser cannot read`);
-      open = { key: key[1], indent: null, last: null };
-    } else {
-      open = null;
-    }
-  }
-  // AND A CONDITION WHOSE VALUE IS ON THE NEXT LINE IS STILL THIS STEP'S CONDITION. `if: >-` used to
-  // leave `fields.if` holding the block-scalar indicator `">-"`, which is legible and WRONG - worse
-  // than illegible, because `undefined` is refused and `">-"` is believed. The assertions here read
-  // this field for EXISTENCE, so they held either way; it is resolved anyway, because the two copies
-  // of this parser are only worth having if they agree, and the other one's AC9 reads the value.
-  if (fields.if !== undefined && VALUE_LIVES_BELOW.test(fields.if.trim())) {
-    const at = lines.findIndex((line) => /^ {8}if:/.test(line));
-    fields.if = `${fields.if} ${valueBelow(lines, at)}`.trim();
-  }
-  if (fields.name === undefined && fields.uses === undefined && fields.run === undefined) {
-    throw new Error(
-      `parse failure: step ${index} of job \`${jobId}\` has neither a name, a uses nor a run: ` +
-        JSON.stringify(lines.join('\n').slice(0, 120)),
-    );
-  }
-  return {
-    index,
-    job: jobId,
-    fields,
-    with: blocks.with,
-    env: blocks.env,
-    label: fields.name ?? fields.uses ?? `${jobId} step ${index}`,
-    body: lines.join('\n'),
-  };
-}
-
-/**
- * A step-level condition spelled as TEXT, in every spelling of the key. RESTORED from `origin/main`.
- *
- * This exact pattern guarded the version-PR step before the split, and the comment above it recorded
- * why: a refuter got two forms past an earlier version of the assertion, `if :` with a space before
- * the colon and a quoted `"if":`, and both are valid YAML that actionlint typechecks, so both are
- * real conditions rather than noise. The branch replaced it with a parser read plus a pattern that
- * REQUIRES the quotes, and the parser silently dropped the spaced form, so the middle spelling went
- * unguarded on a branch whose own comment claimed it was covered.
- *
- * It is restored BESIDE the parser fix, not instead of it. The parser refusing a line it cannot read
- * is the guarantee; this is the backstop that keeps biting if the parser is ever loosened again.
- * `["']?` optional and `\s*` before the colon see all three spellings. It cannot match
- * `if-no-files-found:` or a shell `if [ ... ]` in a `run:` body: the colon has to follow the key.
- */
-const STEP_CONDITION_LINE = /^\s*["']?if["']?\s*:/m;
-
-/** Parse release.yml into its jobs, in file order, each with its ordered step list. */
-function parseWorkflowJobs(text) {
-  const lines = decommentLines(text);
-  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
-  if (jobsAt < 0) throw new Error('parse failure: release.yml has no top-level `jobs:` key');
-
-  const jobs = [];
-  let job = null;
-  let openBlock = null;
-  let inSteps = false;
-  let rawSteps = [];
-  const closeJob = () => {
-    if (!job) return;
-    job.steps = rawSteps.map((raw, index) => parseWorkflowStep(index, job.id, raw));
-    if (job.steps.length === 0) throw new Error(`parse failure: job \`${job.id}\` parsed to zero steps`);
-  };
-
-  for (const line of lines.slice(jobsAt + 1)) {
-    if (line.trim() === '') continue;
-    if (/^\S/.test(line)) break;
-    const jobStart = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (jobStart) {
-      closeJob();
-      job = { id: jobStart[1], keys: {}, blocks: {}, steps: [] };
-      jobs.push(job);
-      openBlock = null;
-      inSteps = false;
-      rawSteps = [];
-      continue;
-    }
-    if (!job) throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`jobs:\` but inside no job`);
-    if (!inSteps) {
-      if (/^ {4}steps:\s*$/.test(line)) {
-        inSteps = true;
-        openBlock = null;
-        continue;
-      }
-      // FAIL CLOSED HERE TOO, and for the reason the step reader now does. A job key this pattern
-      // cannot read used to be skipped, so `    environment : release` on the un-gated job would have
-      // left `keys.environment` undefined and the assertion below that it "must reference no
-      // environment" would have passed over a job that references one. Same defect, one level up.
-      const key = /^ {4}([\w-]+):\s?(.*)$/.exec(line);
-      if (key) {
-        job.keys[key[1]] = stripInlineComment(key[2]);
-        if (job.keys[key[1]] === '') {
-          job.blocks[key[1]] = {};
-          openBlock = key[1];
-        } else {
-          openBlock = null;
-        }
-        continue;
-      }
-      const child = /^ {6}([\w-]+):\s?(.*)$/.exec(line);
-      if (child && openBlock) {
-        job.blocks[openBlock][child[1]] = stripInlineComment(child[2]);
-        continue;
-      }
-      throw new Error(`parse failure: unreadable line in job \`${job.id}\`: ${JSON.stringify(line)}`);
-    }
-    const stepStart = /^ {6}- (.*)$/.exec(line);
-    if (stepStart) {
-      rawSteps.push([stepStart[1]]);
-      continue;
-    }
-    if (rawSteps.length === 0) {
-      throw new Error(`parse failure: ${JSON.stringify(line)} sits under \`${job.id}.steps:\` but inside no step`);
-    }
-    rawSteps[rawSteps.length - 1].push(line);
-  }
-  closeJob();
-  if (jobs.length === 0) throw new Error('parse failure: release.yml declares `jobs:` but no job under it');
-  return { jobs, byId: Object.fromEntries(jobs.map((j) => [j.id, j])) };
-}
+// nothing. It lives in `test/workflow-reader.mjs` and it is the SAME reader
+// `test/environment-gate.test.mjs` and `test/install-check.test.mjs` use. It was a near-identical
+// copy per suite, which is exactly how a spelling closed in one of them stayed open in the other
+// two, four separate times: `if :`, `"if":`, a job-level `env:` written as a flow mapping, and a
+// `#`-first line inside a `run:` block scalar. Sharing needs no package.json and no install step,
+// so the reason the copies were kept apart does not survive what the copies cost.
 
 /** The exact body every cosyte release carried before this change. */
 const PRODUCTION_STUB = 'Automated release of v0.0.2.';
@@ -824,7 +607,7 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
   // reported publishing, which does not exist any earlier and is the only check that legitimately
   // follows the publish. A single assert on the far side, which is what this workflow once had,
   // makes the check a report on an irreversible act rather than a gate in front of it.
-  const text = readFileSync(WORKFLOW, 'utf8');
+  const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflowJobs(text);
   const version = workflow.byId.version;
   const release = workflow.byId.release;
@@ -1649,7 +1432,7 @@ test('hasPriorVersion answers a question about history alone', () => {
 // file the script cannot see. Six gates in this org have shipped green while unable to observe their
 // subject; this assertion is one line and it is the one that would have caught a seventh.
 test('release.yml keeps the publish command out of the un-gated job, and gates the job that has it', () => {
-  const text = readFileSync(WORKFLOW, 'utf8');
+  const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflowJobs(text);
   const version = workflow.byId.version;
   const release = workflow.byId.release;
@@ -1725,7 +1508,7 @@ test('release.yml keeps the publish command out of the un-gated job, and gates t
   // own keys" and every spelling is therefore "either read as the key it is or not a key at all".
   // That was false of the middle one: it is a key to Actions and was not a key to the parser, which
   // dropped the line and reported no condition at all. Both halves are asserted now. The parser
-  // refuses a line it cannot read (`parseWorkflowStep`), and the text guard is back from
+  // refuses a line it cannot read (`test/workflow-reader.mjs`), and the text guard is back from
   // `origin/main` unchanged, because a guard this repository has already needed twice does not come
   // out on the word of the mechanism it exists to check.
   assert.equal(versionArm.fields.if, undefined, 'the version-PR step must run unconditionally');
@@ -1788,8 +1571,81 @@ test('the workflow reader refuses a line it cannot read, at every level, rather 
   const folded = parseWorkflowJobs(
     'jobs:\n  release:\n    steps:\n      - name: x\n        if: >-\n          ${{ always() }}\n        run: y\n',
   );
-  assert.equal(folded.byId.release.steps[0].fields.if, '>- ${{ always() }}');
+  assert.equal(
+    folded.byId.release.steps[0].fields.if,
+    '${{ always() }}',
+    'the indicator is dropped: a key is never handed back holding `>-` as if that were its value',
+  );
   assert.match(folded.byId.release.steps[0].body, STEP_CONDITION_LINE, 'and the text guard sees the key line');
+
+  // ... IN EVERY SPELLING OF THE HEADER THAT INTRODUCES ONE, which is the half a reader written from
+  // the file in front of it gets wrong. YAML's `c-b-block-header` takes the chomping and indentation
+  // indicators in either order and allows a comment after them, so `|2-`, `|-2` and `| # note` are
+  // the same block as `|`. A header the reader does not recognise is worse than a misread value: it
+  // does not see that a block was opened, so it strips the body's `#`-first lines, which inside a
+  // block scalar are content the runner's shell receives.
+  for (const header of ['|', '| # the condition, explained', '|2-', '|-2']) {
+    const opened = parseWorkflowJobs(
+      `jobs:\n  release:\n    steps:\n      - name: x\n        if: ${header}\n          \${{ always() }}\n        run: y\n`,
+    ).byId.release.steps[0];
+    assert.equal(
+      opened.fields.if,
+      '${{ always() }}',
+      `a condition under \`if: ${header}\` is the condition, not the header that introduced it`,
+    );
+    const body = parseWorkflowJobs(
+      `jobs:\n  release:\n    steps:\n      - name: x\n        run: ${header}\n          # a line the shell receives\n`,
+    ).byId.release.steps[0];
+    assert.match(
+      body.body,
+      /# a line the shell receives/,
+      `a \`#\`-first line under \`run: ${header}\` is content this reader keeps`,
+    );
+  }
+  // ... while a real comment, outside every block scalar, is still a comment.
+  assert.doesNotMatch(
+    parseWorkflowJobs('jobs:\n  release:\n    steps:\n      # a real comment\n      - name: x\n        run: y\n')
+      .byId.release.steps[0].body,
+    /a real comment/,
+    'widening the header must not start reading comments as content',
+  );
+
+  // ... and a construct INSIDE the modelled subset that still cannot be resolved to one value is
+  // refused rather than resolved by last-one-wins or by reading an alias as five literal
+  // characters. Both spellings name the job and the key, which is what makes the failure actionable
+  // instead of a puzzle.
+  assert.throws(
+    () => parseWorkflowJobs('jobs:\n  release:\n    steps:\n      - name: x\n        if: a\n        if: b\n        run: y\n'),
+    /duplicate key `if` in step 0 of job `release`/,
+  );
+  assert.throws(
+    () => parseWorkflowJobs('jobs:\n  release:\n    environment: a\n    environment: b\n    steps:\n      - run: x\n'),
+    /duplicate key `environment` in job `release`/,
+  );
+  assert.throws(
+    () => parseWorkflowJobs('jobs:\n  release:\n    steps:\n      - name: x\n        if: *always\n        run: y\n'),
+    /is a YAML alias or anchor whose referent this reader does not resolve/,
+  );
+  assert.throws(
+    () => parseWorkflowJobs('jobs:\n  release:\n    <<: *defaults\n    steps:\n      - run: x\n'),
+    /is a merge key whose referent this reader does not resolve/,
+  );
+});
+
+// AND A WORKFLOW THIS FILE CANNOT OPEN IS A FAILURE, NOT A SKIP. Every wiring assertion above is an
+// absence claim or an equality against a parsed value; handed the empty string they all pass, and a
+// read that quietly returns one is therefore worse here than a read that throws. All three ways the
+// path can refuse to open produce one answer and it names the path.
+test('release.yml failing to open fails this suite, naming the path it tried to read', async () => {
+  const { mkdirSync, mkdtempSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'release-notes-workflow-'));
+  const absent = join(dir, 'release.yml');
+  assert.throws(() => readWorkflow(absent, readFileSync), new RegExp(`cannot read the workflow at ${absent}`));
+  assert.throws(() => readWorkflow(absent, readFileSync), /ENOENT/);
+  mkdirSync(absent);
+  assert.throws(() => readWorkflow(absent, readFileSync), /EISDIR/);
+  // NOT VACUOUS: the real path opens, and every assertion above reads it through this helper.
+  assert.match(readWorkflow(WORKFLOW, readFileSync), /^jobs:$/m);
 });
 
 // The version-PR CI trap, asserted on the YAML because it cannot be asserted anywhere else.
@@ -1800,7 +1656,7 @@ test('the workflow reader refuses a line it cannot read, at every level, rather 
 // is a live Version PR, which is exactly what nothing in this repo is allowed to merge. So what is
 // provable here is the wiring, and the wiring is where all three ways to get this wrong live.
 test('release.yml authors the version PR with a credential that is not GITHUB_TOKEN', () => {
-  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const workflow = readWorkflow(WORKFLOW, readFileSync);
   const jobs = parseWorkflowJobs(workflow);
   const EXPECTED = '${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}';
 

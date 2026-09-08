@@ -13,6 +13,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import {
+  allSteps,
+  conditionsOf,
+  decomment,
+  effectivePermissions,
+  NPM_SECRET_REF,
+  optsBackInAfterFailure,
+  parseWorkflow,
+  readWorkflow,
+  STEP_CONDITION_LINE,
+  workflowPermissions,
+} from "./workflow-reader.mjs";
 
 import {
   isRegistrySpecifier,
@@ -1102,56 +1117,78 @@ test("withFetchTimeout returning the raw fetch is only reachable via an explicit
 // slice's 76 new lines there had no assertions at all. That is the one part of this change with a
 // blast radius across all 13 callers, so it is the last part that should be untested.
 
-test("release.yml wires the gate the way the script expects", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const yml = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+/** The workflow this suite reads, as a PATH, so a failure to open it can name what it tried. */
+const WORKFLOW = fileURLToPath(new URL("../.github/workflows/release.yml", import.meta.url));
 
-  // The predicate. A strict superset of the sibling step's, which is observed running on real
-  // releases; `!cancelled()` so a failure in the release step does not skip the installability check.
+/** The install gate's own step, found by the label the workflow gives it. */
+const INSTALL_GATE = "The published package must be installable from the registry";
+
+test("release.yml wires the gate the way the script expects", () => {
+  // READ THROUGH THE SHARED READER, NOT AS TEXT. Every assertion below used to be an `assert.match`
+  // over the whole file, which answers a different question: "somewhere in this file, in some job,
+  // possibly inside a comment, these characters appear". This file's subject is a step in ONE job,
+  // and a workflow this reader cannot parse fails here rather than being matched over.
+  const yml = readWorkflow(WORKFLOW, readFileSync);
+  const workflow = parseWorkflow(yml);
+  const release = workflow.byId.release;
+  assert.ok(release, "release.yml must keep the environment-held publishing job `release`");
+  const gate = release.steps.find((step) => step.label === INSTALL_GATE);
+  assert.ok(gate, `release.yml must keep the install gate step "${INSTALL_GATE}"`);
+
+  // The predicate, PINNED WHOLE. A strict superset of the sibling step's, which is observed running
+  // on real releases; `!cancelled()` so a failure in the release step does not skip the
+  // installability check.
   //
   // THE THIRD CLAUSE IS NOT OPTIONAL AND IS NOT COSMETIC. This gate installs the name and the
   // version FROM THE REGISTRY, and a STAGED version is not resolved by an ordinary install until a
   // maintainer approves it. Pointed at one, the gate would spend its entire 540s deadline budget
   // proving an absence that is expected, then warn. `mode != 'staged'` keeps it aimed at versions
   // the registry has actually been asked to serve.
-  assert.match(
-    yml,
-    /if: \$\{\{ !cancelled\(\) && steps\.changesets\.outputs\.published == 'true' && steps\.publish-floor\.outputs\.mode != 'staged' \}\}/,
+  assert.equal(
+    gate.fields.if,
+    "${{ !cancelled() && steps.changesets.outputs.published == 'true' && steps.publish-floor.outputs.mode != 'staged' }}",
   );
 
   // The tooling path. A reusable workflow runs against the CALLER's checkout, so the script only
-  // exists under the tooling checkout; a bare `scripts/` path would be a caller-side file.
-  assert.match(yml, /node \.cosyte-release-tooling\/scripts\/install-check\.mjs/);
+  // exists under the tooling checkout; a bare `scripts/` path would be a caller-side file. Asserted
+  // on THIS step's body rather than on the file, so a copy of the invocation somewhere else could
+  // not stand in for it.
+  assert.match(gate.body, /node \.cosyte-release-tooling\/scripts\/install-check\.mjs/);
 
-  // The allowance must actually reach the script. Wired but not passed is the org's classic defect.
-  assert.match(yml, /expect-unpublished-deps:/);
-  assert.match(yml, /EXPECT_UNPUBLISHED_DEPS: \$\{\{ inputs\.expect-unpublished-deps \}\}/);
-  assert.match(yml, /--expect-unpublished-deps "\$EXPECT_UNPUBLISHED_DEPS"/);
+  // The allowance must actually reach the script. Wired but not passed is the org's classic defect,
+  // and each half is now read out of the step that has to carry it.
+  assert.equal(gate.env.EXPECT_UNPUBLISHED_DEPS, "${{ inputs.expect-unpublished-deps }}");
+  assert.match(gate.body, /--expect-unpublished-deps "\$EXPECT_UNPUBLISHED_DEPS"/);
 
-  // The outermost bound. Without it a stalled step holds a protected `release` environment.
-  assert.match(yml, /timeout-minutes: 15/);
+  // The outermost bound. Without it a stalled step holds a protected `release` environment. On THIS
+  // step: `timeout-minutes: 15` anywhere in the file satisfied the old text match, including on a
+  // step in the other job.
+  assert.equal(gate.fields["timeout-minutes"], "15");
 
   // The input is OPTIONAL with a default, which is what keeps the other callers working unchanged.
   // ONE GRAMMAR, TWO GATES: the default carries `ci.yml`'s `=<kind>` tag, and what this gate must
   // prove is that the tag changes NOTHING here. Asserted by running the literal from the workflow
   // through this gate's own parser rather than by restating the expected string, so a future edit to
   // either the default or the parser has to keep them in step.
-  const declaredDefault = yml.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
+  //
+  // Read out of the DECOMMENTED text because `on.workflow_call.inputs` sits above `jobs:`, which is
+  // the one region the job reader deliberately does not model; `test/environment-gate.test.mjs` owns
+  // the call contract itself.
+  const preamble = decomment(yml).join("\n");
+  const declaredDefault = preamble.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
   assert.equal(declaredDefault, "@cosyte/fhir=blocked");
   assert.deepEqual(parseAllowance(declaredDefault), ["@cosyte/fhir"]);
 
   // The gate must stay AFTER the publish and release steps: it reports on what actually shipped.
-  assert.ok(
-    yml.indexOf("Publish the GitHub release + dispatch docs rebuild") <
-      yml.indexOf("The published package must be installable from the registry"),
-    "the install gate must run after the release step, not before it",
-  );
+  // A STEP INDEX INSIDE ONE JOB, not a byte offset in a two-job file: `String.indexOf` compares
+  // positions in a file, and two steps in different jobs have no order at all.
+  const ghRelease = release.steps.findIndex((step) => /Publish the GitHub release/.test(step.label));
+  assert.ok(ghRelease >= 0, "the GitHub release step must be findable in `release`, or this proves nothing");
+  assert.ok(ghRelease < gate.index, "the install gate must run after the release step, not before it");
 
   // WHAT THIS WORKFLOW ASKS OF A CALLER'S TOKEN, PINNED. A called workflow's token can only be equal
   // to or more restrictive than its caller's, so every key added here has to be granted in thirteen
   // calling jobs FIRST or GitHub rejects the whole workflow at startup, for all of them at once.
-  // Asserted against the YAML with comments stripped, because the comments discuss the keys at length
-  // and would match otherwise.
   //
   // `actions: read` IS DELIBERATE AND IS THE ONE ADDITION. It is what the release-environment gate at
   // the top of the job reads a caller's protection rules with, it carries the caller-side
@@ -1159,19 +1196,33 @@ test("release.yml wires the gate the way the script expects", async () => {
   // `issues: write` is still refused: it is a write, it buys a notifier rather than a gate, and
   // nobody has decided it is worth thirteen grants. The set is pinned WHOLE rather than by a
   // presence check, so a fourth key cannot arrive without someone reading this comment.
-  const code = yml
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("#"))
-    .join("\n");
-  assert.doesNotMatch(code, /issues:\s*write/);
-  const header = "\npermissions:\n";
-  const declared = [];
-  for (const line of code.slice(code.indexOf(header) + header.length).split("\n")) {
-    const match = /^ {2}([\w-]+): *([a-z]+)/.exec(line);
-    if (!match) break;
-    declared.push(`${match[1]}: ${match[2]}`);
-  }
-  assert.deepEqual(declared, ["contents: write", "id-token: write", "pull-requests: write", "actions: read"]);
+  //
+  // COMMENTS ARE STRIPPED BY THE SHARED READER, not by `startsWith("#")` here. Those are not the
+  // same function: a line whose first non-blank character is `#` INSIDE a `run:` block scalar is
+  // content the runner's shell receives, and deleting it is how a credential planted on such a line
+  // reached the un-approved job with all three suites green.
+  assert.doesNotMatch(preamble, /issues:\s*write/);
+  //
+  // TWO SCOPES, TWO PINS, because they are different sets and neither one covers the other. The
+  // COLUMN-0 block above `jobs:` is what the caller's grant is compared against and what a job that
+  // declares no `permissions:` of its own inherits - deleting a job's block is a one-line edit, and
+  // this repository's own regression evidence already treats it as one. The job's block is what that
+  // job runs with. Asking only for "the permissions in force on the release job" resolves to the
+  // JOB's block on this workflow, because both jobs declare one, so it answers nothing about the
+  // block above: a fifth key could arrive there, and `actions: read` could leave, with every suite
+  // green. A guard that retargets itself reads as coverage, so both scopes are read by name.
+  assert.deepEqual(workflowPermissions(yml), {
+    contents: "write",
+    "id-token": "write",
+    "pull-requests": "write",
+    actions: "read",
+  });
+  assert.deepEqual(effectivePermissions(yml, release), {
+    contents: "write",
+    "id-token": "write",
+    "pull-requests": "write",
+    actions: "read",
+  });
 });
 
 // ── `--ignore-scripts` (founder decision, 2026-08-04) ───────────────────────────────────────────
@@ -1362,43 +1413,35 @@ test("REGRESSION: a real probe child sees none of the job's credentials, on BOTH
 });
 
 /**
- * One job of `release.yml`, sliced by its ID.
+ * A step of one PARSED job, found by its name or by its `id:`.
  *
- * WHY THIS EXISTS, AND IT IS THE WHOLE POINT OF THE ASSERTIONS BELOW. The test below used to read
- * the workflow as `yml.slice(yml.indexOf("\n    steps:"))`: the FIRST `steps:` in the file, which
- * was unambiguous while `release.yml` was one job. It is two jobs now, so that expression silently
- * became "the un-gated `version` job" -- the job that is handed no `NPM_TOKEN`, whose
- * `changesets/action` writes no `~/.npmrc`, and which has no credential for this step to sweep.
- * Every ordering assertion in it went on passing while describing that job. A guard that retargets
- * itself to the harmless job is worse than one that was never written: it reads as coverage.
+ * WHY THIS IS NOT A TEXT SLICE ANY MORE, AND IT IS THE WHOLE POINT OF THE ASSERTIONS BELOW. This
+ * used to read the workflow as `yml.slice(yml.indexOf("\n    steps:"))`: the FIRST `steps:` in the
+ * file, which was unambiguous while `release.yml` was one job. It is two jobs now, so that
+ * expression silently became "the un-gated `version` job" - the job that is handed no `NPM_TOKEN`,
+ * whose `changesets/action` writes no `~/.npmrc`, and which has no credential for this step to
+ * sweep. Every ordering assertion in it went on passing while describing that job. A guard that
+ * retargets itself to the harmless job is worse than one that was never written: it reads as
+ * coverage.
+ *
+ * A slice by job id closed that one. It did not close the class: a text slice answers "absent" about
+ * any construct it does not model, and this file modelled none of them. It now asks the SAME reader
+ * the other two suites ask, so a construct one of them refuses is refused here too and the defect
+ * cannot be moved into the scope only the weakest reader owns.
  */
-function sliceJob(yml, id) {
-  const jobsAt = yml.indexOf("\njobs:\n");
-  assert.ok(jobsAt > 0, "release.yml must have a top-level `jobs:` key");
-  const headers = [...yml.matchAll(/^ {2}([A-Za-z0-9_-]+):$/gm)].filter((m) => m.index > jobsAt);
-  const which = headers.findIndex((m) => m[1] === id);
-  assert.ok(which >= 0, `release.yml must keep a job whose id is \`${id}\``);
-  const end = which + 1 < headers.length ? headers[which + 1].index : yml.length;
-  return yml.slice(headers[which].index, end);
-}
-
-/** A job's steps, in order. Index 0 is the text before the first step and never matches a name. */
-function stepsOf(job) {
-  return job.slice(job.indexOf("\n    steps:")).split(/\n      - (?=\S)/);
-}
+const stepAt = (job, needle) =>
+  job.steps.findIndex((step) => step.label === needle || step.fields.id === needle);
 
 // THE WHOLE SECURITY PROPERTY OF THE REMOVAL STEP IS ITS POSITION, so the position is what is
 // pinned. Nothing else pins where this step sits: `actionlint` checks that the workflow is valid,
 // not that its steps are in the one order that makes this one do anything, so a future edit that
 // moves this step to the end of the job, or drops it, would otherwise ship green. Anchored
 // structurally on the steps array, the way the version-PR wiring is anchored in
-// `test/release-notes.test.mjs`, rather than on text adjacency -- and anchored INSIDE one named
-// job, because "the steps array" stopped identifying a job the moment there were two of them.
-test("release.yml drops the release credentials between the publish and everything that follows", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const yml = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const stepAt = (steps, needle) =>
-    steps.findIndex((s) => s.startsWith(`name: ${needle}`) || s.includes(`\n        id: ${needle}`));
+// `test/release-notes.test.mjs`, rather than on text adjacency, and anchored INSIDE one named job,
+// because "the steps array" stopped identifying a job the moment there were two of them.
+test("release.yml drops the release credentials between the publish and everything that follows", () => {
+  const yml = readWorkflow(WORKFLOW, readFileSync);
+  const workflow = parseWorkflow(yml);
 
   // BOTH JOBS SWEEP, AND BOTH SWEEPS ARE PINNED. `changesets/action` writes `~/.netrc`
   // unconditionally, before its arm switch, in whichever job it runs in, so the version job holds a
@@ -1406,11 +1449,13 @@ test("release.yml drops the release credentials between the publish and everythi
   // holds no npm one. Asserting only the release job here would swap one silently-unguarded job for
   // the other.
   for (const id of ["version", "release"]) {
-    const steps = stepsOf(sliceJob(yml, id));
-    const drop = stepAt(steps, "Drop the release credentials from disk");
-    const changesets = stepAt(steps, "changesets");
-    assert.ok(changesets > 0, `the changesets step of \`${id}\` must be findable, or this proves nothing`);
-    assert.ok(drop > 0, `job \`${id}\` must drop the release credentials from disk`);
+    const job = workflow.byId[id];
+    assert.ok(job, `release.yml must keep a job whose id is \`${id}\``);
+    const steps = job.steps.map((step) => step.body);
+    const drop = stepAt(job, "Drop the release credentials from disk");
+    const changesets = stepAt(job, "changesets");
+    assert.ok(changesets >= 0, `the changesets step of \`${id}\` must be findable, or this proves nothing`);
+    assert.ok(drop >= 0, `job \`${id}\` must drop the release credentials from disk`);
 
     // AFTER the action, because the action's own `git push` is the credential's only consumer, and
     // ADJACENT to it, not merely somewhere after it. What follows the drop differs per job; that it
@@ -1419,7 +1464,13 @@ test("release.yml drops the release credentials between the publish and everythi
 
     // `always()`, so a failed or skipped release step cannot leave the credentials on disk: the
     // install gate below runs under `!cancelled()` and would otherwise still run with them present.
-    assert.match(steps[drop], /^\s*if: \$\{\{ always\(\) \}\}$/m);
+    // Read as the step's CONDITION rather than as a line of its text, so the three spellings of the
+    // key and the two places the value can live are all the same answer here.
+    assert.equal(job.steps[drop].fields.if, "${{ always() }}");
+    assert.ok(
+      optsBackInAfterFailure(job.steps[drop]),
+      `in \`${id}\`, the drop must opt back in after a failure or it never runs on the arm it exists for`,
+    );
     // Both files, in both jobs. The npmrc holds the raw NPM_TOKEN in plaintext on the publish arm,
     // which is the only arm the entry probe runs on at all; in the version job it is expected to be
     // absent, and it is swept anyway, because a step that removes only what it expects to find stops
@@ -1434,26 +1485,24 @@ test("release.yml drops the release credentials between the publish and everythi
   }
 
   // AND THE ORDERING THAT IS ONLY ABOUT THE PUBLISHING JOB, measured INSIDE it. These two steps run
-  // code this org did not write -- the caller's own `pack:docs` command, and the entry probe's
-  // third-party module-init -- and the `~/.npmrc` they must not see holds the raw npm token in
+  // code this org did not write, the caller's own `pack:docs` command and the entry probe's
+  // third-party module-init, and the `~/.npmrc` they must not see holds the raw npm token in
   // plaintext. Both live in the `release` job only, so comparing them against a `drop` resolved
   // anywhere else is how this assertion stopped meaning anything.
-  const release = sliceJob(yml, "release");
-  // NOT VACUOUS, AND PROVABLY THE RIGHT JOB: the slice is the one the caller's environment holds and
-  // the one the npm credential is handed to. If this ever fails, the ordering below is measuring
-  // some other job and the fix is the slice, not the workflow.
-  assert.match(release, /^ {4}environment: release$/m, "the sliced job must be the one in the caller's environment");
-  assert.match(
-    release,
-    /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
-    "the sliced job must be the one holding the npm credential this step exists to remove",
+  const release = workflow.byId.release;
+  // NOT VACUOUS, AND PROVABLY THE RIGHT JOB: it is the one the caller's environment holds and the
+  // one the npm credential is handed to. If this ever fails, the ordering below is measuring some
+  // other job and the fix is the lookup, not the workflow.
+  assert.equal(release.keys.environment, "release", "the job read must be the one in the caller's environment");
+  assert.ok(
+    release.steps.some((step) => step.env.NODE_AUTH_TOKEN === "${{ secrets.NPM_TOKEN }}"),
+    "the job read must be the one holding the npm credential this step exists to remove",
   );
-  const releaseSteps = stepsOf(release);
-  const drop = stepAt(releaseSteps, "Drop the release credentials from disk");
-  const ghRelease = stepAt(releaseSteps, "Publish the GitHub release + dispatch docs rebuild");
-  const installGate = stepAt(releaseSteps, "The published package must be installable from the registry");
-  assert.ok(ghRelease > 0, "the GitHub release step must be findable in `release`, or this proves nothing");
-  assert.ok(installGate > 0, "the install gate must be findable in `release`, or this proves nothing");
+  const drop = stepAt(release, "Drop the release credentials from disk");
+  const ghRelease = stepAt(release, "Publish the GitHub release + dispatch docs rebuild");
+  const installGate = stepAt(release, INSTALL_GATE);
+  assert.ok(ghRelease >= 0, "the GitHub release step must be findable in `release`, or this proves nothing");
+  assert.ok(installGate >= 0, "the install gate must be findable in `release`, or this proves nothing");
   assert.ok(drop < ghRelease, "the drop must precede the caller's pack:docs command");
   assert.ok(drop < installGate, "the drop must precede the post-publish install gate");
 
@@ -1495,4 +1544,125 @@ test("release.yml drops the release credentials between the publish and everythi
         "together, and do not simply update this line.",
     );
   }
+});
+
+// ── THIS SUITE REFUSES WHAT THE OTHER TWO REFUSE, WHICH IS THE POINT OF SHARING A READER ────────
+//
+// A guard is only as strong as the WEAKEST reader that can answer for the construct it guards. This
+// file was that reader: it asked its questions with `assert.match` over the file text and a pair of
+// text slices, so a construct outside anything it modelled came back "absent" rather than refused,
+// and a defect moved into the scope only this suite owned would have been read by nobody. It now
+// asks the SAME `parseWorkflow` `test/environment-gate.test.mjs` and `test/release-notes.test.mjs`
+// ask, so "every suite that reads release.yml refuses this" is a fact about one function rather
+// than three claims that have to be kept in step by hand. Four separate reviews of this workflow
+// found four spellings that were closed in one copy of the reader and open in the next, which is
+// what three copies cost.
+//
+// Proved here, in the suite that was weakest, against workflow text held in the test.
+
+test("this suite refuses an unreadable release.yml rather than reading it as absent", () => {
+  // AT EVERY LEVEL THE WORKFLOW CAN BE ILLEGIBLE. Each of these would otherwise produce an empty
+  // job list or an empty step list, and every assertion above would then pass while asserting
+  // nothing, which is the failure mode a workflow-composition suite exists to make impossible.
+  assert.throws(() => parseWorkflow("name: Release\non:\n  workflow_call:\n"), /no top-level `jobs:` key/);
+  assert.throws(() => parseWorkflow("jobs:\n"), /declares `jobs:` but no job under it/);
+  assert.throws(() => parseWorkflow("jobs:\n  release:\n    steps:\n"), /parsed to zero steps/);
+  assert.throws(
+    () => parseWorkflow("jobs:\n  release:\n    steps:\n      - with:\n          foo: bar\n"),
+    /has neither a name, a uses nor a run/,
+  );
+  assert.throws(() => parseWorkflow("jobs:\n    release:\n"), /sits under `jobs:` but inside no job/);
+  assert.throws(
+    () => parseWorkflow("jobs:\n  release:\n    steps:\n      not-a-step: 1\n"),
+    /sits under `release.steps:` but inside no step/,
+  );
+  // ... and a line at the step-list indent AFTER a step has opened belongs to that step, where it
+  // is refused naming the step by index AND by label, which is what AC1 asks a refusal to carry.
+  assert.throws(
+    () => parseWorkflow("jobs:\n  release:\n    steps:\n      - name: Warm the registry\n        run: y\n      x: 1\n"),
+    /unreadable line in step 0 of job `release`, shallower than this step: "      x: 1" \[step: "Warm the registry"\]/,
+  );
+
+  // AND AT STEP AND JOB SCOPE, in the spellings that reached the un-approved job with this suite
+  // green. `if :` and `"if":` are valid YAML, actionlint typechecks the expression inside each, and
+  // a text slice reports neither as a condition at all.
+  const step = (body) => () => parseWorkflow(`jobs:\n  release:\n    steps:\n      - name: x\n${body}`);
+  assert.throws(step("        if : ${{ always() }}\n"), /unreadable line in step 0 of job `release`/);
+  assert.throws(step('        "if": ${{ always() }}\n'), /unreadable line in step 0 of job `release`/);
+  assert.throws(step("        env: { NODE_AUTH_TOKEN: x }\n"), /a `env:` this parser cannot read/);
+  assert.throws(
+    () => parseWorkflow("jobs:\n  release:\n    environment : release\n    steps:\n      - run: x\n"),
+    /unreadable line in job `release`/,
+  );
+  assert.throws(
+    () => parseWorkflow("jobs:\n  release:\n    env: { NODE_AUTH_TOKEN: x }\n    if: a\n    if: b\n    steps:\n      - run: x\n"),
+    /duplicate key `if` in job `release`/,
+  );
+  assert.throws(
+    step("        if: *always\n        run: y\n"),
+    /is a YAML alias or anchor whose referent this reader does not resolve/,
+  );
+
+  // AND A VALUE THAT LIVES BELOW ITS KEY IS THE VALUE. The install gate's own condition is pinned
+  // whole above; a reader that answered `">-"` for it would satisfy every check that only asks
+  // whether a condition exists, and this file has one of those.
+  const folded = parseWorkflow(
+    "jobs:\n  release:\n    steps:\n      - name: x\n        if: >-\n          ${{ !cancelled() }}\n        run: y\n",
+  ).byId.release.steps[0];
+  assert.equal(folded.fields.if, "${{ !cancelled() }}");
+  assert.ok(optsBackInAfterFailure(folded), "and the opt-back-in classification sees it");
+  assert.match(folded.body, STEP_CONDITION_LINE, "and the text backstop sees the key line");
+
+  // AND THE CREDENTIAL SWEEP THIS FILE'S SUBJECT DEPENDS ON SEES A `#`-FIRST LINE INSIDE A `run:`
+  // BODY. YAML has no comments inside a block scalar, so that line is content, Actions interpolates
+  // `${{ }}` in it, and the runner's shell receives it. A stripper that deleted every `#`-first line
+  // erased it before any sweep read it, which put the npm write credential in the un-approved job
+  // with all three suites green.
+  // AND UNDER EVERY SPELLING OF THE HEADER THAT OPENS ONE, because the stripper has to know a block
+  // was opened before it can leave the body alone, and the indicators come in either order with an
+  // optional comment after them. All four below are the same literal block to YAML; a reader that
+  // modelled the first alone deleted the credential line out of the other three before this suite
+  // read the file, which is this file's own copy of the guarantee, not a restatement of another's.
+  for (const header of ["|", "| # write the npmrc", "|2-", "|-2"]) {
+    const hashLine = parseWorkflow(
+      "jobs:\n  version:\n    steps:\n      - name: Warm the registry cache\n" +
+        `        run: ${header}\n` +
+        "          cat > \"$HOME/.npmrc\" <<EOF\n          # ${{ secrets.NPM_TOKEN }}\n          EOF\n",
+    ).byId.version.steps[0];
+    assert.match(
+      hashLine.body,
+      NPM_SECRET_REF,
+      `under \`run: ${header}\` a \`#\`-first line inside a run body is content, not a comment`,
+    );
+  }
+  // ... and the credential is recognised however Actions' case-insensitive secret name is spelled,
+  // so a sweep in this file cannot be walked past by lower-casing it.
+  assert.match("${{ secrets.npm_token }}", NPM_SECRET_REF, "secret names are case insensitive to Actions");
+  // ... while an ordinary comment ABOVE the step, outside any block scalar, is still stripped, which
+  // is the other half and the one an over-strict reader loses.
+  const commented = parseWorkflow(
+    "jobs:\n  version:\n    steps:\n      # ${{ secrets.NPM_TOKEN }} is discussed here and read nowhere\n" +
+      "      - name: Innocent\n        run: echo ok\n",
+  ).byId.version.steps[0];
+  assert.doesNotMatch(commented.body, NPM_SECRET_REF, "a real comment is still a comment");
+  assert.equal(allSteps(parseWorkflow("jobs:\n  version:\n    steps:\n      - run: x\n")).length, 1);
+  assert.equal(conditionsOf(commented).trim(), "", "a step with no condition spells none");
+});
+
+test("this suite fails naming the path when it cannot open release.yml at all", async () => {
+  const { mkdtempSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  // A suite that cannot open its subject must SAY SO. Skipping, or treating the workflow as the
+  // empty string, turns every assertion in this file into a claim about nothing, and the two tests
+  // above are entirely absence claims.
+  const dir = mkdtempSync(join(tmpdir(), "install-check-workflow-"));
+  const absent = join(dir, "release.yml");
+  assert.throws(() => readWorkflow(absent, readFileSync), new RegExp(`cannot read the workflow at ${absent}`));
+  mkdirSync(absent);
+  assert.throws(() => readWorkflow(absent, readFileSync), new RegExp(`cannot read the workflow at ${absent}`));
+  assert.throws(() => readWorkflow(absent, readFileSync), /EISDIR/);
+  // NOT VACUOUS: the path this suite really reads opens, and the tests above go through this helper.
+  assert.match(readWorkflow(WORKFLOW, readFileSync), /^jobs:$/m);
 });
