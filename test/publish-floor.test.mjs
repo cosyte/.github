@@ -839,7 +839,17 @@ test('the parser still understands release.yml, or every assertion below is vacu
   // drifted slice cannot fake: the slice starts at the publishing job's FIRST step, and every step
   // the assertions below reach for is in the list under the label they use.
   assert.ok(steps.length >= 15, `expected the release job's full step list, parsed ${steps.length}`);
-  assert.match(steps[0].body, /actions\/checkout@/, 'the slice must start at the publishing job, not mid-job');
+  // THE PUBLISHING JOB NOW OPENS WITH A SENTENCE, NOT A CHECKOUT. The step that says which commit
+  // the shared release tooling comes from runs immediately before the checkout that fetches it, at
+  // all four sites in this file, so the first step of this job is that announcement and the second
+  // is the checkout it announces. Both facts together still say the slice started at the top of
+  // `release:` rather than in the middle of it, which is the only thing this canary is for.
+  assert.match(
+    steps[0].body,
+    /TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}/,
+    'the slice must start at the publishing job, not mid-job',
+  );
+  assert.match(steps[1].body, /actions\/checkout@/, 'and the checkout the first step announces is the one below it');
   assert.equal(steps.filter((s) => /publish-floor\.mjs/.test(s.body)).length, 1);
   assert.equal(steps.filter((s) => /changesets\/action@/.test(s.body)).length, 1);
   for (const label of ['Resolve the publish path and prove it clears its floor', 'Publish to npm']) {

@@ -445,7 +445,15 @@ test('the parser still understands release.yml, or every assertion below is vacu
   // written, and the environment split left the PUBLISHING job at 18. The count is joined by the
   // start-of-job check below, which a drifted slice cannot satisfy by accident.
   assert.ok(steps.length >= 15, `expected the release job's full step list, parsed ${steps.length}`);
-  assert.match(steps[0].body, /actions\/checkout@/, 'the slice must start at the publishing job, not mid-job');
+  // The publishing job opens with the step that says which commit the shared release tooling comes
+  // from, and the checkout it announces is the step below it. The pair is what says the slice
+  // started at the top of `release:` rather than in the middle of it.
+  assert.match(
+    steps[0].body,
+    /TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}/,
+    'the slice must start at the publishing job, not mid-job',
+  );
+  assert.match(steps[1].body, /actions\/checkout@/, 'and the checkout the first step announces is the one below it');
   assert.equal(steps.filter((s) => /changesets\/action@/.test(s.body)).length, 1);
   // Two sites, and they are different things: the publish input that SELECTS the staged command,
   // and the step that reports what it staged.

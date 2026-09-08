@@ -527,14 +527,41 @@ test('AC-4: the source\'s consequence sentence is written in one place, and the 
 // AC-5 through AC-9: the guard over what is published here
 // ---------------------------------------------------------------------------
 
+/** The reusables a calling repository names. These six ARE the pipeline thirteen repositories run. */
+const PUBLISHED_REUSABLES = [
+  'ci.yml',
+  'codeql.yml',
+  'drift-check.yml',
+  'nightly-fuzz.yml',
+  'release.yml',
+  'scorecard.yml',
+];
+
+/**
+ * The reusables this repository calls only from INSIDE itself, and which no caller is offered.
+ *
+ * WHY THE DISTINCTION IS DRAWN RATHER THAN LEFT OUT. A `workflow_call` trigger is what a `uses:`
+ * line resolves, so a workflow this repository calls from its own tree has to carry one, and the
+ * lists in this file are about what a CALLER can name and require. Collapsing the two would either
+ * report a self-measurement as part of the published interface, which is the thing
+ * `scripts/reference-publish.mjs` describes to thirteen repositories, or force the measurement to be
+ * written as something it is not. Each entry here is a workflow with no input, no secret, no write
+ * and no checkout, called by a `self-*` workflow in this repository and by nothing else.
+ *
+ * `workflow-sha-probe.yml` reads `${{ job.workflow_sha }}` on a real runner and fails the run unless
+ * it is a commit SHA, because that property is only ever a string until a runner evaluates it and
+ * this repository once shipped an expression that evaluated to nothing at all.
+ */
+const SELF_CALLED_REUSABLES = ['workflow-sha-probe.yml'];
+
+/** Every workflow offering `workflow_call`, published or not, in the order `examine` returns them. */
+const EVERY_REUSABLE = [...PUBLISHED_REUSABLES, ...SELF_CALLED_REUSABLES].sort();
+
 test('AC-5: every job in a published reusable that depends on another job survives its failure', () => {
   const result = examine(join(REPO, WORKFLOWS));
   assertExamination(result, WORKFLOWS);
   // Named, so this criterion cannot be satisfied by an examination that quietly read fewer files.
-  assert.deepEqual(
-    result.reusables.map((flow) => flow.name),
-    ['ci.yml', 'codeql.yml', 'drift-check.yml', 'nightly-fuzz.yml', 'release.yml', 'scorecard.yml'],
-  );
+  assert.deepEqual(result.reusables.map((flow) => flow.name), EVERY_REUSABLE);
 });
 
 test('AC-5: the rule accepts exactly the conditions that run when the dependency fails', () => {
@@ -737,15 +764,30 @@ const PUBLISHED_JOB_IDS = {
   'scorecard.yml': ['analysis'],
 };
 
+/**
+ * The job ids of the reusables this repository calls only from inside itself.
+ *
+ * These are check-run contexts of THIS repository and of no other, so an addition here reaches
+ * nobody's ruleset. They are pinned all the same: a job that vanishes from a self-called reusable is
+ * a measurement that stopped being taken, and the run stays green either way.
+ */
+const SELF_CALLED_JOB_IDS = {
+  'workflow-sha-probe.yml': ['probe'],
+};
+
+/** Every workflow offering `workflow_call` and its job ids, published or self-called. */
+const REUSABLE_JOB_IDS = { ...PUBLISHED_JOB_IDS, ...SELF_CALLED_JOB_IDS };
+
 /** Every workflow file and its job ids, at the pin: the whole context surface this repository emits. */
 const EVERY_JOB_ID = {
-  ...PUBLISHED_JOB_IDS,
+  ...REUSABLE_JOB_IDS,
   'no-emdash.yml': ['no-emdash', 'no-emdash-messages'],
   'org-defaults-coverage.yml': ['org-defaults-coverage'],
   'publish-reference.yml': ['publish-reference'],
   'self-check.yml': ['actionlint', 'scripts'],
   'self-codeql.yml': ['codeql'],
   'self-scorecard.yml': ['scorecard'],
+  'self-workflow-sha-probe.yml': ['workflow-sha'],
 };
 
 test('AC-10: every job id in every published reusable is unchanged from the pin', () => {
@@ -755,9 +797,17 @@ test('AC-10: every job id in every published reusable is unchanged from the pin'
   for (const flow of result.reusables) found[flow.name] = keysOf(flow.jobs);
   assert.deepEqual(
     found,
-    PUBLISHED_JOB_IDS,
-    'a job id in a published reusable moved. A caller ruleset naming `<caller job>/<inner job>` is ' +
+    REUSABLE_JOB_IDS,
+    'a job id in a reusable moved. A caller ruleset naming `<caller job>/<inner job>` is ' +
       'detached by that with no error, on thirteen repositories, and no re-run undoes it.',
+  );
+  // ... AND THE PUBLISHED HALF ON ITS OWN, so a caller-facing id cannot move behind the wider
+  // comparison above by being traded for an entry in the self-called half. This is the assertion
+  // the thirteen repositories depend on; the one above is the whole surface.
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(found).filter(([name]) => PUBLISHED_REUSABLES.includes(name))),
+    PUBLISHED_JOB_IDS,
+    'a job id a calling repository can require moved, or a published reusable stopped being one',
   );
 });
 
@@ -765,9 +815,14 @@ test('AC-11: the set of workflows offering `workflow_call` is unchanged from the
   const result = examine(join(REPO, WORKFLOWS));
   assert.deepEqual(
     result.reusables.map((flow) => flow.name),
-    Object.keys(PUBLISHED_JOB_IDS).sort(),
+    Object.keys(REUSABLE_JOB_IDS).sort(),
     'a workflow gained or lost `workflow_call`, which changes what a caller can name',
   );
+  // The two halves are named in two places in this file, and they have to agree or one of them is
+  // describing a tree that is not there.
+  assert.deepEqual(Object.keys(REUSABLE_JOB_IDS).sort(), EVERY_REUSABLE);
+  assert.deepEqual(Object.keys(SELF_CALLED_JOB_IDS).sort(), SELF_CALLED_REUSABLES.slice().sort());
+  assert.deepEqual(Object.keys(PUBLISHED_JOB_IDS).sort(), PUBLISHED_REUSABLES.slice().sort());
 });
 
 test('AC-11: no new check-run context is introduced anywhere in this repository', () => {

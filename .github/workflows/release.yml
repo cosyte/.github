@@ -397,9 +397,29 @@ jobs:
       # THE GATE RUNS FIRST, AND WHAT IS AHEAD OF IT IS ONLY THIS REPO'S OWN SCRIPT ARRIVING.
       #
       # A reusable workflow runs against the CALLER's checkout, so `scripts/` is not on disk until it
-      # is fetched, and the gate is one of those scripts. `job_workflow_sha` is the commit of THIS
+      # is fetched, and the gate is one of those scripts. `job.workflow_sha` is the commit of THIS
       # workflow file, so the script can never drift from the YAML that calls it even though every
       # caller pins `@main`.
+      #
+      # ▶ THE SPELLING IS `job.workflow_sha`, AND THE ONE THIS FILE SHIPPED WITH RESOLVED TO NOTHING.
+      #   All four of these checkouts read `${{ github.job_workflow_sha }}`, which is not a property
+      #   of the `github` context at all: the contexts reference gives that context
+      #   `github.workflow_sha` and `github.workflow_ref`, both of which describe the CALLER's
+      #   workflow file, and puts the identity of the file that defines a CALLED job on the `job`
+      #   context (`job.workflow_sha`, `job.workflow_repository`, `job.workflow_ref`,
+      #   `job.workflow_file_path`). An unknown property is not an expression error, it is `''`, and
+      #   an empty `ref:` is not an error for `actions/checkout` either: it resolves the provider's
+      #   DEFAULT BRANCH. So for every one of the thirteen callers, on a path that runs every day,
+      #   the gate scripts came from whatever `main` held mid-run while the sentence above claimed
+      #   otherwise, and nothing anywhere was red. The same expression in the raw-URL delivery in
+      #   `ci.yml` was fatal instead of silent, which is the only reason it was ever found.
+      #
+      # ▶ AND THE RUN NOW SAYS WHICH COMMIT IT RESOLVED, BEFORE IT RESOLVES IT. The step above each
+      #   of these four checkouts echoes the ref, and announces the fall back to the provider's
+      #   default branch when the property is empty, which is what it is on a platform without the
+      #   `job.workflow_*` properties. The fallback is not a swallowed failure and not a new
+      #   behaviour: it is the behaviour the empty value has been producing here all along, said out
+      #   loud. `test/workflow-sha.test.mjs` asserts the pair at every one of the four sites.
       #
       # ▶ WHY THIS CHECKOUT HAPPENS TWICE, HERE AND AGAIN BELOW. `actions/checkout` at the workspace
       #   ROOT deletes the CONTENTS of that directory whenever it is not already the repository being
@@ -409,11 +429,23 @@ jobs:
       #   the price of running the gate before the caller's tree exists, and that ordering is the
       #   whole point of the gate. Deleting either one silently changes what the gate covers, which is
       #   why `test/environment-gate.test.mjs` asserts the order rather than trusting this comment.
+      - name: Say which commit the release tooling comes from
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "release tooling: ref ${ref}, from cosyte/.github"
       - name: Check out the shared release tooling (for the protection gate)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cosyte/.github
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .cosyte-release-tooling
           persist-credentials: false
       # THE GATE, AND IT IS THE HUMAN GATE ON npm ENFORCED RATHER THAN ASSERTED. It reads the CALLING
@@ -496,13 +528,27 @@ jobs:
       # The shared release tooling, RESTORED. The step above fetched it once already, for the gate;
       # the caller checkout between the two deleted it, because `actions/checkout` clears a workspace
       # root that is not already the repository it is about to clone. Same repository, same
-      # `job_workflow_sha`, so every script this job runs comes from one commit of this file's own
+      # `job.workflow_sha`, so every script this job runs comes from one commit of this file's own
       # tree and cannot drift from the YAML that calls it, even though every caller pins `@main`.
+      # The ref is announced first here too: the two checkouts in this job must be provably the same
+      # commit, and a log that names it once cannot show that.
+      - name: Say which commit the release tooling comes from
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "release tooling: ref ${ref}, from cosyte/.github"
       - name: Check out the shared release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cosyte/.github
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .cosyte-release-tooling
           persist-credentials: false
       # changesets/action stages the whole tree (`git add .`) when it opens the "Version Packages"
@@ -826,13 +872,29 @@ jobs:
     steps:
       # The tooling arrives first here as well, and for the same reason: a reusable workflow runs
       # against the CALLER's checkout, so `scripts/` is not on disk until it is fetched.
-      # `job_workflow_sha` is the commit of THIS workflow file, so every script this job runs comes
-      # from one commit of this file's own tree even though every caller pins `@main`.
+      # `job.workflow_sha` is the commit of THIS workflow file, so every script this job runs comes
+      # from one commit of this file's own tree even though every caller pins `@main`. This is the
+      # credentialed half of the pipeline, so which commit the gate scripts came from is the fact
+      # that decides what stood between a merge and npm: the step below says it before the checkout
+      # rather than leaving it to be inferred from a green run. The version job's header owns the
+      # whole account of the expression this file shipped with and what it resolved to.
+      - name: Say which commit the release tooling comes from
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "release tooling: ref ${ref}, from cosyte/.github"
       - name: Check out the shared release tooling (for the release-notes gate)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cosyte/.github
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .cosyte-release-tooling
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -845,12 +907,26 @@ jobs:
           # the API, and the tag is created by `gh release create --target` below.
           persist-credentials: false
       # The tooling, RESTORED: the caller checkout above deleted it, because `actions/checkout`
-      # clears a workspace root that is not already the repository it is about to clone.
+      # clears a workspace root that is not already the repository it is about to clone. Announced
+      # again, for the reason the version job's second checkout is: two checkouts that must be the
+      # same commit are not shown to be by a log that names it once.
+      - name: Say which commit the release tooling comes from
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "release tooling: ref ${ref}, from cosyte/.github"
       - name: Check out the shared release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cosyte/.github
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .cosyte-release-tooling
           persist-credentials: false
       # changesets/action stages the whole tree (`git add .`) on its version arm, so the tooling

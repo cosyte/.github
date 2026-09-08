@@ -1,0 +1,47 @@
+name: Self workflow SHA probe
+
+# This repository running its OWN `workflow-sha-probe.yml` against its own commit.
+#
+# WHY THIS FILE EXISTS. `workflow-sha-probe.yml` declares `on: workflow_call` and nothing else, so
+# by itself it never runs. This is the thin caller that starts it, and it is deliberately the same
+# shape `.github/workflows/self-codeql.yml` is: one job, no inputs, no condition, calling a reusable
+# of this repository through the same-repository form.
+#
+# ▶ THE `uses:` LINE IS `./.github/workflows/workflow-sha-probe.yml`, WITH NO `@ref`, AND THAT IS
+#   LOAD-BEARING TWICE OVER. GitHub resolves the same-repository form from THE COMMIT UNDER TEST, so
+#   a pull request is probed with the probe definition that pull request itself proposes. And it is
+#   the form that makes the measurement mean anything: `job.workflow_sha` is the commit of the
+#   workflow file that defines the running job, so the value this probe prints is the commit of the
+#   proposed `workflow-sha-probe.yml`, resolved by the same machinery that resolves
+#   `.github/workflows/release.yml` for a caller. A cross-repository reference naming a branch would
+#   probe whatever that branch held instead. `test/workflow-sha-probe.test.mjs` refuses that form.
+#
+# ▶ IT RUNS ON EVERY PULL REQUEST AND EVERY PUSH TO THE DEFAULT BRANCH, UNCONDITIONALLY. No
+#   job-level `if:`, no `paths:` filter, no matrix. A job skipped by a condition concludes `skipped`
+#   and a required context counts that as success, and a `paths:` filter would skip exactly the pull
+#   requests that change something else and break the resolution by removal. Either way the answer
+#   would be a green check over a property nobody read, which is the outcome the whole probe exists
+#   to end.
+#
+# ▶ WHAT THIS FILE DOES NOT DO: prove that a CALLING repository sees the same value. It cannot;
+#   thirteen callers live in thirteen other repositories and this one has no route to them. What it
+#   proves is that the property is not empty for a job defined by a reusable workflow of this
+#   repository, which is the fact that was assumed and wrong.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-sha:
+    permissions:
+      # Exactly what `workflow-sha-probe.yml`'s `probe` job declares. A called workflow can only
+      # downgrade the caller's token, never escalate it, so anything it declares has to be granted
+      # here. `test/workflow-sha-probe.test.mjs` reads both files and asserts this.
+      contents: read
+    uses: ./.github/workflows/workflow-sha-probe.yml
