@@ -1010,6 +1010,132 @@ test('a key is never handed back holding a block indicator, or an empty string, 
     () => step('        run: |\n'),
     /`run:` in step 0 of job `release` opens a `\|` block scalar with no body/,
   );
+
+  // ▶ AND THE PERMISSIONS READ IS WALKED TOO, because it is a reader by the same definition as the
+  //   rest of this module and it answers the one ABSENCE claim in this file that a truncated read
+  //   turns into a grant. Every value it returns for the delivered workflow first, at both scopes.
+  for (const job of workflow.jobs) {
+    for (const [key, value] of Object.entries(effectivePermissions(readWorkflow(WORKFLOW, readFileSync), job))) {
+      assert.doesNotMatch(
+        value,
+        indicator,
+        `job \`${job.id}\`'s effective \`${key}:\` reads back as ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  // ... and where it bites, which the delivered file cannot show because it writes neither shape.
+  const perms = (preamble) => {
+    const text = `${preamble}jobs:\n  version:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`;
+    return effectivePermissions(text, parseWorkflow(text).byId.version);
+  };
+  assert.throws(
+    () => perms('permissions:\n  contents: >-\n    write\n  actions: read\n'),
+    /`contents:` inside the workflow-level `permissions:` in force on job `version` cannot be resolved/,
+    'a folded permission value must refuse, not read back as the ">-" that introduced it',
+  );
+  assert.throws(
+    () => perms('permissions:\n  contents:\n    write\n  actions: read\n'),
+    /`contents:` inside the workflow-level `permissions:` in force on job `version` cannot be resolved/,
+    'a permission whose value lives below the key must refuse, not read back as the empty string',
+  );
+});
+
+/**
+ * The permissions read, given the refusal property the rest of this module has.
+ *
+ * WHY IT IS ITS OWN BATTERY RATHER THAN A LINE IN THE ONE ABOVE. This reader answers an ABSENCE
+ * claim - the pinned map further down this file says `id-token: write` is deliberately NOT in force
+ * on the un-approved job - and an absence claim fails in the opposite direction from everything
+ * else here: a read that stops early does not report an unreadable line, it reports FEWER
+ * PERMISSIONS THAN ARE GRANTED, and the pin it is handed then matches exactly. A blank line inside
+ * the block is enough, and a blank line inside a block mapping is legal YAML.
+ *
+ * So each class is asserted twice over: the construct refuses NAMING THE JOB, and the legal
+ * neighbour of that construct is READ. The second half is not decoration. Thirteen repositories pin
+ * this workflow at `@main`, and a permissions reader that refused a blank line, or a regrouped
+ * block, would turn a harmless edit into thirteen red releases - which is the failure this
+ * repository is most likely to make while fixing the one above.
+ */
+test('the permissions in force on a job are read whole, or refused naming the job - never truncated', () => {
+  const jobs = 'jobs:\n  version:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n';
+  const perms = (preamble) => {
+    const text = `${preamble}${jobs}`;
+    return effectivePermissions(text, parseWorkflow(text).byId.version);
+  };
+  const GRANTED = { contents: 'write', 'pull-requests': 'write', actions: 'read', 'id-token': 'write' };
+
+  // ── READ, and read WHOLE. Each of these is legal YAML that grants four permissions, and each used
+  //    to come back holding three, with the fourth - the publish-signing token - reported absent.
+  assert.deepEqual(
+    perms('permissions:\n  contents: write\n  pull-requests: write\n  actions: read\n  id-token: write\n'),
+    GRANTED,
+    'the ordinary block is read',
+  );
+  assert.deepEqual(
+    perms('permissions:\n  contents: write\n  pull-requests: write\n  actions: read\n\n  id-token: write\n\n'),
+    GRANTED,
+    'a BLANK LINE inside the block is legal YAML that means nothing: it must not end the read',
+  );
+  assert.deepEqual(
+    perms('permissions:\n  contents: write # tags\n  pull-requests: write\n  actions: read\n  id-token: write # provenance\n'),
+    GRANTED,
+    'trailing comments are stripped from the values, not treated as the end of the block',
+  );
+  assert.deepEqual(
+    perms('permissions:\n  contents: write\n  pull-requests: write\n  actions: read\n\njobs-ish: no\n'),
+    { contents: 'write', 'pull-requests': 'write', actions: 'read' },
+    'a key at column 0 is what closes the block, and it closes it without refusing',
+  );
+  assert.equal(perms(''), null, 'a workflow with no `permissions:` key at all has none in force, and says so');
+
+  // ── REFUSED, naming the job, rather than reported absent. `[\w-]+` is the subset; every spelling
+  //    below is outside it and legal to Actions, so `break` turned each into "no more permissions".
+  assert.throws(
+    () => perms('permissions:\n  contents: write\n  "id-token": write\n'),
+    /unreadable line inside the workflow-level `permissions:` in force on job `version`: "  \\"id-token\\": write"/,
+    'a quoted key is a key this reader cannot read, not the end of the block',
+  );
+  assert.throws(
+    () => perms('permissions:\n  contents: write\n   id-token: write\n'),
+    /unreadable line inside the workflow-level `permissions:` in force on job `version`/,
+    'a child at three spaces is outside the declared subset and refuses rather than truncating',
+  );
+  assert.throws(
+    () => perms('permissions:\n  contents: write\n  contents: read\n'),
+    /duplicate key `contents` inside the workflow-level `permissions:` in force on job `version`/,
+  );
+  assert.throws(
+    () => perms('permissions:\n  contents: *defaults\n'),
+    /`contents:` inside the workflow-level `permissions:` in force on job `version` cannot be resolved/,
+  );
+  assert.throws(
+    () => perms('permissions:\n  <<: *defaults\n  contents: write\n'),
+    /`<<:` inside the workflow-level `permissions:` in force on job `version` is a merge key/,
+  );
+
+  // ── AND A `permissions:` KEY THAT IS NOT A BLOCK IS NOT AN ABSENT ONE, at either scope. Both of
+  //    these say something specific about what the job may do, and both used to be answered by
+  //    handing back some other job's permissions or none at all.
+  assert.throws(
+    () => perms('permissions: read-all\n'),
+    /the workflow-level `permissions:` in force on job `version` is "permissions: read-all" rather than a block/,
+  );
+  const jobLevel = (spelling) => {
+    const text = `permissions:\n  contents: write\njobs:\n  version:\n    permissions: ${spelling}\n    steps:\n      - run: x\n`;
+    return effectivePermissions(text, parseWorkflow(text).byId.version);
+  };
+  assert.throws(
+    () => jobLevel('read-all'),
+    /`permissions:` in job `version` is "read-all" rather than a block this reader reads/,
+    "a job's own `permissions: read-all` must never fall through to the workflow's block",
+  );
+  assert.throws(() => jobLevel('{}'), /`permissions:` in job `version` is "\{\}" rather than a block this reader reads/);
+  // ... while the job block this workflow actually writes still wins over the workflow's, which is
+  //     the behaviour every assertion below depends on.
+  const own =
+    'permissions:\n  contents: write\n  id-token: write\njobs:\n  version:\n' +
+    '    permissions:\n      contents: read\n    steps:\n      - run: x\n';
+  assert.deepEqual(effectivePermissions(own, parseWorkflow(own).byId.version), { contents: 'read' });
 });
 
 /**

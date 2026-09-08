@@ -21,6 +21,9 @@
 //   workflow scope  a top-level `jobs:` key at column 0; `permissions:` and `env:` blocks whose
 //                   children sit at two spaces; `env:` additionally as a one-line flow mapping and
 //                   under a quoted key. Everything else above `jobs:` is read as TEXT, never parsed.
+//                   Those two blocks are closed by the next key at column 0 and by NOTHING ELSE: a
+//                   blank line inside a block mapping is legal YAML that means nothing, and a reader
+//                   that stopped at one reported every key below it absent.
 //   job scope       `  <id>:` at two spaces; job keys at four; the children of a key that opens a
 //                   mapping at six. A job key whose value is a block or folded indicator, an alias,
 //                   an anchor or a merge key is REFUSED, not read.
@@ -554,18 +557,73 @@ export function allSteps(workflow) {
   return workflow.jobs.flatMap((job) => job.steps);
 }
 
-/** The permissions in force on a job: its own block if it has one, else the workflow's. */
+/**
+ * The permissions in force on a job: its own block if it has one, else the workflow's.
+ *
+ * IT ANSWERS AN ABSENCE CLAIM, so every way of ending the read early is a way of granting a
+ * permission nobody asked for. `id-token: write` is npm provenance and is deliberately absent from
+ * the un-approved half of this workflow; a suite pins the map WHOLE, and a read that stops before
+ * `id-token:` hands that pin the exact map it expects while the job really does carry the
+ * publish-signing token. So a line inside the block that this reader cannot read is a REFUSAL naming
+ * the job, never the end of the block, and never a key reported absent.
+ *
+ * WHAT ENDS THE BLOCK IS A KEY AT COLUMN 0, AND NOTHING ELSE. A blank line inside a block mapping is
+ * legal YAML that means nothing, so it is stepped over rather than refused - refusing it would turn
+ * a legal, harmless regrouping of four permissions into thirteen callers' red releases, and the
+ * workflow-level `env:` read below already draws the line in the same place for the same reason.
+ *
+ * AND A PERMISSIONS KEY THAT IS NOT A BLOCK IS NOT AN ABSENT ONE. `permissions: read-all` at either
+ * scope, or a job's `permissions: {}`, says something specific about the job in front of us and is
+ * outside the subset this reader models. Falling through to the workflow's block for it, or
+ * answering `null`, reports a permission set that is not the one in force. Only a workflow with no
+ * `permissions:` key at all answers `null`, because that absence is real.
+ */
 export function effectivePermissions(text, job) {
   if (job.blocks.permissions) return job.blocks.permissions;
+  if (job.keys.permissions !== undefined) {
+    throw new Error(
+      `parse failure: \`permissions:\` in job \`${job.id}\` is ` +
+        `${JSON.stringify(job.raw.permissions ?? job.keys.permissions)} rather than a block this reader ` +
+        'reads, so the permissions in force on that job cannot be resolved',
+    );
+  }
   const lines = decomment(text);
-  const at = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  const at = lines.findIndex((line) => /^["']?permissions["']?[ \t]*:/.test(line));
   if (at < 0) return null;
+  const where = `the workflow-level \`permissions:\` in force on job \`${job.id}\``;
+  if (!/^permissions:[ \t]*$/.test(lines[at])) {
+    throw new Error(
+      `parse failure: ${where} is ${JSON.stringify(lines[at])} rather than a block this reader reads, ` +
+        'so the permissions in force on that job cannot be resolved',
+    );
+  }
   /** @type {Record<string, string>} */
   const out = {};
   for (const line of lines.slice(at + 1)) {
+    if (line.trim() === '') continue; // a blank line inside a block mapping does not close it
+    if (/^\S/.test(line)) break; // a new top-level key does
+    if (MERGE_KEY.test(line)) {
+      throw new Error(
+        `parse failure: \`<<:\` inside ${where} is a merge key whose referent this reader does not resolve`,
+      );
+    }
     const match = /^ {2}([\w-]+):\s?(.*)$/.exec(line);
-    if (!match) break;
-    out[match[1]] = stripTrailingComment(match[2]);
+    if (!match) {
+      throw new Error(`parse failure: unreadable line inside ${where}: ${JSON.stringify(line)}`);
+    }
+    const value = stripTrailingComment(match[2]);
+    if (Object.hasOwn(out, match[1])) {
+      throw new Error(
+        `parse failure: duplicate key \`${match[1]}\` inside ${where}, ` +
+          'which cannot be resolved to a single value',
+      );
+    }
+    if (ALIAS_OR_ANCHOR.test(value) || VALUE_LIVES_BELOW.test(value)) {
+      throw new Error(
+        `parse failure: \`${match[1]}:\` inside ${where} cannot be resolved to a single value`,
+      );
+    }
+    out[match[1]] = value;
   }
   return out;
 }
@@ -592,8 +650,14 @@ export function workflowEnv(text) {
 
   // FLOW MAPPING FIRST: everything after the colon on the key's own line. `env: { A: b, C: d }` is
   // the whole block, so there is no indented body below it to walk.
-  const inline = /^(?:env|"env"|'env'):\s*(\S.*)$/.exec(lines[at]);
-  if (inline) {
+  //
+  // A COMMENT IS NOT A VALUE, and `\S` matches `#`. `env: # the environment both jobs inherit` is the
+  // BLOCK spelling with an ordinary trailing comment on its key line, which is how every other key in
+  // this workflow is written; taken for a one-line flow mapping it hands the pair reader a comment,
+  // which contains no pairs, and the answer comes back "no variables" about a block full of them.
+  // That answer is the one an absence claim about the npm write credential must never be handed.
+  const inline = /^(?:env|"env"|'env'):[ \t]*(\S.*)$/.exec(lines[at]);
+  if (inline && !inline[1].startsWith('#')) {
     // ... unless what follows the colon is a block-scalar header rather than a mapping, in which
     // case the value is on the lines BELOW and the pair reader would come back empty about a block
     // that has a body. Refused rather than read, at this scope for the same reason as at job scope:
