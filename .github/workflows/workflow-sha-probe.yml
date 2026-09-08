@@ -1,0 +1,84 @@
+name: Workflow SHA probe
+
+# THE ONE THING NO TEST IN THIS REPOSITORY CAN DECIDE: what `${{ job.workflow_sha }}` is worth on a
+# runner.
+#
+# Every other assertion about it compares strings. `test/ci-docs-content-delivery.test.mjs` extracts
+# the delivery script and runs it, `test/workflow-sha.test.mjs` reads every checkout that resolves a
+# ref from it, and neither of them can tell a property that resolves to a commit from one that does
+# not exist: an expression is text until GitHub evaluates it, and an unknown property is not an
+# error, it is the empty string. That is exactly how this org shipped `github.job_workflow_sha` to a
+# caller with a full green repository test suite behind it, and the first opted-in caller died four
+# times on a URL with no ref in it before anybody read the value.
+#
+# So this workflow reads the property on a GitHub-hosted runner, prints what it got, and FAILS THE
+# RUN unless it is a 40 character lowercase hexadecimal commit SHA. An empty string fails. The
+# literal `main` fails. A short SHA fails. There is nothing here to interpret afterwards.
+#
+# ▶ IT HAS TO BE A REUSABLE WORKFLOW, AND THAT IS THE WHOLE DESIGN. `job.workflow_sha` is "the
+#   commit SHA of the workflow file that defines the current job", which is a fact about a CALLED
+#   job: it is the property the `github` context does not carry, and reading it from a job defined
+#   in the workflow that was triggered would measure a different thing than the four release
+#   checkouts and the docs-content delivery read. `.github/workflows/self-workflow-sha-probe.yml` is
+#   the thin caller, and it names this file through the same-repository `uses:` form, with no `@ref`,
+#   so a pull request probes the definition that pull request itself proposes.
+#
+# ▶ IT IS NOT OFFERED TO A CALLING REPOSITORY, and that is why its header carries no `uses:` example
+#   and no published reference. The six reusables in this repository are the pipeline thirteen
+#   repositories run; this one is a measurement this repository takes of itself. It declares
+#   `workflow_call` because that is the only trigger a `uses:` line can resolve, it takes no input,
+#   it is handed no secret, it needs no write anywhere, and it checks nothing out.
+#
+# ▶ NO `continue-on-error`, NO `|| true`, NO TRAILING `exit 0`, AND NO MATRIX. A probe that cannot
+#   red the run measures nothing, and a matrix built from a value that can be empty produces zero
+#   jobs, which report as a SATISFIED context: a green check over nothing measured is the same false
+#   green in a different costume. `test/workflow-sha-probe.test.mjs` refuses each of those here.
+#
+# ▶ THE SHAPE CHECK IS `case` AND A LENGTH, NOT A `grep` PATTERN, AND THAT IS A MEASURED CHOICE.
+#   `grep -Eq '^[0-9a-f]{40}$'` reads its input as LINES, so a value with a trailing newline in it
+#   matches: the anchors bind to the line, not to the string. That is precisely the class of near
+#   miss this probe exists to catch, so it would have accepted one. `case` matches the whole string
+#   and `${#ref}` counts the whole string, and the character class is written out rather than as a
+#   range because a range is a collation question and this one is not.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      # Nothing is checked out, fetched or uploaded. `contents: read` is the floor a caller has to
+      # grant for this file to be resolved at all, and it is the whole of what this job asks for.
+      contents: read
+    steps:
+      # NO `if:` ON THIS STEP AND NONE ON THE JOB. A step or a job skipped by a conditional concludes
+      # `skipped`, and a required context counts a skip as success, so a probe behind a condition
+      # reports that the property resolved on a run where nothing read it.
+      - name: The ref property every tooling checkout reads must be a real commit SHA
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          echo "workflow sha probe: job.workflow_sha resolved to '${ref}'"
+          if [ -z "${ref}" ]; then
+            echo "workflow sha probe FAILED: job.workflow_sha resolved to the empty string, which is the value that sent a caller a fetch with no ref in it" >&2
+            exit 1
+          fi
+          shaped=yes
+          case "${ref}" in
+            *[!0123456789abcdef]*) shaped=no ;;
+          esac
+          if [ "${#ref}" -ne 40 ]; then
+            shaped=no
+          fi
+          if [ "${shaped}" != yes ]; then
+            echo "workflow sha probe FAILED: job.workflow_sha resolved to '${ref}', which is not a 40 character lowercase hexadecimal commit SHA" >&2
+            exit 1
+          fi
+          echo "workflow sha probe: job.workflow_sha is a 40 character commit SHA, so every ref and every URL built from it names a real commit"

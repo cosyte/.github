@@ -232,6 +232,58 @@ either step. Once the checker is on disk the job's docs-content outcome is the c
 status and nothing else. The controls are in `test/ci-docs-content-delivery.test.mjs`, which runs
 the step's own script against a stubbed `curl`, one case per failure mode.
 
+### The same expression was in `release.yml` four more times, and there it was silent
+
+**`ci.yml` was the half that failed loudly, and it was not the half with the widest blast radius.**
+`release.yml` checked `cosyte/.github` out at `${{ github.job_workflow_sha }}` at **four** sites:
+twice in the `version` job and twice in the `release` job, because `actions/checkout` at the
+workspace root clears that directory, so the tooling has to be fetched again after the caller's tree
+lands. An empty `ref:` is not an error for `actions/checkout`; it resolves the provider's default
+branch. So the release environment gate, the release-notes gate, the changelog gate and the publish
+floor were all running from whatever `main` held mid-run, on thirteen repositories, on a path that
+runs every day, while the prose directly above each checkout said they came from the commit of this
+workflow file. Nothing was ever red. All four now read `${{ job.workflow_sha }}`, which is the one
+property the contexts reference defines for a called job, and the same one the docs-content delivery
+reads.
+
+**Each of the four is announced before it happens.** A step immediately above each checkout prints
+`release tooling: ref <sha>, from cosyte/.github`, and when the property is empty it prints
+`release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch`
+first. The fallback is not a swallowed failure and not new behaviour: it is exactly what the empty
+value has been producing here all along, said out loud, and the run proceeds on that default branch
+rather than refusing. `job.workflow_sha` is documented as unavailable on GitHub Enterprise Server,
+which is the platform case that line has to stay legible for. `test/workflow-sha.test.mjs` asserts
+the ref and the announcement at every one of the four, refuses the old expression on every
+executable line of every file under `.github/workflows/`, and pins the job ids of both published
+workflows, because a job id is the check-run context a caller's ruleset names.
+
+### A probe that asks a runner, because no test here can answer this
+
+**Every offline assertion about `job.workflow_sha` compares strings.** An expression is text until
+GitHub evaluates it, and an unknown context property is not an error, it is the empty string. A full
+green suite in this repository is exactly what was true while `github.job_workflow_sha` was shipping
+that empty string to a caller. So `.github/workflows/workflow-sha-probe.yml` reads the property on a
+GitHub-hosted runner, prints what it got, and **fails the run** unless it is a 40 character lowercase
+hexadecimal commit SHA: the empty string fails, the literal `main` fails, a short SHA fails.
+`.github/workflows/self-workflow-sha-probe.yml` is the thin caller that starts it, wired the way
+`self-codeql.yml` is: `uses: ./.github/workflows/workflow-sha-probe.yml`, the same-repository form
+with no `@ref`, which GitHub resolves from the commit under test, so a pull request is probed with
+the definition that pull request itself proposes. It runs on every pull request and every push to
+the default branch, from a job with no condition, no dependency and no matrix, because a skipped job
+and a matrix of zero jobs both report as a **satisfied** context.
+
+**What it does not prove**, stated so it is not read as more: it says nothing about what a CALLING
+repository sees. Thirteen callers live in thirteen other repositories and this one has no route to
+them. What it proves is that the property resolves to a real commit for a job defined by a reusable
+workflow of this repository, which is the fact that was assumed and wrong.
+
+**It is a `workflow_call` workflow and it is not one of the six.** The trigger is there because that
+is the only kind of file a `uses:` line resolves; it takes no input, is handed no secret, checks
+nothing out and asks for `contents: read`. The published reference tracks the six reusables a caller
+names plus everything under `scripts/`, and this file is in neither set, so changing it mints
+nothing and demands nothing of anybody. `test/workflow-sha-probe.test.mjs` asserts that wiring
+offline and runs the probe's own script against every answer a runner could give it.
+
 ### What it blocks on
 
 Every finding is printed with the path from the repository root, the 1-based line where there is

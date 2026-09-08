@@ -756,6 +756,52 @@ const isCheckout = (step) => /uses: actions\/checkout@/.test(step.body);
 const isToolingCheckout = (step) => isCheckout(step) && step.with.repository === 'cosyte/.github';
 const isGate = (step) => /environment-gate\.mjs/.test(step.body);
 
+/** The one expression that names the commit of the workflow file defining a CALLED job. */
+const TOOLING_REF_EXPRESSION = '${{ job.workflow_sha }}';
+
+/**
+ * The script the ref announcement runs, PINNED WHOLE rather than pattern matched.
+ *
+ * `parseStep` folds a `run: |` body onto one line with single spaces, so this constant IS the
+ * step's whole program and equality with it is a closure rather than a sample. That is the point:
+ * the allowance below lets a step precede the protection gate, and an allowance keyed on a name, a
+ * label or a substring would let that step grow a `curl`, a `git clone` or a credential later while
+ * still satisfying the assertion that admitted it. Nothing can be added to this step without
+ * changing this string, and changing it is a decision made here, in the file that guards the gate.
+ */
+const REF_ANNOUNCEMENT_SCRIPT = [
+  'set -euo pipefail',
+  'ref="${TOOLING_SHA}"',
+  'if [ -z "${ref}" ]; then',
+  'echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2',
+  'ref="(the cosyte/.github default branch)"',
+  'fi',
+  'echo "release tooling: ref ${ref}, from cosyte/.github"',
+].join(' ');
+
+/**
+ * THE SECOND THING ALLOWED TO PRECEDE THE GATE: the step that says WHICH COMMIT the tooling
+ * checkout beside it is about to resolve.
+ *
+ * It exists because the four `cosyte/.github` checkouts in this file shipped reading
+ * `${{ github.job_workflow_sha }}`, which is not a property of the `github` context and evaluates
+ * to `''`, and an empty `ref:` is not an error for `actions/checkout`: it resolves the provider's
+ * default branch. So the gate scripts came from a commit nobody named, on every caller, and the
+ * run said nothing. Naming the commit before the checkout is what ends that, and it has to be
+ * before the checkout, which in this job means before the gate.
+ *
+ * WHAT MAKES IT SAFE THERE IS THAT IT DOES NOTHING. It runs no action, takes no input, reads one
+ * variable and writes only to the log, so it takes nothing on the strength of a human gate nobody
+ * has checked yet: it is the sentence the checkout below it has always been missing, not a step.
+ * Each clause below is load-bearing, and together they close the step rather than describe it.
+ */
+const isRefAnnouncement = (step) =>
+  step.fields.uses === undefined &&
+  Object.keys(step.with).length === 0 &&
+  Object.keys(step.env).length === 1 &&
+  step.env.TOOLING_SHA === TOOLING_REF_EXPRESSION &&
+  step.fields.run === REF_ANNOUNCEMENT_SCRIPT;
+
 /**
  * The four things that must never precede the gate, kept as an over-approximation on purpose: a step
  * that merely COULD publish counts as publishing. `changesets/action` is the whole publish mechanism
@@ -1336,6 +1382,7 @@ const CONVERGED_ON_THE_SHARED_READER = [
   'environment-gate.test.mjs',
   'install-check.test.mjs',
   'release-notes.test.mjs',
+  'workflow-sha.test.mjs',
 ];
 
 /**
@@ -1642,12 +1689,27 @@ test('AC3: the protection gate runs unconditionally, on every path, ahead of eve
   assert.equal(gateJob.keys.if, undefined, 'a gate in a conditional job is a gate that can be skipped');
   assert.equal(gateJob.keys.environment, undefined, 'the gate runs on every path, so its job waits on no approval');
 
-  // What is allowed to precede it INSIDE ITS OWN JOB is exactly one thing: this repo's own script
-  // arriving. A caller tree, a package manager or a registry credential ahead of the gate would each
-  // be a step taken on the strength of a human gate nobody had checked.
+  // What is allowed to precede it INSIDE ITS OWN JOB is this repo's own script arriving, and the
+  // step that says which commit it is arriving from. A caller tree, a package manager or a registry
+  // credential ahead of the gate would each be a step taken on the strength of a human gate nobody
+  // had checked; the announcement is pinned to its whole program above, so it can never become one.
   for (const step of gateJob.steps.slice(0, gate.index)) {
-    assert.ok(isToolingCheckout(step), `"${step.label}" runs before the gate and is not the tooling checkout`);
+    assert.ok(
+      isToolingCheckout(step) || isRefAnnouncement(step),
+      `"${step.label}" runs before the gate and is neither the tooling checkout nor its ref announcement`,
+    );
   }
+  // ... and the allowance is not a hole a rewritten step can walk through: the same predicate over
+  // a step that has grown a fetch, an input or a second variable refuses it. A widening that cannot
+  // fail is the shape this whole file exists to refuse.
+  const announcements = gateJob.steps.slice(0, gate.index).filter(isRefAnnouncement);
+  assert.equal(announcements.length, 1, 'exactly one announcement precedes the gate, and it is real');
+  const grown = { ...announcements[0], fields: { ...announcements[0].fields, run: `${REF_ANNOUNCEMENT_SCRIPT} curl x` } };
+  assert.equal(isRefAnnouncement(grown), false, 'a step that has grown a command past the announcement is refused');
+  const withInput = { ...announcements[0], with: { repository: 'cosyte/.github' } };
+  assert.equal(isRefAnnouncement(withInput), false, 'a step that has grown an input is refused');
+  const withSecret = { ...announcements[0], env: { ...announcements[0].env, NPM_TOKEN: 'x' } };
+  assert.equal(isRefAnnouncement(withSecret), false, 'a step that has grown a second variable is refused');
 
   // And ACROSS JOBS: every step in any job that checks out a caller tree, authenticates to a
   // registry, packs or publishes is either below the gate in the gate's own job, or in a job that
