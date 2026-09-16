@@ -1,15 +1,33 @@
 # actionlint configuration.
 #
-# `github.job_workflow_sha` is a real context property: for a job that uses a reusable workflow it
-# holds the commit SHA of the reusable workflow file. release.yml and ci.yml both use it to check out
-# this repo's scripts/ at exactly the commit of the workflow calling them, so the two can never
-# drift. actionlint 1.7.12 does not carry it in its `github` context property list yet, so it reports
-# a false positive. The ignore is scoped to that one message, per file, so every other expression
-# error in either file still fails the build.
+# `job.workflow_sha` is a real context property: for a job defined by a reusable workflow it holds
+# the commit SHA of the workflow file defining that job. `ci.yml`, `release.yml` and
+# `workflow-sha-probe.yml` read it so the scripts they check out come from the commit of the
+# workflow calling them, and the two can never drift. `workflow-sha-probe.yml` measures it on a real
+# runner and fails if it is not a 40 character SHA, so the property is proved rather than assumed.
+#
+# actionlint 1.7.12, which is what `reviewdog/action-actionlint` runs in `self-check.yml`, does not
+# carry `workflow_sha` in its `job` context property list, so it reports a false positive on every
+# one of those reads. Each ignore below is scoped to one message under one workflow file, so every
+# other expression error in those files still fails the build.
+#
+# THE OBJECT TYPE IS PART OF THE PATTERN ON PURPOSE. actionlint prints the type it looked the
+# property up in, and `property "workflow_sha" is not defined` is also what it emits for something
+# like `needs.a.outputs.workflow_sha`, where the type reads `{real: string}` and the finding is a
+# genuine defect. Anchoring to the `job` context's own type means these entries silence the false
+# positive without silencing that. `test/actionlint-config.test.mjs` holds actionlint's real output
+# for both and fails if an entry here widens to cover the second.
+#
+# An entry naming a property that no expression in its own workflow reads is dead: it suppresses
+# nothing while looking like cover. `test/actionlint-config.test.mjs` compares every entry below
+# against the file it is scoped to and fails on one that has gone stale.
 paths:
   .github/workflows/release.yml:
     ignore:
-      - 'property "job_workflow_sha" is not defined in object type'
+      - 'property "workflow_sha" is not defined in object type \{check_run_id: number'
   .github/workflows/ci.yml:
     ignore:
-      - 'property "job_workflow_sha" is not defined in object type'
+      - 'property "workflow_sha" is not defined in object type \{check_run_id: number'
+  .github/workflows/workflow-sha-probe.yml:
+    ignore:
+      - 'property "workflow_sha" is not defined in object type \{check_run_id: number'

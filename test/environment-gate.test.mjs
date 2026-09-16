@@ -1379,6 +1379,7 @@ test('the npm write credential is recognised however the SECRET NAME is cased, b
  * against them, so the list going stale is a failing test rather than a silent hole.
  */
 const CONVERGED_ON_THE_SHARED_READER = [
+  'actionlint-config.test.mjs',
   'environment-gate.test.mjs',
   'install-check.test.mjs',
   'release-notes.test.mjs',
