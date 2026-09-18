@@ -56,6 +56,15 @@ jobs:
       contents: read
       security-events: write # upload the SARIF to this repository's own code-scanning surface
       id-token: write # publish the result to the OpenSSF API, which is what the badge reads
+      #
+      # `ossf/scorecard-action` v2.4.3's README lists the three below as what a run against a PRIVATE
+      # repository needs, and `scorecard.yml` declares them for every caller it serves. This
+      # repository is public, so the analysis here does not need them; they are granted because a
+      # scope the caller withholds is a scope the reusable cannot hold, whatever the reusable asks
+      # for. `test/self-scan.test.mjs` AC6 is what keeps the two blocks in step.
+      issues: read
+      pull-requests: read
+      checks: read
     uses: ./.github/workflows/scorecard.yml
     with:
       # The reusable already defaults this to true. Written out anyway, because publication is the

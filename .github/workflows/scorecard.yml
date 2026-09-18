@@ -1,6 +1,6 @@
 name: Scorecard
 
-# Reusable OpenSSF Scorecard supply-chain analysis for @cosyte/* public repos.
+# Reusable OpenSSF Scorecard supply-chain analysis for @cosyte/* repos, public and private.
 # Caller (each repo's .github/workflows/scorecard.yml):
 #   jobs:
 #     scorecard:
@@ -9,10 +9,22 @@ name: Scorecard
 #                                # omit it and the job gets contents:none and startup-fails.
 #         security-events: write # upload the SARIF to the repo's Security tab
 #         id-token: write        # publish results to the OpenSSF API (for the badge)
+#         issues: read           # these three exist for private callers and are copied by every
+#         pull-requests: read    # caller all the same: see the note below
+#         checks: read
 #       uses: cosyte/.github/.github/workflows/scorecard.yml@workflows-YYYY-MM-DD-COMMIT
 # A called workflow can only downgrade the caller's token, so the caller MUST grant these. Runs on a
 # weekly schedule + push to main (set by the caller's `on:`); never on pull_request (publish needs the
 # default branch). Actions pinned to SHAs.
+#
+# ▶ THREE OF THE SIX SCOPES EXIST FOR PRIVATE CALLERS. `ossf/scorecard-action` v2.4.3's README, under
+#   "Additional permissions for private repositories", lists `issues: read`, `pull-requests: read` and
+#   `checks: read` as the JOB-level permissions a run against a PRIVATE repository needs on top of
+#   `contents: read`, and names what is seen without them: `Resource not accessible by integration`,
+#   out of the GraphQL `ListCommits` call, and no analysis. The `analysis` job below declares all six
+#   for every caller it serves, and that block is a ceiling that can only DOWNGRADE the token the
+#   caller handed it, so a caller granting fewer fails just the same however this file is written.
+#   Copy all six: a public caller gains nothing from the three and loses nothing to them.
 #
 # ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
 #   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
@@ -38,6 +50,9 @@ jobs:
       contents: read
       security-events: write
       id-token: write
+      issues: read
+      pull-requests: read
+      checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
