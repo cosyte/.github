@@ -14,6 +14,8 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | [`release.yml`](.github/workflows/release.yml) | **two jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed in the job that publishes, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
+| [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
+| [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
 
 ## Calling them
 
@@ -60,6 +62,60 @@ jobs:
       id-token: write
       pull-requests: write
 ```
+
+```yaml
+# <repo>/.github/workflows/no-emdash.yml
+name: Em-dash gate
+on:
+  push: { branches: [main] }
+  pull_request:
+    branches: [main]
+    # `edited` is load-bearing wherever the repo squash-merges: the title and body ARE the commit
+    # message that lands. A reusable workflow cannot declare its own triggers, so this is yours.
+    types: [opened, synchronize, reopened, edited]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  no-emdash:
+    permissions:
+      contents: read
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/gate-no-emdash.yml@workflows-YYYY-MM-DD-COMMIT
+    # Both inputs default to the commands above, so a caller that names them this way passes none:
+    # with:
+    #   files-command: pnpm check:no-emdash
+    #   messages-command: pnpm check:no-emdash --stdin
+```
+
+That caller reports two check-run contexts, `no-emdash / tracked-files` and `no-emdash / messages`,
+where a repository with its own single-job gate reported one. **Require `tracked-files` and do not
+require `messages`**: a body composed out of somebody else's release notes must not block a merge.
+Adopting this is a ruleset edit as well as a workflow edit, and an entry naming the old context is
+not carried across by anything.
+
+```yaml
+# <repo>/.github/workflows/no-internal-refs.yml
+name: Public-surface gate
+on:
+  push: { branches: [main] }
+  # No `edited` type: nothing in this gate reads the text of a pull request, so retitling one
+  # cannot change its result.
+  pull_request: { branches: [main] }
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  no-internal-refs:
+    permissions:
+      contents: read
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/gate-no-internal-refs.yml@workflows-YYYY-MM-DD-COMMIT
+    # `command` defaults to `pnpm check:no-internal-refs`, so a caller that names it that way
+    # passes no inputs at all.
+```
+
+Its one context is `no-internal-refs / public-surface`.
 
 GitHub allows three kinds of ref here: "the `{ref}` can be a SHA, a release tag, or a branch name",
 and "Using the commit SHA is the safest option for stability and security"

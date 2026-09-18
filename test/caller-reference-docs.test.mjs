@@ -25,8 +25,17 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 
-/** The six `workflow_call` reusables. A caller's `uses:` line names one of these. */
-const REUSABLES = ['ci.yml', 'codeql.yml', 'drift-check.yml', 'nightly-fuzz.yml', 'release.yml', 'scorecard.yml'];
+/** The `workflow_call` reusables. A caller's `uses:` line names one of these. */
+const REUSABLES = [
+  'ci.yml',
+  'codeql.yml',
+  'drift-check.yml',
+  'gate-no-emdash.yml',
+  'gate-no-internal-refs.yml',
+  'nightly-fuzz.yml',
+  'release.yml',
+  'scorecard.yml',
+];
 
 /** The form that does not move: a published reference, named after the commit it carries. */
 const REFERENCE_FORM = /@workflows-(?:YYYY-MM-DD-COMMIT|\d{4}-\d{2}-\d{2}-[0-9a-f]{12})\b/;
@@ -116,7 +125,7 @@ test('the README owns a section explaining the reference, beside the other gates
 });
 
 // ---------------------------------------------------------------------------
-// The six headers: the instructions a maintainer actually reads
+// The reusables' headers: the instructions a maintainer actually reads
 // ---------------------------------------------------------------------------
 
 /**
@@ -173,18 +182,18 @@ for (const workflow of REUSABLES) {
   });
 }
 
-test('AC11: the six headers say the same thing, so a maintainer reads one rule and not six', () => {
+test('AC11: every header says the same thing, so a maintainer reads one rule and not one per file', () => {
   const notes = REUSABLES.map((workflow) => {
     const head = header(read(join('.github/workflows', workflow))).join('\n');
     const start = head.indexOf('NAME A PUBLISHED REFERENCE');
     assert.notEqual(start, -1);
     return head.slice(start).split('\n').slice(0, 5).join('\n').replace(/^#\s*/gm, '');
   });
-  for (const note of notes) assert.equal(note, notes[0], 'one wording, six files, so a fix lands everywhere');
+  for (const note of notes) assert.equal(note, notes[0], 'one wording, every file, so a fix lands everywhere');
 });
 
 test('the header edits stayed comment-only, which is what keeps them inert for thirteen callers', () => {
-  // Every line this change touched in the six reusables is a comment. Asserted here rather than
+  // Every line this change touched in the reusables is a comment. Asserted here rather than
   // trusted: an edit to a `uses:` pin, an input name or a job id in one of these files reaches
   // thirteen repositories on merge, and a rename of a job id detaches a ruleset entry silently.
   for (const workflow of REUSABLES) {

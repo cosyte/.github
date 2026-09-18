@@ -85,11 +85,20 @@ import process from 'node:process';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** The six `workflow_call` reusables. A caller can only be broken by one of these. */
+/**
+ * The `workflow_call` reusables. A caller can only be broken by one of these.
+ *
+ * A NAME MISSING FROM THIS LIST IS A FILE NO REFERENCE EVER CARRIES. `isStateFile` below reads it to
+ * decide whether a push has moved state a caller resolves, so a reusable published without being
+ * added here would sit on `main` with no published reference a caller could name it at, which is the
+ * stranding this whole path exists to end.
+ */
 export const REUSABLE_WORKFLOWS = Object.freeze([
   'ci.yml',
   'codeql.yml',
   'drift-check.yml',
+  'gate-no-emdash.yml',
+  'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
   'release.yml',
   'scorecard.yml',
