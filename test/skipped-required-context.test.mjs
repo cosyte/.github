@@ -527,11 +527,13 @@ test('AC-4: the source\'s consequence sentence is written in one place, and the 
 // AC-5 through AC-9: the guard over what is published here
 // ---------------------------------------------------------------------------
 
-/** The reusables a calling repository names. These six ARE the pipeline thirteen repositories run. */
+/** The reusables a calling repository names. These ARE the pipeline thirteen repositories run. */
 const PUBLISHED_REUSABLES = [
   'ci.yml',
   'codeql.yml',
   'drift-check.yml',
+  'gate-no-emdash.yml',
+  'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
   'release.yml',
   'scorecard.yml',
@@ -759,6 +761,14 @@ const PUBLISHED_JOB_IDS = {
   'ci.yml': ['verify', 'prepublish', 'actionlint'],
   'codeql.yml': ['analyze'],
   'drift-check.yml': ['drift'],
+  // ADDED, NOT RENAMED, and the distinction is the one this table exists to make legible. Both
+  // files are new, so every id under them is a NEW context that no caller's ruleset names yet;
+  // nothing above them moved. A repository adopting `gate-no-emdash.yml` reports
+  // `<caller job id> / tracked-files` and `<caller job id> / messages` where its own single-job
+  // gate reported one context, so its ruleset has to be edited in the same change. `messages` is
+  // deliberately kept OUT of a required set: see that file's own header for the reason.
+  'gate-no-emdash.yml': ['tracked-files', 'messages'],
+  'gate-no-internal-refs.yml': ['public-surface'],
   'nightly-fuzz.yml': ['fuzz'],
   'release.yml': ['version', 'release'],
   'scorecard.yml': ['analysis'],
@@ -825,7 +835,7 @@ test('AC-11: the set of workflows offering `workflow_call` is unchanged from the
   assert.deepEqual(Object.keys(PUBLISHED_JOB_IDS).sort(), PUBLISHED_REUSABLES.slice().sort());
 });
 
-test('AC-11: no new check-run context is introduced anywhere in this repository', () => {
+test('AC-11: every check-run context this repository emits is pinned, so a new one is deliberate', () => {
   const result = examine(join(REPO, WORKFLOWS));
   assert.deepEqual(result.problems, []);
   const found = {};
