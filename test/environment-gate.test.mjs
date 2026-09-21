@@ -1418,12 +1418,15 @@ const READS_IT_WITH_ITS_OWN_READER = [
  *
  * `caller-reference-docs` checks the `@main` paragraph every reusable workflow documents;
  * `prepublish-check` compares a fixture and names the spelling this workflow ships;
- * `self-scan` mentions it in a comment about which paths a suppression rule covers. None of them
- * asks which job holds the environment, which step precedes the gate, or what a condition says, so
- * none of them can answer such a question loosely.
+ * `self-scan` mentions it in a comment about which paths a suppression rule covers;
+ * `gate-install-before-scan` names it in the list of reusables that are NOT gates, which is the
+ * reason that suite enumerates its four subjects instead of sweeping the workflow directory. None of
+ * them asks which job holds the environment, which step precedes the gate, or what a condition says,
+ * so none of them can answer such a question loosely.
  */
 const NAMES_IT_WITHOUT_ASKING_ABOUT_ITS_COMPOSITION = [
   'caller-reference-docs.test.mjs',
+  'gate-install-before-scan.test.mjs',
   'prepublish-check.test.mjs',
   'self-scan.test.mjs',
 ];
