@@ -26,6 +26,14 @@ name: Public-surface gate (reusable)
 #   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
 #   README.md, "The published reference", owns the rest.
 #
+# ▶ THIS FORM DOES NOT INSTALL THE CALLER'S DEPENDENCIES, and that is what it is for. It hands the
+#   caller's command a tree with pnpm and Node prepared and no `node_modules`, which is right for a
+#   gate that is a dependency-free shell script and fatal for a command that reaches an installed
+#   package. A caller whose scan command reaches one names `gate-no-internal-refs-install.yml`
+#   instead, which is this file with an install step before the scan, the same `public-surface` job
+#   id, the same check-run context and the same input with the same default. Nothing about this file
+#   changed when that one was added, and a caller that needs no install pays for none.
+#
 # ▶ THIS WORKFLOW CARRIES NO SCANNING RULE OF ITS OWN. No pattern, no allow-list, no file selection,
 #   no verdict. It prepares the tree, runs the command the caller names, and lets that command's EXIT
 #   STATUS decide the job. The scanner can be rewritten or re-homed in the caller's repository and
