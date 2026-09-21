@@ -16,6 +16,8 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
+| [`gate-no-emdash-install.yml`](.github/workflows/gate-no-emdash-install.yml) | `gate-no-emdash.yml` with one step added to each job: the caller's dependencies, installed from the caller's committed lockfile, before the scan runs. Same `tracked-files` and `messages` job ids, same two inputs, same defaults, so the check-run contexts and the ruleset entries naming them do not move | a repo whose em-dash scanner resolves an installed package. **No caller is measured needing it yet**, and nothing here moves one onto it |
+| [`gate-no-internal-refs-install.yml`](.github/workflows/gate-no-internal-refs-install.yml) | `gate-no-internal-refs.yml` with the same one step added: install from the committed lockfile, then scan. Same `public-surface` job id, same input, same default | `hl7`, whose public-surface scan resolves `@cosyte/script-utils` and fails closed without an install |
 
 ## Calling them
 
@@ -116,6 +118,61 @@ jobs:
 ```
 
 Its one context is `no-internal-refs / public-surface`.
+
+### When the caller's scan command resolves an installed package
+
+Both gates above hand the caller's command a checked-out tree with pnpm and Node prepared and **no
+`node_modules`**. That is right for a gate that is a dependency-free shell script, and fatal for a
+scan command that resolves an installed package. Measured on hl7 pull request 137 (run 35646788336,
+job 106489082374): five steps, no install, and the scan exited 1 naming
+`Cannot find package '@cosyte/script-utils'`. Failing closed is the gate working correctly. The
+missing install is the defect.
+
+So each gate ships in two forms, and a caller picks one **in its `uses:` line alone**:
+
+```yaml
+# <repo>/.github/workflows/no-internal-refs.yml, where the scan resolves an installed package
+name: Public-surface gate
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  no-internal-refs:
+    permissions:
+      contents: read
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/gate-no-internal-refs-install.yml@workflows-YYYY-MM-DD-COMMIT
+    # No `with:`, no `run:` and no `steps:`. The install is in the file, not in the call.
+```
+
+The em-dash gate's installing form is named the same way, and covers both of its jobs:
+
+```yaml
+    uses: cosyte/.github/.github/workflows/gate-no-emdash-install.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+Each installing form runs `pnpm install --frozen-lockfile` after the checkout and before the scan, in
+every job it has. Everything else is the file it copies:
+
+- **The check-run contexts do not change.** `no-internal-refs / public-surface`,
+  `no-emdash / tracked-files` and `no-emdash / messages` are the same strings before and after, so
+  moving between the two forms is a `uses:` line and **not** a ruleset edit.
+- **The inputs and their defaults do not change**, and none is required, so a caller passes no
+  `with:` key. A job that calls a reusable workflow may carry no `steps:` or `run:` of its own, and
+  it needs none here.
+- **A failed install reds the job without running the scan.** There is no `continue-on-error`, no
+  `|| true` and no condition on any step in either file, so nothing runs after a step that failed. A
+  tree with no lockfile, a lockfile that does not match the manifest and an unreachable registry are
+  all the same answer: a red gate, and no scan reported as passed.
+
+**Which caller takes which.** `hl7` is the one caller measured to need the installing form, on the
+pull request above. Every other caller keeps the non-installing form and pays for no install it does
+not need, until its own adoption item measures otherwise. Adopting one is a `uses:` line in the
+caller's own repository, reviewed there and moved on that repository's clock; nothing here moves a
+caller.
 
 GitHub allows three kinds of ref here: "the `{ref}` can be a SHA, a release tag, or a branch name",
 and "Using the commit SHA is the safest option for stability and security"
