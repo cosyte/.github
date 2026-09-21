@@ -1,0 +1,107 @@
+name: Public-surface gate, installing (reusable)
+
+# Reusable public-surface gate, in the form that INSTALLS THE CALLER'S DEPENDENCIES BEFORE IT SCANS.
+# Everything else is `gate-no-internal-refs.yml`: the caller keeps its triggers and one `uses:` line,
+# the scanning lives in the caller's own repository, and this file carries no rule of its own.
+#
+# Caller (each repo's .github/workflows/no-internal-refs.yml):
+#   on:
+#     push: { branches: [main] }
+#     pull_request:
+#       branches: [main]
+#       # NO `edited` type, deliberately. Nothing in this gate reads the text of a pull request, so
+#       # retitling one cannot change its result and a re-run on an edit would buy nothing.
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     no-internal-refs:
+#       permissions:
+#         contents: read
+#       uses: cosyte/.github/.github/workflows/gate-no-internal-refs-install.yml@workflows-YYYY-MM-DD-COMMIT
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
+#
+# ▶ WHY THIS FILE EXISTS AT ALL, AND WHY IT IS A SECOND FILE RATHER THAN AN INPUT. A caller whose
+#   scan command reaches an installed package fails closed on the non-installing form: measured on
+#   hl7 pull request 137, run 35646788336, job 106489082374, where five steps ran with no install and
+#   the scan exited 1 naming `Cannot find package '@cosyte/script-utils'`. An input would be selected
+#   by a `with:` key in the caller, and a caller's contract test refuses `with:`, `run:` and `steps:`
+#   in a job that calls a reusable workflow, so the opt-in is the `uses:` LINE and the interface is
+#   otherwise identical. A gate that is a dependency-free shell script keeps naming the other file
+#   and keeps costing what it costs today.
+#
+# ▶ THE INSTALL RUNS BEFORE THE SCAN, AND A FAILED INSTALL IS A RED JOB THAT NEVER SCANS. No
+#   `continue-on-error`, no `|| true`, no `if:` on either step and no status-check function anywhere
+#   in this file, so there is no path on which a step runs after a failed one. `--frozen-lockfile` is
+#   the whole of what "the caller's declared dependencies" means here: no lockfile, or a lockfile
+#   that does not match the manifest, reds the job rather than resolving something else.
+#
+# ▶ THIS WORKFLOW CARRIES NO SCANNING RULE OF ITS OWN. No pattern, no allow-list, no file selection,
+#   no verdict. It prepares the tree, installs what the caller committed, runs the command the caller
+#   names, and lets that command's EXIT STATUS decide the job. The scanner can be rewritten or
+#   re-homed in the caller's repository and nothing here changes.
+#
+# ▶ ONE JOB, AND IT SCANS THE TREE ALONE. This gate deliberately does not look at the text a
+#   contributor writes around a change: an internal identifier BELONGS in a description of the work,
+#   and scanning that text would red correct work for saying what it did. That is the difference
+#   between this gate and the em-dash one, which scans both.
+#
+# ▶ NO CONDITION ANYWHERE ON THE PATH FROM THE TRIGGER TO THE COMMAND. `public-surface` carries no
+#   job-level `if:`, no step-level `if:` on its install or gate step, no `needs:`, no
+#   `continue-on-error` and no `|| true`. A job skipped by a conditional SATISFIES its required
+#   context, so a gate behind one reports success having scanned nothing; README.md, "What a skipped
+#   required context does to a merge", owns that measurement.
+#
+# ▶ THE CALLER-SUPPLIED COMMAND REACHES THE SHELL THROUGH `env:`, never as `${{ }}` inside a `run:`
+#   body. Actions interpolates an expression into the script before the shell sees it.
+#
+# The check-run context this publishes is `<caller job id> / public-surface`, THE SAME ONE the
+# non-installing form publishes, so a caller moving between the two forms changes no ruleset entry.
+# Renaming it detaches every ruleset entry that names it, with no error anywhere and no re-run that
+# undoes it.
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: "The command that scans the caller's public surface. Its exit status is the job."
+        type: string
+        default: "pnpm check:no-internal-refs"
+
+permissions:
+  contents: read
+
+jobs:
+  public-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # The caller's own lockfile, and nothing this file chose. A tree with no `node_modules` is what
+      # the non-installing form hands the scanner, which is correct for a scanner that needs none and
+      # fatal for one that reaches a package.
+      - name: Install the caller's dependencies from its committed lockfile
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      # The command is a COMMAND LINE and is deliberately left unquoted so the shell splits it into a
+      # program and its arguments. `set -euo pipefail` is set here rather than trusted from the
+      # runner, so an unset variable fails rather than running the empty string.
+      - name: Scan the public surface
+        env:
+          SURFACE_COMMAND: ${{ inputs.command }}
+        run: |
+          set -euo pipefail
+          $SURFACE_COMMAND
