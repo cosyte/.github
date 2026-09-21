@@ -97,7 +97,12 @@ export const REUSABLE_WORKFLOWS = Object.freeze([
   'ci.yml',
   'codeql.yml',
   'drift-check.yml',
+  // The installing form of each gate sits beside the form it copies. Both are `workflow_call` files
+  // a caller names in its own `uses:` line, so both are state a reference carries; a gate published
+  // without an entry here is a file a caller could name at no reference at all.
+  'gate-no-emdash-install.yml',
   'gate-no-emdash.yml',
+  'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
   'release.yml',

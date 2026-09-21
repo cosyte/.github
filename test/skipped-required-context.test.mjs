@@ -532,7 +532,9 @@ const PUBLISHED_REUSABLES = [
   'ci.yml',
   'codeql.yml',
   'drift-check.yml',
+  'gate-no-emdash-install.yml',
   'gate-no-emdash.yml',
+  'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
   'release.yml',
@@ -769,6 +771,13 @@ const PUBLISHED_JOB_IDS = {
   // deliberately kept OUT of a required set: see that file's own header for the reason.
   'gate-no-emdash.yml': ['tracked-files', 'messages'],
   'gate-no-internal-refs.yml': ['public-surface'],
+  // TWO FILES ADDED, AND NOT ONE ID MOVED. Each installing gate declares the job ids of the form it
+  // copies, on purpose: a caller moving to one changes its `uses:` line and nothing else, and the
+  // check-run context its ruleset requires is the same string before and after. These rows exist so
+  // that a later edit which renames an id in the installing form, or grows a third job in it, is a
+  // failure here rather than a caller's detached ruleset entry.
+  'gate-no-emdash-install.yml': ['tracked-files', 'messages'],
+  'gate-no-internal-refs-install.yml': ['public-surface'],
   'nightly-fuzz.yml': ['fuzz'],
   'release.yml': ['version', 'release'],
   'scorecard.yml': ['analysis'],
