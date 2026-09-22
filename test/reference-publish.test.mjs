@@ -632,6 +632,109 @@ test('isStateFile counts the six workflows and scripts, and nothing a caller nev
   assert.equal(isStateFile('test/reference-publish.test.mjs'), false);
 });
 
+// ===============================================================================================
+// The gate reusables, both forms of each: registered here, and adopted by nobody who did not ask
+// ===============================================================================================
+//
+// A gate that installs the caller's dependencies before it scans is a SECOND FILE rather than an
+// input, because a caller selects it with its `uses:` line and a caller's contract test refuses a
+// `with:` key. That makes two questions this file owns. Is the added file state a reference carries,
+// or is it a workflow a caller could name at no published reference at all. And does the note
+// composed for the change that adds it demand anything of a caller that never moves its `uses:` line.
+
+/** Every `workflow_call` file whose job runs a caller-supplied scan command, enumerated. */
+const GATE_REUSABLES = [
+  'gate-no-emdash-install.yml',
+  'gate-no-emdash.yml',
+  'gate-no-internal-refs-install.yml',
+  'gate-no-internal-refs.yml',
+];
+
+/** The two forms added beside the two that were already published. */
+const INSTALLING_GATES = ['gate-no-emdash-install.yml', 'gate-no-internal-refs-install.yml'];
+
+const onDisk = (name) => execFileSync('cat', [join(REPO, '.github/workflows', name)], { encoding: 'utf8' });
+
+test('AC-8: every gate reusable is registered as state a reference carries, and its interface reads', () => {
+  for (const name of GATE_REUSABLES) {
+    assert.ok(
+      REUSABLE_WORKFLOWS.includes(name),
+      `${name} is not in REUSABLE_WORKFLOWS, so no published reference would carry it and a caller ` +
+        'naming it would have nothing to pin',
+    );
+    assert.equal(isStateFile(`.github/workflows/${name}`), true);
+    const read = readWorkflowInterface(onDisk(name), name);
+    assert.equal(read.ok, true, read.ok ? '' : read.reason);
+    // Read rather than merely parsed: an interface a caller selects by its `uses:` line alone
+    // declares no input that is required and none that lacks a default.
+    for (const [input, declared] of Object.entries(read.interface.inputs)) {
+      assert.equal(declared.required, false, `${name}: the input \`${input}\` is required`);
+      assert.equal(declared.default.present, true, `${name}: the input \`${input}\` has no default`);
+    }
+  }
+});
+
+test('AC-8: the reader still refuses an unfamiliar shape in an installing form, so the read above is real', () => {
+  for (const name of INSTALLING_GATES) {
+    const original = onDisk(name);
+    const mutated = original.replace('    inputs:\n', () => '    outputs:\n');
+    assert.notEqual(mutated, original, `${name}: the mutation is a no-op, so it measures nothing`);
+    const read = readWorkflowInterface(mutated, name);
+    assert.equal(read.ok, false, `${name}: a workflow_call key this reader does not know was guessed at`);
+    assert.match(read.reason, /`outputs:`/);
+    assert.match(read.reason, new RegExp(name.replace('.', '\\.')));
+  }
+});
+
+/** Every reusable as it stands on disk, so the note below is the one this change really composes. */
+const currentTree = () => Object.fromEntries(REUSABLE_WORKFLOWS.map((name) => [name, onDisk(name)]));
+
+test('AC-9: the note for THIS change demands nothing of a caller that never moves its `uses:` line', () => {
+  const current = currentTree();
+  const before = { ...current };
+  for (const name of INSTALLING_GATES) delete before[name];
+
+  const verdict = decide(facts({ current: snapshot(current), previous: previousAt(before) }));
+  assert.equal(verdict.action, 'publish', 'two added files are state a caller resolves, so a reference is owed');
+  assert.deepEqual(
+    verdict.changes.filter((change) => change.act === true),
+    [],
+    'adding a form nobody names must ask nothing of the callers already pinned to the other one',
+  );
+  assert.deepEqual(
+    verdict.changes.map((change) => `${change.workflow}:${change.kind}`).sort(),
+    INSTALLING_GATES.map((name) => `${name}:workflow-added`).sort(),
+    'no input, no secret, no permission and no job id moved in a reusable a caller already names',
+  );
+  assert.match(verdict.note, /Nothing\. No `workflow_call` input/);
+  for (const name of INSTALLING_GATES) {
+    assert.ok(
+      verdict.note.includes(`\`${name}\` did not exist at the earlier reference`),
+      `${name} is not reported at all, and a file a caller can name is never silent in the note`,
+    );
+  }
+});
+
+test('AC-9: the same reading reports a caller-affecting change when there is one to report', () => {
+  // The control. A note that says "nothing to act on" about every conceivable change would satisfy
+  // the case above while proving nothing, so the one edit AC-9 forbids is made here and demanded.
+  const current = currentTree();
+  const before = { ...current };
+  for (const name of INSTALLING_GATES) delete before[name];
+  current['gate-no-internal-refs.yml'] = current['gate-no-internal-refs.yml'].replace(
+    '        default: "pnpm check:no-internal-refs"\n',
+    () => '        required: true\n',
+  );
+  assert.notEqual(current['gate-no-internal-refs.yml'], before['gate-no-internal-refs.yml'], 'the mutation is a no-op');
+
+  const verdict = decide(facts({ current: snapshot(current), previous: previousAt(before) }));
+  assert.equal(verdict.action, 'publish');
+  const mustAct = verdict.changes.filter((change) => change.act === true);
+  assert.ok(mustAct.length > 0, 'an input that became required and lost its default was reported as harmless');
+  assert.match(verdict.note, /the input `command` is now required/);
+  assert.doesNotMatch(verdict.note, /Nothing\. No `workflow_call` input/);
+});
+
 test('AC5: the first publish says there is no earlier reference, and does not report nothing changed', () => {
   const verdict = decide(facts({ current: snapshot(six({ 'ci.yml': FULL })), previous: null }));
   assert.equal(verdict.action, 'publish');

@@ -1,7 +1,8 @@
-name: Em-dash gate (reusable)
+name: Em-dash gate, installing (reusable)
 
-# Reusable em-dash gate. The caller keeps its triggers and one `uses:` line; the scanning lives in
-# the caller's own repository, behind the command this workflow runs.
+# Reusable em-dash gate, in the form that INSTALLS THE CALLER'S DEPENDENCIES BEFORE IT SCANS.
+# Everything else is `gate-no-emdash.yml`: the caller keeps its triggers and one `uses:` line, the
+# scanning lives in the caller's own repository, and this file carries no rule of its own.
 #
 # Caller (each repo's .github/workflows/no-emdash.yml):
 #   on:
@@ -19,7 +20,7 @@ name: Em-dash gate (reusable)
 #     no-emdash:
 #       permissions:
 #         contents: read
-#       uses: cosyte/.github/.github/workflows/gate-no-emdash.yml@workflows-YYYY-MM-DD-COMMIT
+#       uses: cosyte/.github/.github/workflows/gate-no-emdash-install.yml@workflows-YYYY-MM-DD-COMMIT
 #
 # ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
 #   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
@@ -27,19 +28,31 @@ name: Em-dash gate (reusable)
 #   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
 #   README.md, "The published reference", owns the rest.
 #
-# ▶ THIS FORM DOES NOT INSTALL THE CALLER'S DEPENDENCIES, and that is what it is for. It hands the
-#   caller's commands a tree with pnpm and Node prepared and no `node_modules`, which is right for a
-#   gate that is a dependency-free shell script and fatal for a command that reaches an installed
-#   package. A caller whose scan command reaches one names `gate-no-emdash-install.yml` instead,
-#   which is this file with an install step before the scan in both jobs, the same `tracked-files`
-#   and `messages` job ids, the same check-run contexts and the same inputs with the same defaults.
-#   Nothing about this file changed when that one was added, and a caller that needs no install pays
-#   for none.
+# ▶ WHY THIS FILE EXISTS AT ALL, AND WHY IT IS A SECOND FILE RATHER THAN AN INPUT. The defect it
+#   answers is a property of the shared harness rather than of one gate: both gate files check the
+#   caller's tree out, prepare pnpm and Node, and then run the caller's scan command against a tree
+#   with no `node_modules`, so a scan command that reaches an installed package fails closed. An
+#   input would be selected by a `with:` key in the caller, and a caller's contract test refuses
+#   `with:`, `run:` and `steps:` in a job that calls a reusable workflow, so the opt-in is the `uses:`
+#   LINE and the interface is otherwise identical. A gate that is a dependency-free shell script
+#   keeps naming the other file and keeps costing what it costs today.
+#
+#   NO CALLER HAS BEEN MEASURED NEEDING THIS ONE. The failure that produced this pair was measured on
+#   the public-surface gate; this file is the same harness with the same defect in it, and nothing in
+#   this repository moves any caller onto it. A caller adopts it in its own `uses:` line or does not.
+#
+# ▶ THE INSTALL RUNS BEFORE THE SCAN, IN BOTH JOBS, AND A FAILED INSTALL IS A RED JOB THAT NEVER
+#   SCANS. No `continue-on-error`, no `|| true`, no step-level `if:` and no status-check function
+#   anywhere in this file, so there is no path on which a step runs after a failed one.
+#   `--frozen-lockfile` is the whole of what "the caller's declared dependencies" means here: no
+#   lockfile, or a lockfile that does not match the manifest, reds the job rather than resolving
+#   something else.
 #
 # ▶ THIS WORKFLOW CARRIES NO SCANNING RULE OF ITS OWN, and that boundary is the whole design. No
-#   pattern, no allow-list, no file selection, no verdict. It prepares the tree, runs the command the
-#   caller names, and lets that command's EXIT STATUS decide the job. So the scanner can be rewritten,
-#   re-homed or replaced in the caller's repository and nothing here changes.
+#   pattern, no allow-list, no file selection, no verdict. It prepares the tree, installs what the
+#   caller committed, runs the command the caller names, and lets that command's EXIT STATUS decide
+#   the job. So the scanner can be rewritten, re-homed or replaced in the caller's repository and
+#   nothing here changes.
 #
 # ▶ TWO JOBS, AND THE SPLIT IS DELIBERATE. `tracked-files` scans what is committed and is the half
 #   that is safe to require. `messages` scans the pull request title, body and commit messages, and
@@ -52,17 +65,18 @@ name: Em-dash gate (reusable)
 #   report success having scanned nothing. README.md, "What a skipped required context does to a
 #   merge", owns the measurement and the three routes into it.
 #
-#   `tracked-files` therefore carries no job-level `if:`, no step-level `if:` on its gate step, no
-#   `needs:`, no `continue-on-error` and no `|| true`. A context that does not do its work on every
-#   event the caller triggers on cannot gate every pull request.
+#   `tracked-files` therefore carries no job-level `if:`, no step-level `if:` on its install or gate
+#   step, no `needs:`, no `continue-on-error` and no `|| true`. A context that does not do its work
+#   on every event the caller triggers on cannot gate every pull request.
 #
 # ▶ EVERY CALLER-SUPPLIED STRING AND EVERY PIECE OF PULL REQUEST TEXT REACHES THE SHELL THROUGH
 #   `env:`, never as `${{ }}` inside a `run:` body. Actions interpolates an expression into the
 #   script BEFORE the shell sees it, so a pull request title is arbitrary shell at that point.
 #
 # The check-run contexts this publishes are `<caller job id> / tracked-files` and
-# `<caller job id> / messages`. Renaming either detaches every ruleset entry that names it, with no
-# error anywhere and no re-run that undoes it.
+# `<caller job id> / messages`, THE SAME ONES the non-installing form publishes, so a caller moving
+# between the two forms changes no ruleset entry. Renaming either detaches every ruleset entry that
+# names it, with no error anywhere and no re-run that undoes it.
 
 on:
   workflow_call:
@@ -93,6 +107,14 @@ jobs:
         with:
           node-version: "22"
 
+      # The caller's own lockfile, and nothing this file chose. A tree with no `node_modules` is what
+      # the non-installing form hands the scanner, which is correct for a scanner that needs none and
+      # fatal for one that reaches a package.
+      - name: Install the caller's dependencies from its committed lockfile
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
       # The command is a COMMAND LINE and is deliberately left unquoted so the shell splits it into a
       # program and its arguments; quoting it would look for one executable whose name has spaces in
       # it. `set -euo pipefail` is set here rather than trusted from the runner, so an unset variable
@@ -108,7 +130,7 @@ jobs:
   messages:
     # Pull requests only: on a push the message is already written, and this job exists to stop one
     # landing. This is a job-level condition on a context that is not requirable, which is the one
-    # place the shape is safe.
+    # place the shape is safe. It is the condition the non-installing form carries, unchanged.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -123,6 +145,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+
+      # Before the collection as well as before the scan: this job's scanner is the same command the
+      # other half runs, so it reaches the same installed package.
+      - name: Install the caller's dependencies from its committed lockfile
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
 
       # Collect first, scan second. Piping the collection straight into the scanner would hide a
       # failed `git log` behind a clean title and body, and the gate would print OK over commits it
