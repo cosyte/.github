@@ -1297,6 +1297,8 @@ not on their publish path. `test/publish-floor.test.mjs` carries that defect as 
 
 **If your release run now fails with "the publish path is below its staged-publishing floor", the fix
 is in your repository, not this one.** The refusal names the version it found and the floor it needs.
+The `release` job itself runs on Node 24, whose bundled npm (11.16.0 and later from Node 24.18.0) clears
+the npm floor, so a pnpm-10 caller normally meets it without a change.
 Either raise your `packageManager` pin to pnpm 11.3.0 or later, which is a one-line change and needs
 nothing else, or move to a Node whose bundled npm is 11.15.0 or later. Nothing here can make that
 change for you and nothing here should: a reusable workflow that edited its callers' toolchains would

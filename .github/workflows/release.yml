@@ -961,9 +961,15 @@ jobs:
       # The publish path is unaffected either way: the `changesets/action` step below sets
       # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
       # to a registry.
+      # NODE 24 IN THE JOB THAT PUBLISHES, because staging needs it. A caller on pnpm 10 publishes
+      # through the npm CLI, and npm's staged-publishing floor is npm 11.15.0 and Node 22.14.0. Every
+      # Node 22 release bundles npm 10.9.x (22.23.3 ships 10.9.9), so on "22" publish-floor.mjs refused
+      # every staged release before anything was packed. Node 24.18.0 and later bundle npm 11.16.0 or
+      # newer (nodejs.org/dist/index.json). publish-floor.mjs still reads the real npm at runtime and
+      # refuses below the floor, so a Node 24 that regressed would fail closed, not publish.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: pnpm
       # THE RELEASE NOTES ARRIVE, THEY ARE NOT RE-DERIVED. These are the exact bytes the version job
