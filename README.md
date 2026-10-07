@@ -2508,7 +2508,7 @@ cheap direction to be wrong in: one edit here, against a promise nobody out ther
 
 ## The em-dash gate
 
-Founder directive 2026-07-24: cosyte never uses the em dash. Not in a file, not in a commit message,
+Founder directive 2026-07-24: Cosyte never uses the em dash. Not in a file, not in a commit message,
 not in a pull-request title or body. [`scripts/check-no-emdash.mjs`](scripts/check-no-emdash.mjs)
 enforces it, [`.github/workflows/no-emdash.yml`](.github/workflows/no-emdash.yml) runs it, and
 [`test/check-no-emdash.test.mjs`](test/check-no-emdash.test.mjs) proves it still bites. Run it

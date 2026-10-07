@@ -5,7 +5,7 @@
 Add a trademark notice.
 
 This package names third-party systems to describe what it interoperates with. It now ships a
-`TRADEMARKS.md` and a README notice recording that cosyte is not affiliated with, endorsed by, or
+`TRADEMARKS.md` and a README notice recording that Cosyte is not affiliated with, endorsed by, or
 sponsored by any of them, that every reference is descriptive, and that the built-in profiles are
 authored from public sources only.
 

@@ -360,7 +360,7 @@ on:
       # working; the run says so in the log rather than pretending it is fixed.
       #
       # SCOPE IT NARROWLY. What this job asks of it is exactly: push a branch, and open or update one
-      # pull request. As a fine-grained PAT owned by the cosyte org that is `Contents: read+write`,
+      # pull request. As a fine-grained PAT owned by the Cosyte org that is `Contents: read+write`,
       # `Pull requests: read+write`, `Metadata: read`, on the caller repos and nothing else. It does
       # NOT need `Workflows: write`: the action commits with `git add .`, and what `pnpm run version`
       # changes is `package.json`, `CHANGELOG.md`, `.changeset/`, and the `VERSION` constant that

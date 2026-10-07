@@ -22,7 +22,7 @@ Don't report security issues in public. See the
 
 ## Need an integration built?
 
-cosyte does healthcare-integration consulting: building interfaces, replacing
+Cosyte does healthcare-integration consulting: building interfaces, replacing
 Mirth / NextGen Connect channels, and standing up the kind of pipelines these
 parsers plug into. If that's what you're really after, see
 **[cosyte.com](https://cosyte.com)**.

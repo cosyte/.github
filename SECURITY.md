@@ -16,7 +16,7 @@ Tell us the package and version, what you found, and the smallest input that
 reproduces it. Use **synthetic data only**, never real PHI (see below).
 
 We aim to acknowledge a report within **5 business days** and will keep you
-posted as we confirm, fix, and release. cosyte is a small, solo-maintained
+posted as we confirm, fix, and release. Cosyte is a small, solo-maintained
 project, so we appreciate your patience, and we'll credit you in the advisory
 unless you'd rather stay anonymous.
 

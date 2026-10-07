@@ -71,7 +71,7 @@ const EXPECTED_BODY = join(HERE, 'fixtures/hl7-v0.0.2/expected-release-body.md')
 // `#`-first line inside a `run:` block scalar. Sharing needs no package.json and no install step,
 // so the reason the copies were kept apart does not survive what the copies cost.
 
-/** The exact body every cosyte release carried before this change. */
+/** The exact body every Cosyte release carried before this change. */
 const PRODUCTION_STUB = 'Automated release of v0.0.2.';
 
 /** U+2014, assembled: these files must not contain the character under test, in any spelling. */
