@@ -729,7 +729,16 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
       if (declaresDependency(under(flow.jobs, job))) withDependencies.push(`${flow.name}:${job}`);
     }
   }
-  assert.deepEqual(withDependencies, ['release.yml:release']);
+  //
+  // THE SECOND MEMBER, `finalize`, PASSES THROUGH THE ORDINARY RULE. It holds no environment, so it
+  // carries `!cancelled()` like any other dependent job and is not skipped by a failed `version`.
+  // That is safe for it rather than merely compliant: it only cuts a GitHub release for a version npm
+  // already serves, and the output its condition reads is written below the protection gate, so a
+  // refused gate still leaves it skipped (`test/environment-gate.test.mjs`, AC9, pins that chain).
+  assert.deepEqual(withDependencies, ['release.yml:release', 'release.yml:finalize']);
+  const finalize = under(parseWorkflow('release.yml', read(join(WORKFLOWS, 'release.yml'))).jobs, 'finalize');
+  assert.equal(holdsAnEnvironment(finalize), false, 'finalize must not hold an environment');
+  assert.equal(survives(scalar(finalize, 'if') ?? ''), true, 'a dependent job without an environment must survive a failed dependency');
 
   // AND IT PASSES THROUGH THE INVERTED RULE, NOT THROUGH THE ORDINARY ONE. Said out loud because
   // the two answers are indistinguishable from a green test: this job holds a deployment
@@ -779,7 +788,10 @@ const PUBLISHED_JOB_IDS = {
   'gate-no-emdash-install.yml': ['tracked-files', 'messages'],
   'gate-no-internal-refs-install.yml': ['public-surface'],
   'nightly-fuzz.yml': ['fuzz'],
-  'release.yml': ['version', 'release'],
+  // ADDED, NOT RENAMED: `finalize` is a new context no caller's ruleset names, and `version` and
+  // `release` are where they were. It is skipped on every run that has no promoted version owed a
+  // release, which is nearly all of them, and a skipped context requires nothing of anyone.
+  'release.yml': ['version', 'release', 'finalize'],
   'scorecard.yml': ['analysis'],
 };
 

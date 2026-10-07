@@ -1,6 +1,6 @@
-// Tests for scripts/promotion.mjs, which finds out whether a staged version has been promoted, so
-// that its GitHub release follows: in the staging run when the promotion comes inside the window,
-// and in a later run when it does not.
+// Tests for scripts/promotion.mjs, which finds out whether a staged version has been promoted, and
+// for the `release.yml` wiring that turns its answer into a GitHub release: in the staging run when
+// the promotion comes inside the window, and in the `finalize` job of a later run when it does not.
 //
 // WHAT THESE TESTS ARE FOR. Two outcomes are wrong, and they are wrong in opposite directions:
 //
@@ -12,15 +12,18 @@
 //   cosyte/docs. So a version that is pending by git and live by npm must reach `finalize`, without
 //   the release environment and without any npm credential.
 //
-// Every decision is a pure function driven by fixtures, and the entry point is driven end to end with
-// a fake `fetch` and a real git repository.
+// Every decision is a pure function driven by fixtures, the entry point is driven end to end with a
+// fake `fetch` and a real git repository, and the workflow is read through the shared reader, so a
+// wiring that would start `release` and `finalize` in the same run, or point `finalize` at a version
+// nobody saw live, fails here.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_WINDOW_MINUTES,
@@ -28,13 +31,17 @@ import {
   githubReleaseStatus,
   main,
   MAX_WINDOW_MINUTES,
+  DEFAULT_INTERVAL_SECONDS,
   registryListsVersion,
   registryListsVersionWithRetry,
   renderLapse,
   resolveWindow,
   waitForPromotion,
 } from '../scripts/promotion.mjs';
+import { decomment, effectivePermissions, parseWorkflow, readWorkflow } from './workflow-reader.mjs';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+const WORKFLOW = resolve(HERE, '../.github/workflows/release.yml');
 const PKG = '@cosyte/x12';
 const REGISTRY = 'https://registry.example.invalid';
 
@@ -465,4 +472,113 @@ test('bad usage is exit 2, distinct from every answer', async () => {
   assert.equal((await runMain(['promote', '--package', PKG])).code, 2, 'there is no verb that promotes');
   assert.equal((await runMain(['pending'], { env: { PACKAGE_NAME: '' } })).code, 2);
   assert.equal((await runMain(['await', '--package'])).code, 2);
+});
+
+// -- The wiring, read through the shared reader -------------------------------------------------------
+
+test('the staging run waits, bounded three times over, in the right order', () => {
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
+  const release = workflow.byId.release;
+  const wait = release.steps.find((step) => step.fields.id === 'promotion');
+  assert.ok(wait, 'the release job must keep the waiting step');
+  assert.equal(wait.fields.if, "${{ steps.publish-floor.outputs.mode == 'staged' }}");
+  assert.match(wait.body, /node \.cosyte-release-tooling\/scripts\/promotion\.mjs await/);
+  assert.equal(wait.env.PROMOTION_WINDOW_MINUTES, '${{ inputs.promotion-window-minutes }}');
+  assert.equal(wait.env.STAGED_PUBLISH_REPORT, '${{ runner.temp }}/staged-publish.json');
+
+  // WINDOW < STEP < JOB. The script's deadline must fire before the step is killed, so the outputs
+  // are written and a lapse is green; the step must end before the job does. The margin covers the
+  // one poll that can start at the deadline (a 30 second request bound) and the poll interval.
+  const stepMinutes = Number(wait.fields['timeout-minutes']);
+  const jobMinutes = Number(release.keys['timeout-minutes']);
+  assert.ok(stepMinutes >= MAX_WINDOW_MINUTES + 1 + DEFAULT_INTERVAL_SECONDS / 60, `step timeout ${stepMinutes} must clear the ${MAX_WINDOW_MINUTES} minute ceiling`);
+  assert.ok(jobMinutes > stepMinutes + 60, `job timeout ${jobMinutes} must clear the wait and the rest of the job`);
+
+  // NO CREDENTIAL ON THE WAIT. It reads a public registry and writes outputs.
+  assert.doesNotMatch(wait.body, /secrets\s*[.[]/i, 'the waiting step must be handed no secret at all');
+
+  // The input's default is the script's default, so the two cannot describe different windows.
+  const preamble = decomment(readFileSync(WORKFLOW, 'utf8')).join('\n');
+  const declared = /promotion-window-minutes:\s*\n\s*description: [^\n]*\n\s*type: number\n\s*default: (\d+)/.exec(preamble);
+  assert.ok(declared, 'the input must be declared as a number with a default');
+  assert.equal(Number(declared[1]), DEFAULT_WINDOW_MINUTES);
+});
+
+test('the version job asks "already live?" only when a release is pending, and only narrows is-release', () => {
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
+  const version = workflow.byId.version;
+  const notes = version.steps.find((step) => step.fields.id === 'notes');
+  const promoted = version.steps.find((step) => step.fields.id === 'promoted');
+  assert.ok(notes && promoted);
+  assert.ok(promoted.index > notes.index, 'it reads the notes gate\'s answer, so it runs after it');
+  assert.equal(promoted.fields.if, "${{ steps.notes.outputs.is-release == 'true' }}");
+  assert.match(promoted.body, /promotion\.mjs pending --repo \. --package "\$PACKAGE_NAME"/);
+  assert.equal(promoted.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}');
+  assert.deepEqual(Object.keys(promoted.env).sort(), ['GH_TOKEN', 'PACKAGE_NAME']);
+
+  assert.deepEqual(
+    {
+      'is-release': version.blocks.outputs['is-release'],
+      finalize: version.blocks.outputs.finalize,
+      'finalize-version': version.blocks.outputs['finalize-version'],
+      'finalize-sha': version.blocks.outputs['finalize-sha'],
+    },
+    {
+      'is-release': "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
+      finalize: '${{ steps.promoted.outputs.finalize }}',
+      'finalize-version': '${{ steps.promoted.outputs.version }}',
+      'finalize-sha': '${{ steps.promoted.outputs.sha }}',
+    },
+  );
+});
+
+test('finalize and release never start in the same run, and finalize cannot publish', () => {
+  const text = readWorkflow(WORKFLOW, readFileSync);
+  const workflow = parseWorkflow(text);
+  const { release, finalize } = workflow.byId;
+  assert.equal(release.keys.if, "${{ needs.version.outputs.is-release == 'true' }}");
+  assert.equal(
+    finalize.keys.if,
+    "${{ !cancelled() && needs.version.outputs.is-release != 'true' && needs.version.outputs.finalize == 'true' }}",
+    'finalize is pinned whole: the negation of release\'s own condition, and an output only a live version sets',
+  );
+  assert.equal(finalize.keys.needs, 'version');
+  assert.equal(finalize.keys.environment, undefined, 'no environment: the irreversible act already happened');
+  assert.deepEqual(effectivePermissions(text, finalize), { contents: 'write' });
+
+  for (const step of finalize.steps) {
+    assert.doesNotMatch(step.body, /changesets\/action|pnpm run release|changeset publish|npm publish|pnpm publish|stage approve|stage publish/);
+    assert.doesNotMatch(step.body, /NPM_TOKEN|NODE_AUTH_TOKEN/);
+    assert.equal(step.with['registry-url'], undefined, 'no registry credential file in finalize');
+  }
+
+  // At the release commit, with the body derived there and the release cut there.
+  const checkout = finalize.steps.find((step) => /uses: actions\/checkout@/.test(step.body) && step.with.repository === undefined);
+  assert.equal(checkout.with.ref, '${{ needs.version.outputs.finalize-sha }}');
+  assert.equal(checkout.with['fetch-depth'], '0', 'the notes gate refuses a shallow clone');
+  assert.equal(checkout.with['persist-credentials'], 'false');
+  const cut = finalize.steps.find((step) => /github-release\.mjs/.test(step.body));
+  assert.match(cut.body, /github-release\.mjs --require-live/, 'a release is only cut for a version seen live');
+  assert.match(cut.body, /--target "\$FINALIZE_SHA"/);
+  assert.match(cut.body, /--version "\$FINALIZE_VERSION"/);
+  assert.match(cut.body, /"\$head" != "\$FINALIZE_SHA"/, 'the tag cannot point at one commit while the assets came from another');
+  assert.equal(cut.env.FINALIZE_SHA, '${{ needs.version.outputs.finalize-sha }}');
+  assert.equal(cut.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}');
+  assert.equal(cut.env.DISPATCH_TOKEN, '${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}');
+  assert.ok(Number(finalize.keys['timeout-minutes']) > 0, 'finalize must be bounded');
+});
+
+test('all three release-creating sites run the one script from the pinned tooling checkout', () => {
+  const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
+  const sites = workflow.jobs.flatMap((job) => job.steps).filter((step) => /github-release\.mjs/.test(step.body));
+  assert.equal(sites.length, 3);
+  for (const step of sites) {
+    assert.match(step.body, /node \.cosyte-release-tooling\/scripts\/github-release\.mjs/);
+    assert.match(step.body, /--pack-docs-cmd "\$PACK_DOCS_CMD" --dispatch-docs "\$DISPATCH_DOCS"/);
+    assert.equal(step.env.PACK_DOCS_CMD, '${{ inputs.pack-docs-cmd }}');
+    assert.equal(step.env.DISPATCH_DOCS, '${{ inputs.dispatch-docs }}');
+  }
+  // Exactly one site skips the registry check, and it is the direct arm, seconds after its own publish.
+  const unchecked = sites.filter((step) => !/github-release\.mjs --require-live/.test(step.body));
+  assert.deepEqual(unchecked.map((step) => `${step.job}: ${step.label}`), ['release: Publish the GitHub release + dispatch docs rebuild']);
 });
