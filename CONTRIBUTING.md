@@ -1,4 +1,4 @@
-# Contributing to cosyte
+# Contributing to Cosyte
 
 Thanks for considering a contribution. The `@cosyte/*` packages (the HL7, MLLP,
 DICOM, X12, C-CDA, and NCPDP parsers) get better when real integration teams

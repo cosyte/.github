@@ -6,7 +6,7 @@ Add the em-dash brand gate to CI (`scripts/check-no-emdash.sh`, `pnpm check:no-e
 `.github/workflows/no-emdash.yml`).
 
 The founder directive of 2026-07-24 (`knowledgebase/06-brand/voice-and-tone.md`) bans `U+2014`
-outright across every cosyte surface and names commit messages explicitly, and the meta-repo's
+outright across every Cosyte surface and names commit messages explicitly, and the meta-repo's
 `documentation/conventions.md` has described the rule as CI-gated. It was gated in only 3 repos of
 10. This ports `knowledgebase`'s scanner, the text-only variant, which is the correct one here
 because hl7 tracks no binaries (all 414 tracked files read as us-ascii or utf-8, none holds a NUL

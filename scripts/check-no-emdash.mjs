@@ -8,7 +8,7 @@
  * package and installs nothing, which is also why the gate is Node builtins only.
  *
  * THE RULE. Founder directive 2026-07-24, stated canonically in the knowledgebase brand voice
- * document: cosyte never uses the em dash. Not in a file, not in a commit message, not in a PR
+ * document: Cosyte never uses the em dash. Not in a file, not in a commit message, not in a PR
  * title or body. Rewrite the sentence with a period, a colon, a comma, or parentheses. NEVER
  * re-encode the character: the HTML entities, the percent-encoding and the JavaScript escapes are
  * banned on the same footing as the literal, and each has its own arm below.
@@ -281,7 +281,7 @@ function fail(what, hits) {
     `\n[no-emdash] ${hits.length} occurrence(s) in ${what}, across ` +
       `${new Set(hits.map((h) => h.where)).size} location(s).`,
   );
-  console.error("[no-emdash] cosyte never uses em dashes (founder directive, 2026-07-24).");
+  console.error("[no-emdash] Cosyte never uses em dashes (founder directive, 2026-07-24).");
   console.error(
     "[no-emdash] Rewrite with a period, a colon, a comma, or parentheses. " +
       "Never re-encode the character.",
