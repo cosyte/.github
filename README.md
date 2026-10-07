@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | **two jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed in the job that publishes, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed in the job that publishes, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
@@ -547,6 +547,7 @@ So the job is split on the one line that matters, which is **reversibility**:
 |---|---|---|---|
 | `version` | **none** | the protection gate, the caller checkout, `Verify`, the release-notes derivation, the changelog gate, and `changesets/action` with **no publish command at all** | `RELEASE_PR_TOKEN` (or its `GITHUB_TOKEN` fallback) |
 | `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
+| `finalize` | **none** | `needs: version`, only when the pending version is **already live on npm** with no GitHub release. The tag, the GitHub release and the docs dispatch for a staged version promoted after its own run stopped waiting (see "When a maintainer promotes it", below) | `GITHUB_TOKEN` at `contents: write` and `DOCS_REPO_DISPATCH_TOKEN`; **no `NPM_TOKEN`, nothing that can publish** |
 
 **Merging the Version PR is the release decision; the environment approval is that same decision
 confirmed on the runner about to make it permanent.** One approval per release, on the irreversible
@@ -802,7 +803,8 @@ appears without the condition. That check also refuses an examination that found
 workflow at all, and refuses a workflow file it cannot read or that declares no `on:` block, because
 either of those measures nothing while reporting the rest of the tree clean.
 
-**One job here declares `needs:`, and the remedy is forbidden on it rather than merely unnecessary.**
+**One job here declares `needs:` and holds an environment, and the remedy is forbidden on it rather
+than merely unnecessary.**
 `release.yml`'s `release` job depends on `version`, and it is the job that publishes to npm behind
 the caller's `release` environment. `always()` there would do one of two things and neither is the
 thing the source's remedy is for. Either the dependency's job outputs survive its failure, in which
@@ -814,6 +816,14 @@ deployment environment the rule asks for the opposite, in the same breath and by
 must **not** survive a failed dependency, and `always()` or `!cancelled()` on such a job is a
 finding that nothing refused before. That is keyed on the `environment:` key and on nothing else, so
 no job that is not making a deployment can reach it.
+
+**The other job that declares `needs:` takes the ordinary rule, and is safe on it.** `release.yml`'s
+`finalize` job depends on `version` too, holds no environment, and so carries `!cancelled()`. It
+only creates the GitHub release and the docs dispatch for a version npm already serves, and its
+condition also reads `finalize`, an output the version job writes **below** its protection gate. So a
+refused gate still leaves it skipped, while a failure later in `version` (a red `Verify` on the
+default branch, say) does not hold back the release of a version that is already permanent.
+`test/environment-gate.test.mjs` pins that chain link by link.
 
 **The residual that leaves, stated rather than traded away.** When `version` fails, `release` still
 concludes `skipped`, and a caller ruleset naming only `<caller job>/release` still counts that as a
@@ -1246,9 +1256,12 @@ it. It becomes real only when a maintainer approves it, by hand, with 2FA.
 ### What it changes for a maintainer
 
 A release run that used to end with "published" now ends with a job summary saying a version is
-staged and waiting. Nothing else about the run changes, and **nothing chases you**: an unapproved
-stage is not a pending task somewhere, it is simply a version that never happened. Walk away and the
-live registry keeps exactly the versions it already had.
+staged and waiting, and then **waits with you**: its `release` job stays in progress for up to
+`promotion-window-minutes` (default 120) while it watches the registry, so that a promotion in the
+same sitting gets its GitHub release and docs rebuild from the same run. That is the wait, not a hang.
+**Nothing chases you** either way: an unapproved stage is not a pending task somewhere, it is simply a
+version that never happened. Walk away and the live registry keeps exactly the versions it already
+had, and the run ends green saying so.
 
 ```bash
 pnpm stage list @cosyte/hl7          # find it (the run prints its stage id when the tool prints one)
@@ -1313,22 +1326,67 @@ Here nothing irreversible has happened and a red costs a re-run.
 
 `staged-publish.mjs` never prints the `New tag:` marker `changesets/action` scans stdout for, and the
 three steps that key off `steps.changesets.outputs.published` additionally carry an explicit
-`mode != 'staged'`. So a staged version gets **no GitHub release**, **no docs rebuild dispatch**, and
-is **not fed to the post-publish install gate**. Announcing a release for a version nobody can
-install would be a lie on a public surface, and the install gate would spend its whole 540s budget
-proving an absence that is expected.
+`mode != 'staged'`. So while a staged version is unpromoted it gets **no GitHub release**, **no docs
+rebuild dispatch**, and is **not fed to the post-publish install gate**. Announcing a release for a
+version nobody can install would be a lie on a public surface, and the install gate would spend its
+whole 540s budget proving an absence that is expected.
+
+### When a maintainer promotes it
+
+**The tag, the GitHub release and the docs dispatch follow the promotion, whenever it comes, with
+nobody doing them by hand.** Nothing a maintainer does on npmjs.com reaches back into this pipeline,
+so the pipeline asks the public registry itself, anonymously, from two places
+([`scripts/promotion.mjs`](scripts/promotion.mjs)):
+
+- **In the run that staged it.** After the "STAGED, not published" report, the `release` job polls
+  the registry every 30 seconds for up to `promotion-window-minutes` (default **120**, clamped to
+  0..240). If the version appears, the run cuts the same GitHub release the direct arm cuts: the same
+  asserted notes, the same pack-docs assets, the tag `v<version>` created at the run's commit, and the
+  same dispatch to `cosyte/docs`. If it does not, the run still ends **green**, and its summary and a
+  warning say plainly that the version is **staged, not live**, with no tag, release or dispatch yet.
+- **In any later run.** A version promoted after the window is, from the next push to the default
+  branch, pending by git (no `v<version>` tag) and live by npm. The version job sees that before
+  anything else happens: there is nothing left to publish, so `is-release` is `false`, the
+  environment-held `release` job never starts and nobody is asked to approve a stage npm would
+  refuse. The `finalize` job then checks out **the commit that released the version**, derives the
+  notes there with the same gate, builds the assets there, and creates the release with `--target`
+  that commit. It holds no environment and no npm credential, because the irreversible act already
+  happened when the maintainer promoted the version with 2FA. When nothing is owed, it is simply
+  skipped.
+
+All three release-creating sites run one script,
+[`scripts/github-release.mjs`](scripts/github-release.mjs), and the two that follow a promotion ask
+the registry once more immediately before they write anything, so **no release is ever created for a
+version the registry does not serve**. Nothing on either path promotes, approves, discards or
+publishes.
+
+**Which version, and why only that one.** The candidate is the version the default branch's
+`package.json` declares, when the notes gate already calls it a pending release. That is the one
+version this pipeline would otherwise try to publish from that commit, so it is exactly the version
+whose `release` job has to be withheld once npm serves it. npm's `latest` dist-tag was the
+alternative and is not used: it can name a version this repository's history never released, and it
+says nothing about which commit to tag.
+
+**Store `DOCS_REPO_DISPATCH_TOKEN` as a repository or organization secret.** `finalize` references no
+environment, so a token stored only on the `release` environment reads empty there, and the dispatch
+then takes its loud "Docs rebuild not triggered" branch instead of telling `cosyte/docs`.
 
 **And there is no fallback.** If staging fails for any reason the run fails with the registry
 untouched. A direct publish is permanent, and a failed staging is not evidence that publishing is
 what was wanted. That is the one hazard this feature could add and it is the reason the script has a
 single argument vector it is able to build.
 
-### Two known limits, stated rather than discovered
+### Known limits, stated rather than discovered
 
-- **A staged version leaves no tag, so a re-run stages it again.** `changeset publish` creates the
-  `v<version>` tag and the staged path does not publish, so nothing is tagged and the next push to
-  `main` sees the same release pending. Re-staging is harmless (nothing reaches the live registry
-  either time) but you may find two stage entries for one version. Approve one.
+- **A staged version leaves no tag, so a re-run stages it again while it is unpromoted.**
+  `changeset publish` creates the `v<version>` tag and the staged path does not publish, so nothing is
+  tagged and the next push to `main` sees the same release pending. Re-staging is harmless (nothing
+  reaches the live registry either time) but you may find two stage entries for one version. Approve
+  one. Once one is approved, the next push finalizes it instead of staging it again.
+- **Only the version `package.json` declares is finalized.** A version promoted late **and**
+  overtaken by a newer version commit before any run caught up is no longer that version, so nothing
+  here finalizes it. That needs two releases in flight at once, and it is left to a human rather than
+  guessed at.
 - **A dist-tag other than `latest` is not carried through.** `changeset publish` derives `--tag` from
   prerelease state; the staged path does not, and stages at the default. No caller of this workflow
   uses prereleases today. Fix it here if one starts to.

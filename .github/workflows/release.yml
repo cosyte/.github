@@ -44,7 +44,7 @@ name: Release
 # bumps versions and publishes to npm WITH PROVENANCE, uploads the docs artifacts, and fires a
 # repository_dispatch to cosyte/docs so the site rebuilds. Actions are pinned to SHAs.
 #
-# ▶ TWO JOBS, AND THE CALLER'S `release` ENVIRONMENT HOLDS EXACTLY ONE OF THEM. READ THIS BEFORE
+# ▶ THREE JOBS, AND THE CALLER'S `release` ENVIRONMENT HOLDS EXACTLY ONE OF THEM. READ THIS BEFORE
 #   MOVING A STEP BETWEEN THEM.
 #
 #   A GitHub environment attaches to a JOB, never to a step: "when a workflow job references an
@@ -67,6 +67,14 @@ name: Release
 #                 release`. Resolves the publish path, publishes, cuts the GitHub release, dispatches
 #                 the docs rebuild, and runs the post-publish install gate. This is the whole of the
 #                 irreversible half.
+#     `finalize`  `needs: version`, NO environment, `contents: write` and nothing else. Starts only
+#                 when the version job found the pending version ALREADY LIVE on npm with no GitHub
+#                 release, which is a staged version promoted after its own run stopped watching.
+#                 Tags the release commit, cuts the GitHub release and dispatches the docs rebuild.
+#                 It is handed no publish command, no `NPM_TOKEN` and no registry credential file, so
+#                 it cannot publish; and there is nothing left for it to publish, because npm already
+#                 serves the version. See "A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO
+#                 LIVE" below.
 #
 #   ONE APPROVAL PER RELEASE, ON THE HALF THAT CANNOT BE UNDONE. Merging the Version PR is the human
 #   decision to release; the environment approval is that same decision confirmed on the runner that
@@ -111,6 +119,26 @@ name: Release
 #
 # A package that has NEVER been published cannot be staged (npm's own rule) and so takes the direct
 # arm unchanged, with the run saying out loud that this one is a one-way door.
+#
+# A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO LIVE. A stage ends with no `v<version>`
+# tag, no GitHub release and no docs dispatch, which is right while the registry will not serve the
+# version and wrong from the moment a maintainer promotes it. Nothing a maintainer does on npmjs.com
+# reaches back into this pipeline, so the pipeline looks for itself, at the public registry, with no
+# credential, from two places:
+#
+#   the `release` job   waits after the stage, up to `promotion-window-minutes`, for the version to
+#                       appear (`promotion.mjs await`). Promoted in time, it runs the same
+#                       release-and-dispatch the direct arm runs. Not promoted, the run still ends
+#                       green and says plainly that the version is staged, not live.
+#   the `finalize` job  runs on a LATER run, any push to the default branch, when the version job
+#                       finds the pending version already live with no GitHub release
+#                       (`promotion.mjs pending`). A live version has nothing left to publish, so the
+#                       version job reports `is-release=false`, the environment-held job never asks
+#                       anyone to approve a stage npm would refuse, and `finalize` does the rest.
+#
+# `scripts/github-release.mjs` is the one implementation behind all three release-creating sites: the
+# direct arm, the promoted arm and `finalize`. Nothing on either path promotes, approves, discards or
+# publishes, and neither path reads the npm token.
 #
 # RELEASE NOTES. The GitHub release body is DERIVED from the changesets the "Version Packages" PR
 # consumed: each is a human-written summary of one change, they are what drove the version bump, and
@@ -260,8 +288,11 @@ name: Release
 #   REPOSITORY or ORGANIZATION secret rather than an environment one. It is written here and not
 #   implemented here because nothing in this file can read a caller's secret placement, and adding an
 #   input or a secret to surface it would break the contract with thirteen callers that pin `@main`.
-#   `NPM_TOKEN` and `DOCS_REPO_DISPATCH_TOKEN` are unaffected by the split from either placement:
-#   both are consumed in `release`, which does reference the environment.
+#   `NPM_TOKEN` is unaffected from either placement: it is consumed in `release` alone, which does
+#   reference the environment. `DOCS_REPO_DISPATCH_TOKEN` is consumed there AND in `finalize`, which
+#   references none, so the same rule applies to it there: stored on the `release` environment it
+#   reads empty in `finalize`, whose dispatch then takes its loud "Docs rebuild not triggered" branch
+#   rather than failing. Store it as a repository or organization secret and both jobs read it.
 
 on:
   workflow_call:
@@ -308,6 +339,17 @@ on:
         description: "Known-absent deps, comma separated, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
         type: string
         default: "@cosyte/fhir=blocked"
+      # HOW LONG A STAGED RELEASE WAITS, IN ITS OWN RUN, FOR A MAINTAINER TO PROMOTE IT. The `release`
+      # job polls the public registry for this long after the stage and, if the version goes live,
+      # cuts its GitHub release and dispatches the docs rebuild there and then. If it does not, the
+      # run ends green and says so, and a later run on the default branch finishes the job once the
+      # version is live, so a short window costs immediacy and nothing else. `scripts/promotion.mjs`
+      # clamps it to 0..240 and says why the default is 120; the waiting step's own timeout sits
+      # above that ceiling. `0` looks once and does not wait.
+      promotion-window-minutes:
+        description: "Minutes a staged release waits in its own run for a maintainer to promote it (0 to 240)."
+        type: number
+        default: 120
     secrets:
       NPM_TOKEN:
         required: true
@@ -360,7 +402,7 @@ jobs:
   # environment, so it never waits on an approval, and it is handed NO publish command and NO
   # `NPM_TOKEN`, so there is nothing here for an approval to protect. What it does is open or refresh
   # the "Version Packages" pull request, which is the pull request whose MERGE is the human decision
-  # to release. See "TWO JOBS" at the top of this file.
+  # to release. See "THREE JOBS" at the top of this file.
   #
   # It also carries the protection gate, unconditionally, for every path this workflow has.
   version:
@@ -389,10 +431,28 @@ jobs:
     # publish is not a workaround: `changeset publish` creates the `v<version>` tag locally, and "is a
     # release pending" is answered by whether that tag exists, so a second derivation after the
     # publish always finds nothing. Derived once, here, carried whole.
+    #
+    # `is-release` IS NARROWED BY ONE CONJUNCT, AND THAT CONJUNCT CAN ONLY WITHHOLD. A version the notes
+    # gate calls pending but npm ALREADY SERVES has nothing left to publish: usually it is a stage a
+    # maintainer promoted after its own run stopped watching, and a direct publish whose release step
+    # never finished lands here too. Starting the environment-held job for it would ask a human to
+    # approve a publish of a version npm already has, and on the staged arm the run would red after
+    # that approval. So `steps.promoted.outputs.live` takes it out, and nothing else changes: an empty or
+    # unreadable answer is not `true`, so every fault leaves `is-release` exactly what the notes gate
+    # said, and no value of the new term can turn a `false` into a `true`.
+    #
+    # `finalize`, `finalize-version` and `finalize-sha` are the same step's answer to what such a
+    # version is still owed, read by the `finalize` job: whether it lacks a GitHub release, which
+    # version it is, and the commit where package.json became it. They are written by a step BELOW
+    # the protection gate, so a run the gate refused never sets them, and that is what keeps the
+    # `finalize` job's `!cancelled()` from reaching past a failed gate.
     outputs:
-      is-release: ${{ steps.notes.outputs.is-release }}
+      is-release: ${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
       version: ${{ steps.notes.outputs.version }}
       release-notes-b64: ${{ steps.notes-transfer.outputs.release-notes-b64 }}
+      finalize: ${{ steps.promoted.outputs.finalize }}
+      finalize-version: ${{ steps.promoted.outputs.version }}
+      finalize-sha: ${{ steps.promoted.outputs.sha }}
     steps:
       # THE GATE RUNS FIRST, AND WHAT IS AHEAD OF IT IS ONLY THIS REPO'S OWN SCRIPT ARRIVING.
       #
@@ -612,6 +672,26 @@ jobs:
         run: |
           node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
             --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
+      # IS THE PENDING VERSION ALREADY LIVE ON npm. Asked only when the notes gate found a release
+      # pending, which is the one state in which the answer changes anything: a version that is pending
+      # by git and live by npm was published without its release being cut, which is what a stage
+      # promoted after its run stopped watching looks like from the next push. For that version the
+      # job outputs above withhold the environment-held job, which has nothing left to publish, and hand
+      # the `finalize` job the version and the commit it is owed a release at.
+      #
+      # IT ONLY READS, AND IT CANNOT FAIL THIS JOB. The registry is read anonymously, and the GitHub
+      # release with the automatic token under `GH_TOKEN`, for the reason the gate above gives for that
+      # name. Every fault, a registry that does not answer included, reads as "not live", which leaves
+      # this run exactly where the notes gate put it. `scripts/promotion.mjs` holds the decision table,
+      # and why the candidate is package.json's version rather than npm's `latest` dist-tag.
+      - name: Is the pending version already live on npm
+        id: promoted
+        if: ${{ steps.notes.outputs.is-release == 'true' }}
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node .cosyte-release-tooling/scripts/promotion.mjs pending --repo . --package "$PACKAGE_NAME"
       # THE BYTES CROSS THE JOB BOUNDARY HERE, AND THIS STEP EXISTS BECAUSE `RUNNER_TEMP` DOES NOT.
       #
       # `$RUNNER_TEMP` is per-job. The publish job runs on a different runner with a different temp
@@ -848,6 +928,14 @@ jobs:
     needs: version
     if: ${{ needs.version.outputs.is-release == 'true' }}
     runs-on: ubuntu-latest
+    # BOUNDED IN WRITING, AND ABOVE THE PROMOTION WAIT. This job holds the caller's protected
+    # environment for as long as it runs, and on the staged arm it can wait up to `promotion.mjs`'s
+    # 240 minute ceiling for a maintainer. The waiting step's own `timeout-minutes` sits above that
+    # ceiling and this sits above the waiting step plus everything else the job does, so the window
+    # lapses first, then the step, then the job: a promotion that never comes ends a green run that
+    # says so, never a killed one. 360 is the platform default too; it is written here so the ordering
+    # is pinned by `test/promotion.test.mjs` rather than implied.
+    timeout-minutes: 360
     # THE HUMAN GATE ON npm publish. This key puts THIS job, and only this job, in the caller's
     # `release` environment: "when a workflow job references an environment, the job won't start
     # until all of the environment's protection rules pass", and "a job also cannot access secrets
@@ -1212,6 +1300,64 @@ jobs:
         run: |
           node .cosyte-release-tooling/scripts/staged-publish.mjs report --package "$PACKAGE_NAME"
 
+      # WAIT, IN THIS RUN, FOR A MAINTAINER TO PROMOTE WHAT WAS JUST STAGED. The report above told them;
+      # this asks the public registry, every 30 seconds and with no credential, until the version is
+      # resolvable or `promotion-window-minutes` lapses. It can only read: no npm token is in this
+      # step's environment, the `~/.npmrc` `changesets/action` wrote was deleted above, and it spawns no
+      # package manager. `scripts/promotion.mjs` owns the window, its ceiling and its default.
+      #
+      # IT TAKES THE VERSION FROM THE STAGING REPORT, so it waits only for something this run actually
+      # staged. No report means the action took its version arm and staged nothing, and the step ends
+      # at once rather than holding the environment for the whole window.
+      #
+      # A LAPSE IS GREEN, AND SAYS WHAT IT MEANS. The version is not broken, it is unpromoted: a
+      # warning and the step summary say it is staged and NOT live, with no tag, release or dispatch
+      # yet, and that a later run on the default branch creates all three once it is promoted. That
+      # later run is the `finalize` job, and it needs nothing from this one.
+      #
+      # `timeout-minutes` SITS ABOVE THE SCRIPT'S 240 MINUTE CEILING, so the script's own deadline always
+      # fires first and the step ends with its outputs written rather than killed without them; the job
+      # bound above sits higher again. `test/promotion.test.mjs` pins all three against each other.
+      - name: Wait for a maintainer to promote the staged version
+        id: promotion
+        if: ${{ steps.publish-floor.outputs.mode == 'staged' }}
+        timeout-minutes: 250
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          STAGED_PUBLISH_REPORT: ${{ runner.temp }}/staged-publish.json
+          PROMOTION_WINDOW_MINUTES: ${{ inputs.promotion-window-minutes }}
+        run: |
+          node .cosyte-release-tooling/scripts/promotion.mjs await --package "$PACKAGE_NAME"
+
+      # THE PROMOTED ARM: THE RELEASE THE DIRECT ARM CUTS, ONCE THE REGISTRY SERVES THE VERSION.
+      #
+      # Same script as the direct arm below, so the same notes file (the bytes the version job derived
+      # and the step above the publish already proved), the same pack-docs assets built by the same
+      # `bash -c "$PACK_DOCS_CMD"`, the same `v<version>` tag created at this run's commit with
+      # `--target "$GITHUB_SHA"`, and the same dispatch, under its rule that a failed dispatch does not
+      # fail the job. Two things differ, and both are inputs rather
+      # than code: the version is the one the waiting step saw go live, and `--require-live` makes the
+      # script ask the registry once more before it writes anything, so this step can never announce a
+      # version no consumer can install.
+      #
+      # `steps.promotion.outputs.live` is written `true` by exactly one path, a registry that listed the
+      # version, so a skipped, failed or lapsed wait leaves this step skipped.
+      - name: Publish the GitHub release + dispatch docs rebuild, once the staged version is live
+        if: ${{ steps.publish-floor.outputs.mode == 'staged' && steps.promotion.outputs.live == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          PROMOTED_VERSION: ${{ steps.promotion.outputs.version }}
+          PACK_DOCS_CMD: ${{ inputs.pack-docs-cmd }}
+          DISPATCH_DOCS: ${{ inputs.dispatch-docs }}
+        shell: bash
+        run: |
+          bash -c "$PACK_DOCS_CMD"
+          node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
+            --package "$PACKAGE_NAME" --version "$PROMOTED_VERSION" --target "$GITHUB_SHA" \
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
+
       # `mode != 'staged'` IS THE HALF THAT KEEPS A STAGED VERSION OUT OF THIS STEP, AND IT IS HERE
       # EXPLICITLY RATHER THAN LEFT TO FOLLOW FROM `published`.
       #
@@ -1221,6 +1367,20 @@ jobs:
       # between a staged version and a GitHub release announcing it shipped. Cutting a release, and
       # dispatching a cosyte/docs rebuild, for a version no consumer can resolve would be a lie on a
       # public surface, and the docs site would rebuild against a version the registry will not serve.
+      # A staged version gets its release from the step above, and only once the registry serves it.
+      #
+      # THE RELEASE ITSELF IS `scripts/github-release.mjs`, the one implementation this arm, the
+      # promoted arm above and the `finalize` job all run, so the tag's spelling, `--target`, the
+      # assets, the notes reconciliation and the dispatch's four outcomes are written once, there, with
+      # their reasons. What stays here is what only this arm knows: the version Changesets reported
+      # publishing, and the assertion that the notes gate recognised this commit as a release. The
+      # caller's pack-docs command runs here too, in each of the three steps, because it is the
+      # caller's own shell command and the script deliberately starts no shell.
+      #
+      # THE RECONCILIATION STILL FOLLOWS THE PUBLISH, inside the script: it re-reads the same bytes the
+      # step above the publish proved, against the version CHANGESETS REPORTED PUBLISHING, which does
+      # not exist until the publish has happened. The notes come from git, the version comes from
+      # Changesets, and a disagreement between them is a defect, not a detail.
       - name: Publish the GitHub release + dispatch docs rebuild
         if: ${{ steps.changesets.outputs.published == 'true' && steps.publish-floor.outputs.mode != 'staged' }}
         env:
@@ -1234,16 +1394,6 @@ jobs:
         shell: bash
         run: |
           version=$(node -e "const p=JSON.parse(process.env.PUBLISHED_PACKAGES); const m=p.find(x=>x.name===process.env.PACKAGE_NAME)||p[0]; process.stdout.write(m.version)")
-          # MUST match the tag `changeset publish` just pushed, and MUST stay parseable by
-          # cosyte/docs. Every caller of this workflow is a single-package repo, for which
-          # Changesets tags `v<version>`; it uses `<pkg>@<version>` only in a multi-package repo.
-          # This once read "${PACKAGE_NAME}@${version}", which cut a second release at a tag that
-          # existed nowhere else, and docs' parseTag() (`/^(\d+)\.(\d+)\.(\d+)/` after stripping a
-          # leading `v`) returns null for "@cosyte/x12@0.0.1", so the version slot it derives,
-          # `versioned_docs/version-@cosyte/x12@0.0.1`, carries a `/` and is not a directory name.
-          # docs keeps only releases carrying docs-content.tar.gz, so it would have selected exactly
-          # that broken tag and skipped the good one.
-          tag="v${version}"
 
           # Unreachable now that the publish command is withheld unless `is-release` is true, and
           # kept anyway: it costs one comparison, and it is the assertion that the gate above is
@@ -1255,121 +1405,11 @@ jobs:
           fi
 
           bash -c "$PACK_DOCS_CMD"
-          assets=()
-          for asset in docs-content.tar.gz source.tar.gz; do
-            if [ -f "dist-artifacts/$asset" ]; then
-              assets+=("dist-artifacts/$asset")
-            fi
-          done
-
-          # The reconciliation, and the only check that legitimately follows the publish: it compares
-          # the body against the version CHANGESETS REPORTED PUBLISHING, which does not exist until
-          # the publish has happened. The body's own fitness was already proved before npm was
-          # touched, by the identical `assert` call above; this run of it re-reads the same bytes
-          # against the one fact that was not available then. The notes come from git, the version
-          # comes from Changesets, and a disagreement between them is a defect, not a detail.
-          notes="$RUNNER_TEMP/release-notes.md"
-          node .cosyte-release-tooling/scripts/release-notes.mjs assert \
-            --file "$notes" --expect-version "$version" --expect-package "$PACKAGE_NAME"
-          echo "Release body for $tag:"
-          cat "$notes"
-
-          # The title is the tag and nothing else. The reader is already in the repo.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "$tag" --notes-file "$notes"
-            if [ ${#assets[@]} -gt 0 ]; then
-              gh release upload "$tag" "${assets[@]}" --clobber
-            fi
-          else
-            # `--target` is REQUIRED. `changeset publish` creates the v<version> tag only in the
-            # runner's local clone; it was changesets/action that pushed it, and it does that ONLY
-            # when createGithubReleases is true, which we turn off above to avoid a duplicate
-            # release. So the tag never reaches the remote, and `gh release create` refuses with
-            # "tag v0.0.1 exists locally but has not been pushed". Pointing --target at this commit
-            # makes gh create the tag itself, which is what we want: one tag, one release, both
-            # created here. The assets go in this same call rather than a follow-up `gh release
-            # upload`: gh creates the release as a draft, uploads, and only then publishes it, so
-            # there is no window in which a published release is visible without its artifacts.
-            gh release create "$tag" ${assets[@]+"${assets[@]}"} \
-              --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes"
-          fi
-
-          # THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth
-          # outcome -- doing nothing, quietly -- is what this actually did for its whole life.
-          #
-          # `-f`, NOT `-F`. `gh api -F/--field` applies magic type conversion, and one of its rules
-          # is that "if the value starts with `@`, the rest of the value is interpreted as a
-          # filename to read the value from" (`gh api --help`, gh 2.96.0). Every package in this org
-          # is `@cosyte/*`, so `-F "client_payload[package]=@cosyte/synth"` made gh strip the `@` and
-          # try to open the file `cosyte/synth`, exiting 1 with
-          #   error parsing "client_payload[package]" value: open cosyte/synth: no such file or directory
-          # `-f/--raw-field` is the plain-string form: no `@` interpretation, and it still builds the
-          # nested object from the `client_payload[...]` keys, which is what cosyte/docs reads as
-          # `github.event.client_payload.package` / `.version`.
-          #
-          # `version` takes `-f` too, deliberately, even though a version can never start with `@`.
-          # `-F` also coerces bare integers to JSON numbers, so a hypothetical `7` would arrive typed
-          # differently from `0.0.7`; and a reader who sees two flags here has to work out why they
-          # differ. Neither field has any reason to be magic, so neither one is.
-          #
-          # WHY THIS SURFACED ON 2026-07-30 AND NOT LONG AGO. The old guard also required a non-empty
-          # DOCS_REPO_DISPATCH_TOKEN, and that secret did not exist in this org until that morning.
-          # The guard was false on every release this org had ever run, so this dispatch had never
-          # once executed and nothing about it was ever exercised. Creating the token broke nothing:
-          # it switched on a path that had been dead since it was written, with the bug waiting in
-          # it. A step nothing has ever run is not a working step. That is also why the skip branch
-          # below is now loud -- a path that is asked for and quietly not taken is indistinguishable
-          # from one that works.
-          #
-          # A FAILED DISPATCH NO LONGER FAILS THE JOB, DELIBERATELY. By the time this runs, npm has
-          # published (permanent, ADR 0001) and the GitHub release exists; its URL is printed a few
-          # lines above. The only thing a failed dispatch costs is that docs.cosyte.com rebuilds
-          # later rather than now, and a push to that repo rebuilds it anyway. Failing here made four
-          # correct releases report as failed runs on 2026-07-30 (dicom 0.0.4, synth 0.0.2, deid
-          # 0.0.2, terminology 0.0.4), which is worse than the miss it reports: a red conclusion on a
-          # successful publish invites someone to re-run a release job that has already published,
-          # and it buries a real publish failure among cosmetic ones. The run conclusion should say
-          # what happened to the artifact. So this warns instead, at `::error::` level so it annotates
-          # the run, with the exact command to finish the job by hand.
-          #
-          # STATE THE RESIDUAL RATHER THAN LEAVING IT IMPLIED. A run whose conclusion is `success`
-          # notifies nobody, so nothing chases this annotation. If DOCS_REPO_DISPATCH_TOKEN expires
-          # or loses its scope, every release annotates red on a green run and "docs rebuilds later"
-          # becomes unbounded. What bounds it today is that `cosyte/docs` also rebuilds on any push
-          # to its `main`, and its prebuild re-reads every package's latest release, so one rebuild
-          # covers every dispatch that was missed. That is a real backstop and it is not a monitor.
-          # The thing that would close it is the sticky-issue pattern `dispatch-receiver.yml` already
-          # uses for its own failures, raised from here on the failure branch -- deliberately NOT
-          # built into this fix, because a notifier is a feature and this is a one-character bug.
-          if [ "$DISPATCH_DOCS" != "true" ]; then
-            echo "Docs dispatch not requested (dispatch-docs=false); skipping."
-          elif [ -z "$DISPATCH_TOKEN" ]; then
-            echo "::warning title=Docs rebuild not triggered::dispatch-docs is true but DOCS_REPO_DISPATCH_TOKEN is unset, so cosyte/docs was never told that $PACKAGE_NAME@$version shipped."
-            {
-              echo "### Docs rebuild NOT triggered"
-              echo ""
-              echo "\`dispatch-docs\` is \`true\` but \`DOCS_REPO_DISPATCH_TOKEN\` is not set for this repo,"
-              echo "so docs.cosyte.com has not been told that \`$PACKAGE_NAME@$version\` shipped."
-            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-          elif GH_TOKEN="$DISPATCH_TOKEN" gh api repos/cosyte/docs/dispatches \
-                 -f event_type=package-released \
-                 -f "client_payload[package]=$PACKAGE_NAME" \
-                 -f "client_payload[version]=$version"; then
-            echo "Dispatched package-released to cosyte/docs for $PACKAGE_NAME@$version."
-          else
-            echo "::error title=Docs rebuild dispatch failed::The publish and the GitHub release SUCCEEDED. Only the cosyte/docs rebuild dispatch for $PACKAGE_NAME@$version failed, and it needs running by hand."
-            {
-              echo "### Docs rebuild dispatch FAILED (the release itself is fine)"
-              echo ""
-              echo "\`$PACKAGE_NAME@$version\` published and its GitHub release exists. The only thing"
-              echo "that did not happen is the docs.cosyte.com rebuild. Trigger it by hand:"
-              echo ""
-              echo '```bash'
-              echo "gh api repos/cosyte/docs/dispatches -f event_type=package-released \\"
-              echo "  -f 'client_payload[package]=$PACKAGE_NAME' -f 'client_payload[version]=$version'"
-              echo '```'
-            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-          fi
+          # No `--require-live` on this arm: it runs seconds after its own publish, where registry
+          # propagation lag would read as a refusal of a version that did ship.
+          node .cosyte-release-tooling/scripts/github-release.mjs \
+            --package "$PACKAGE_NAME" --version "$version" --target "$GITHUB_SHA" \
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
 
       # THE POST-PUBLISH INSTALL GATE. Nothing in this pipeline has ever installed what it published.
       # Every gate above reads the working tree or a locally packed tarball, so a manifest that is
@@ -1528,3 +1568,145 @@ jobs:
           path: ${{ runner.temp }}/npm-debug-logs/*.log
           if-no-files-found: warn
           retention-days: 30
+
+  # ▶ THE CATCH-UP FOR A STAGED VERSION PROMOTED AFTER ITS OWN RUN STOPPED WATCHING.
+  #
+  #   A stage nobody promoted inside `promotion-window-minutes` ends its run with the version in npm's
+  #   staging area and nothing tagged, released or dispatched, which is correct until a maintainer
+  #   promotes it. From then on, every push to the default branch runs the version job, whose
+  #   `promoted` step sees the pending version already live with no GitHub release. That job reports
+  #   `is-release=false`, because there is nothing left to publish, and `finalize=true`; this job then
+  #   does what the stage's own run would have done had the promotion come sooner, with the same
+  #   `github-release.mjs` the other two release-creating sites run, at the commit that released it.
+  #
+  #   NO ENVIRONMENT, AND NOTHING THAT COULD PUBLISH. The caller's `release` environment is a
+  #   required-reviewer gate on the irreversible act, and that act already happened when a maintainer
+  #   promoted the version with 2FA. What is left is a tag, a GitHub release and a docs dispatch, each
+  #   of which a re-run or a hand edit can correct. So this job is handed no publish command, no
+  #   `NPM_TOKEN`, no `registry-url` and no environment, and it runs no `changesets/action`.
+  #
+  #   ITS PERMISSIONS ARE A SUBSET OF WHAT EVERY CALLER ALREADY GRANTS, AND THAT IS NOT OPTIONAL. A
+  #   called workflow's token can only be narrowed, so a job asking for a key the calling job does not
+  #   grant fails the whole workflow at startup, for every caller at once. `contents: write` creates
+  #   the tag and the release, is one of the four keys every caller grants, and is all this job asks
+  #   for. The docs dispatch authenticates with `DOCS_REPO_DISPATCH_TOKEN`, not with this token.
+  #
+  #   `!cancelled()` IS DELIBERATE, AND THE OUTPUT IT READS IS WHAT KEEPS IT SAFE. A job with `needs:`
+  #   and no status function is skipped when its dependency fails, and `skipped` counts as success to
+  #   a required context (`test/skipped-required-context.test.mjs`). So this job opts back in, and the
+  #   opt-in only reaches a version job that failed AFTER its `promoted` step answered: a refused
+  #   protection gate, or any failure above that step, leaves `finalize` unset and this job skipped.
+  #   Past that step, a red Verify on the default branch says nothing about a version npm already
+  #   serves, and holding its release hostage to one would only delay the docs.
+  #
+  #   `is-release != 'true'` is the other half, and it holds by construction: the version job sets
+  #   `finalize` only for a version it found live, and a live version is exactly what it takes out of
+  #   `is-release`. So this job and `release` never start in the same run.
+  finalize:
+    needs: version
+    if: ${{ !cancelled() && needs.version.outputs.is-release != 'true' && needs.version.outputs.finalize == 'true' }}
+    runs-on: ubuntu-latest
+    # Install, build, pack and one release, for a tree that already passed its gates once. Bounded so
+    # a hung install cannot hold a runner for the six-hour default.
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the v<version> tag and the GitHub release
+    steps:
+      # THE RELEASE COMMIT, NOT THIS RUN'S COMMIT. The body is derived from the changesets that commit
+      # consumed, the docs assets are built from that commit's tree, and the tag points at it, so a
+      # release caught up late describes and carries exactly what was staged. Full history, because
+      # the notes gate reads the version commit's diff and refuses a shallow clone. No persisted
+      # credential: nothing here pushes over git, and `gh` authenticates with `GH_TOKEN`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.finalize-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # The tooling arrives AFTER the caller checkout in this job, because nothing here has to run
+      # before the caller's tree exists, and a checkout at the workspace root would delete it
+      # otherwise. Announced first, as at every other tooling checkout in this file.
+      - name: Say which commit the release tooling comes from
+        shell: bash
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "release tooling: ref ${ref}, from cosyte/.github"
+      - name: Check out the shared release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ job.workflow_sha }}
+          path: .cosyte-release-tooling
+          persist-credentials: false
+      # THE TOOLCHAIN THE `release` JOB PACKS THE DOCS WITH, so the caller's pack-docs command meets
+      # the tree it was written for: pnpm from the caller's `packageManager`, Node 24, the caller's
+      # frozen lockfile, and a build, because in the `release` job pack-docs always runs on a built
+      # tree. NO `registry-url`: nothing in this job authenticates to a registry, so no registry
+      # credential file is written for anything to read.
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # THE NOTES, DERIVED AT THE RELEASE COMMIT BY THE SAME GATE THAT DERIVED THEM BEFORE THE STAGE.
+      # `prepare` anchors on the commit that introduced package.json's version and reads the
+      # changesets that commit consumed, so at that commit it yields the body the stage's own run
+      # derived. It works here, where it could not after a publish in the `release` job, for one
+      # reason: the `v<version>` tag that would make it answer "already released" does not exist yet,
+      # which is the whole reason this job is running.
+      - name: Release notes must be derivable at the release commit
+        id: notes
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+        run: |
+          node .cosyte-release-tooling/scripts/release-notes.mjs prepare \
+            --repo . --package "$PACKAGE_NAME" --out "$RUNNER_TEMP/release-notes.md"
+      # THE RELEASE, BY THE SAME SCRIPT THE DIRECT AND PROMOTED ARMS RUN. `--require-live` asks the
+      # registry once more, immediately before anything is written, so a version that stopped being
+      # served between the version job's answer and this step gets no release. `--target` is the
+      # release commit, checked against what is actually checked out, so the tag cannot point at one
+      # commit while the assets came from another; and the notes gate must have found the same version
+      # pending there, so the body cannot describe another release. The one benign way for it not to:
+      # a second push, right behind this one, whose own `finalize` tagged the version first, so the
+      # checkout already carries `v<version>` and there is nothing left to do.
+      - name: Publish the GitHub release + dispatch docs rebuild, for a version promoted after its run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          FINALIZE_VERSION: ${{ needs.version.outputs.finalize-version }}
+          FINALIZE_SHA: ${{ needs.version.outputs.finalize-sha }}
+          NOTES_IS_RELEASE: ${{ steps.notes.outputs.is-release }}
+          NOTES_VERSION: ${{ steps.notes.outputs.version }}
+          PACK_DOCS_CMD: ${{ inputs.pack-docs-cmd }}
+          DISPATCH_DOCS: ${{ inputs.dispatch-docs }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          if [ -z "$FINALIZE_SHA" ] || [ "$head" != "$FINALIZE_SHA" ]; then
+            echo "::error::Checked out ${head}, but the release commit is '${FINALIZE_SHA}'. Refusing to" \
+                 "tag one commit with assets built from another."
+            exit 1
+          fi
+          if [ "$NOTES_IS_RELEASE" != "true" ] && git rev-parse -q --verify "refs/tags/v${FINALIZE_VERSION}" >/dev/null; then
+            echo "v${FINALIZE_VERSION} was tagged by another run after this one decided to finalize it; nothing left to do."
+            exit 0
+          fi
+          if [ "$NOTES_IS_RELEASE" != "true" ] || [ "$NOTES_VERSION" != "$FINALIZE_VERSION" ]; then
+            echo "::error::The notes gate at ${head} found '${NOTES_VERSION}' pending, not" \
+                 "'${FINALIZE_VERSION}'. Refusing to release a body derived for another version."
+            exit 1
+          fi
+          bash -c "$PACK_DOCS_CMD"
+          node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
+            --package "$PACKAGE_NAME" --version "$FINALIZE_VERSION" --target "$FINALIZE_SHA" \
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"

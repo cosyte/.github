@@ -417,9 +417,17 @@ test('A10/A3: across every arm, the tool is never asked to promote or discard an
 // keeps its own copy for the same reason. `the parser still understands release.yml` below is what
 // stops a drifted copy making every assertion here vacuous.
 
-/** Every step of the `release` job, in order, with its comment lines stripped. */
+/**
+ * Every step of the `release` job, in order, with its comment lines stripped.
+ *
+ * The text it reads ENDS at the next job id, because `release` is no longer the last job in the
+ * file: read to the end of the file, the `finalize` job's steps would be counted as this job's, and
+ * an assertion that "no step in the release job does X" would quietly be about two jobs.
+ */
 function releaseSteps(workflow) {
-  const job = workflow.slice(workflow.indexOf('\n  release:'));
+  const from = workflow.slice(workflow.indexOf('\n  release:'));
+  const next = from.slice(1).search(/\n {2}[A-Za-z0-9_-]+:[ \t]*\n/);
+  const job = next === -1 ? from : from.slice(0, next + 1);
   const chunks = job.slice(job.indexOf('\n    steps:')).split(/\n {6}- (?=\S)/).slice(1);
   return chunks.map((chunk, index) => {
     const body = chunk
@@ -464,7 +472,7 @@ test('the parser still understands release.yml, or every assertion below is vacu
 test('A8: the three steps that assume a publish are all closed to a staged version', () => {
   const steps = releaseSteps(readFileSync(WORKFLOW, 'utf8'));
 
-  const release = steps.find((s) => /Publish the GitHub release \+ dispatch docs rebuild/.test(s.label));
+  const release = steps.find((s) => s.label === 'Publish the GitHub release + dispatch docs rebuild');
   const install = steps.find((s) => /must be installable from the registry/.test(s.label));
   assert.ok(release && install, 'both downstream steps must still be findable');
 
@@ -477,9 +485,32 @@ test('A8: the three steps that assume a publish are all closed to a staged versi
     );
   }
 
-  // The GitHub release and the docs dispatch are one step, so closing it closes both behaviours.
-  assert.match(release.body, /gh release create|gh release edit/);
-  assert.match(release.body, /repos\/cosyte\/docs\/dispatches/);
+  // The GitHub release and the docs dispatch are one step, so closing it closes both behaviours. Both
+  // live in `github-release.mjs`, which this step runs; `test/github-release.test.mjs` runs that
+  // script and reads back every command it spawned.
+  assert.match(release.body, /\.cosyte-release-tooling\/scripts\/github-release\.mjs/);
+  const script = readFileSync(new URL('../scripts/github-release.mjs', import.meta.url), 'utf8');
+  assert.match(script, /'release', 'create'/);
+  assert.match(script, /'repos\/cosyte\/docs\/dispatches'/);
+
+  // AND THE ONE OTHER STEP IN THIS JOB THAT CUTS A RELEASE IS OPEN TO A STAGED VERSION ONLY ONCE THE
+  // REGISTRY SERVES IT. It is the staged arm's own, it runs the same script, and its condition needs
+  // the waiting step to have seen the version live; `--require-live` makes the script look again
+  // before it writes anything. A staged version that nobody promoted reaches neither step.
+  const cutting = steps.filter((s) => /scripts\/github-release\.mjs/.test(s.body));
+  assert.deepEqual(cutting.map((s) => s.label), [
+    'Publish the GitHub release + dispatch docs rebuild, once the staged version is live',
+    'Publish the GitHub release + dispatch docs rebuild',
+  ]);
+  const promoted = cutting[0];
+  assert.equal(
+    promoted.fields.if,
+    "${{ steps.publish-floor.outputs.mode == 'staged' && steps.promotion.outputs.live == 'true' }}",
+  );
+  assert.match(promoted.body, /github-release\.mjs --require-live/);
+  const wait = steps.find((s) => s.fields.id === 'promotion');
+  assert.ok(wait && wait.index < promoted.index, 'the wait must come before the release it gates');
+  assert.match(wait.body, /promotion\.mjs await/);
 });
 
 test('A9: a staged run has a step whose whole job is telling a maintainer', () => {

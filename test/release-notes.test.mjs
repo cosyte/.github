@@ -618,15 +618,37 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
   const proves = (step) => /release-notes\.mjs assert\b/.test(step.body);
   const publishes = (step) => /uses: changesets\/action@/.test(step.body) && step.with.publish !== undefined;
 
-  // DERIVED EXACTLY ONCE, IN THE JOB THAT DOES NOT PUBLISH. Deriving again on the far side of the
-  // publish cannot work at all: `changeset publish` creates the `v<version>` tag locally and "is a
-  // release pending" is answered by whether that tag exists, so a second derivation always finds
-  // nothing and every successful release would end red with no release created.
+  // DERIVED EXACTLY ONCE BEFORE THE PUBLISH, IN THE JOB THAT DOES NOT PUBLISH, AND NEVER AFTER IT.
+  // Deriving again on the far side of the publish cannot work at all: `changeset publish` creates the
+  // `v<version>` tag locally and "is a release pending" is answered by whether that tag exists, so a
+  // second derivation in the publishing job always finds nothing and every successful release would
+  // end red with no release created.
+  //
+  // THE ONE OTHER DERIVATION IS THE CATCH-UP'S, AND THAT ARGUMENT IS WHY IT CAN EXIST. `finalize`
+  // runs in a LATER run, for a staged version promoted after its own run stopped watching, from a
+  // fresh checkout of the release commit. No `v<version>` tag exists there or anywhere, which is the
+  // whole reason that job runs, so `prepare` at that commit derives exactly the body the stage's run
+  // derived. It is pinned to that job and to that commit, and to nothing else.
   const prepares = [...text.matchAll(/release-notes\.mjs prepare\b/g)];
-  assert.equal(prepares.length, 1, 'the notes must be derived exactly once');
+  assert.equal(prepares.length, 2, 'the notes are derived once before the publish, and once by the catch-up');
+  assert.equal(release.steps.filter(derives).length, 0, 'the publishing job must never derive notes');
   const preparing = version.steps.filter(derives);
   assert.equal(preparing.length, 1, 'the notes are derived in the version job, before anyone is asked to approve');
   assert.ok(preparing[0].body.includes(NOTES_FILE), 'prepare must write the file both asserts read');
+  const finalize = workflow.byId.finalize;
+  assert.ok(finalize, 'release.yml must keep the catch-up job whose derivation this admits');
+  const catchUp = finalize.steps.filter(derives);
+  assert.equal(catchUp.length, 1, 'the catch-up derives its notes exactly once');
+  assert.ok(catchUp[0].body.includes(NOTES_FILE), 'and writes them where the release script reads them');
+  const releaseCommit = finalize.steps.find(
+    (step) => /uses: actions\/checkout@/.test(step.body) && step.with.repository === undefined,
+  );
+  assert.equal(
+    releaseCommit?.with.ref,
+    '${{ needs.version.outputs.finalize-sha }}',
+    'the catch-up derives at the release commit the version job found, not at whatever this run built',
+  );
+  assert.ok(releaseCommit.index < catchUp[0].index, 'the release commit is checked out before the notes are derived');
 
   // AND THE BYTES TRAVEL, BECAUSE `RUNNER_TEMP` DOES NOT CROSS A JOB BOUNDARY. The version job
   // exports them and declares them as a job output; the publish job reads that output back to the
@@ -650,31 +672,62 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
   // branch with the `if:` untouched and every suite green. Deleting the line stops `release` starting
   // at all, just as silently. Both faces are the same gap, so the value is pinned to the gate's own
   // output and its absence is a failure rather than an empty string.
+  //
+  // ONE CONJUNCT NARROWS IT, AND IT CAN ONLY WITHHOLD: a version the notes gate calls pending but npm
+  // already serves has nothing left to publish. `test/environment-gate.test.mjs` (AC1) says why that
+  // is the only edit to this line that is safe, and pins the same string.
   assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
   assert.equal(
     version.blocks.outputs['is-release'],
-    '${{ steps.notes.outputs.is-release }}',
-    'the discriminator the publish job is gated on must be the notes gate\'s own answer, whole',
+    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live"',
   );
   const restores = release.steps.filter((step) => /base64 -d/.test(step.body));
   assert.equal(restores.length, 1, 'exactly one step restores the notes in the publish job');
   assert.match(restores[0].env.RELEASE_NOTES_B64, /needs\.version\.outputs\.release-notes-b64/);
   assert.ok(restores[0].body.includes(NOTES_FILE), 'the restored bytes must land where both asserts read');
 
-  // TWO ASSERTS, ONE ON EACH SIDE OF THE PUBLISH, BOTH IN THE PUBLISH JOB, both reading the same
-  // file. Ordering here is a step index inside one job rather than a byte offset across the file.
+  // TWO ASSERTS, ONE ON EACH SIDE OF THE PUBLISH, both reading the same file. The first is a step of
+  // its own in the publish job, above the publish. The second is inside `scripts/github-release.mjs`,
+  // the one implementation every step that cuts a GitHub release runs, which asserts the body against
+  // the version being released before its first write (`test/github-release.test.mjs` runs it and
+  // reads back the order of everything it spawned). Ordering here is a step index inside one job
+  // rather than a byte offset across the file.
   const asserts = [...text.matchAll(/release-notes\.mjs assert\b/g)];
-  assert.equal(asserts.length, 2, 'the bytes must be proved before the publish and reconciled after it');
+  assert.equal(asserts.length, 1, 'the bytes must be proved in the workflow before the publish');
   const proving = release.steps.filter(proves);
-  assert.equal(proving.length, 2, 'both asserts belong to the job that publishes');
+  assert.equal(proving.length, 1, 'the pre-publish assert belongs to the job that publishes');
   const publish = release.steps.filter(publishes);
   assert.equal(publish.length, 1, 'exactly one step is handed a publish command');
   assert.ok(proving[0].index > restores[0].index, 'the body cannot be proved before it has arrived');
   assert.ok(proving[0].index < publish[0].index, 'the body must be proved fit before npm is reached');
-  assert.ok(proving[1].index > publish[0].index, 'the published version must still be reconciled after');
-  for (const step of proving) {
-    assert.ok(step.body.includes(NOTES_FILE), `"${step.label}" must assert the file prepare wrote, or it guards nothing`);
+  assert.ok(proving[0].body.includes(NOTES_FILE), `"${proving[0].label}" must assert the file prepare wrote, or it guards nothing`);
+
+  const cutting = workflow.jobs.flatMap((job) => job.steps).filter((step) => /scripts\/github-release\.mjs/.test(step.body));
+  assert.deepEqual(
+    cutting.map((step) => `${step.job}: ${step.label}`),
+    [
+      'release: Publish the GitHub release + dispatch docs rebuild, once the staged version is live',
+      'release: Publish the GitHub release + dispatch docs rebuild',
+      'finalize: Publish the GitHub release + dispatch docs rebuild, for a version promoted after its run',
+    ],
+    'every GitHub release is cut by the one script that reconciles the body first',
+  );
+  for (const step of cutting) {
+    assert.ok(
+      step.body.includes(`--notes "${NOTES_FILE}"`),
+      `"${step.label}" must hand the release script the file prepare wrote, or the reconciliation reads something else`,
+    );
   }
+  const direct = release.steps.find((step) => step.label === 'Publish the GitHub release + dispatch docs rebuild');
+  assert.ok(direct.index > publish[0].index, 'the published version must still be reconciled after');
+  const releaseScript = readFileSync(resolve(HERE, '../scripts/github-release.mjs'), 'utf8');
+  assert.match(releaseScript, /const assertNotes = path\.join\(toolingDir, 'release-notes\.mjs'\);/);
+  assert.match(
+    releaseScript,
+    /\[assertNotes, 'assert', '--file', notes, '--expect-version', version, '--expect-package', packageName\]/,
+    'the release script must run the same assert entry point, against this version and this package',
+  );
 
   // THE PRE-PUBLISH ASSERT CARRIES NO CONDITION. It sits in a job that only exists when a release is
   // pending, so an `if:` here could only ever subtract: it would be a way for the publish to happen
@@ -1727,11 +1780,19 @@ test('release.yml authors the version PR with a credential that is not GITHUB_TO
   // `GITHUB_TOKEN:` env keys in the file are those.
   const envTokens = [...workflow.matchAll(/^\s*GITHUB_TOKEN:\s*(.+)$/gm)].map((m) => m[1].trim());
   assert.deepEqual(envTokens, [EXPECTED, EXPECTED], 'changesets/action must open the PR with the release-PR token');
-  for (const job of jobs.jobs) {
+  for (const id of ['version', 'release']) {
+    const job = jobs.byId[id];
     const action = job.steps.find((step) => /uses: changesets\/action@/.test(step.body));
     assert.ok(action, `job \`${job.id}\` must run changesets/action`);
     assert.equal(action.env.GITHUB_TOKEN, EXPECTED, `the action in \`${job.id}\` must use the release-PR token`);
   }
+  // `finalize` runs no `changesets/action` at all: it opens no Version PR and publishes nothing, so it
+  // needs neither the release-PR token nor the arm switch that would make it want one.
+  assert.equal(
+    jobs.byId.finalize.steps.filter((step) => /uses: changesets\/action@/.test(step.body)).length,
+    0,
+    'the catch-up job must not run changesets/action',
+  );
 
   // WRONG WAY 3, and the quiet one: setting the action's `github-token` INPUT and considering it
   // done. Read against the action's source at the sha pinned in the workflow, it resolves

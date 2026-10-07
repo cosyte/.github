@@ -24,8 +24,8 @@
 //     `test/ci-docs-content-delivery.test.mjs` refuses it in `ci.yml`, which is where it was found;
 //     a paste into any other workflow was invisible to every test in this repository until here.
 //   - Every `cosyte/.github` tooling checkout in `release.yml` resolves its ref from the property
-//     the docs-content delivery reads, and every one of them is ANNOUNCED first. There are four,
-//     and the count is asserted: a fifth added without an announcement, or one moved away from the
+//     the docs-content delivery reads, and every one of them is ANNOUNCED first. There are five,
+//     and the count is asserted: a sixth added without an announcement, or one moved away from the
 //     step that announces it, is a finding rather than a silent gap.
 //   - The caller-visible job ids of both published workflows, because a job id is the check-run
 //     context a caller's branch protection names and renaming one detaches that ruleset entry with
@@ -70,8 +70,8 @@ const REF_EXPRESSION = '${{ job.workflow_sha }}';
 /** The expression this repository shipped, which is `''` wherever it is read. */
 const EMPTY_EXPRESSION = 'github.job_workflow_sha';
 
-/** The tooling checkouts in `release.yml` at the pin. A fifth is fine; an unannounced one is not. */
-const TOOLING_CHECKOUTS = 4;
+/** The tooling checkouts in `release.yml` at the pin. Another is fine; an unannounced one is not. */
+const TOOLING_CHECKOUTS = 5;
 
 /** The label of the step that says which commit the checkout beside it is about to resolve. */
 const ANNOUNCEMENT = 'Say which commit the release tooling comes from';
@@ -261,8 +261,9 @@ test('EVERY `cosyte/.github` TOOLING CHECKOUT resolves the ref from `job.workflo
   assert.deepEqual(toolingRefFindings(text), []);
 
   // The count is pinned so that a checkout deleted, or one added somewhere the examination cannot
-  // see, is a decision rather than a quieter tree. Four is what the split left: two per job,
-  // because the caller checkout between them deletes the first one.
+  // see, is a decision rather than a quieter tree. Five: two in each of `version` and `release`,
+  // because the caller checkout between them deletes the first one, and one in `finalize`, which
+  // checks the caller tree out first because nothing in it has to run before that tree exists.
   const checkouts = parseWorkflow(text).jobs.flatMap((job) => job.steps.filter(isToolingCheckout));
   assert.equal(checkouts.length, TOOLING_CHECKOUTS, 'the number of tooling checkouts moved');
   for (const step of checkouts) assert.equal(step.with.ref, REF_EXPRESSION);
@@ -400,10 +401,10 @@ function runAnnouncement(script, sha) {
 
 const SHA = '213c8547929e163359fc641da76d791fcf9495a2';
 
-test('ALL FOUR ANNOUNCEMENTS ARE THE SAME PROGRAM, so one reading of it covers every site', () => {
+test('EVERY ANNOUNCEMENT IS THE SAME PROGRAM, so one reading of it covers every site', () => {
   const scripts = announcementScripts(read(RELEASE));
   assert.equal(scripts.length, TOOLING_CHECKOUTS, 'one announcement per tooling checkout');
-  for (const script of scripts) assert.equal(script, scripts[0], 'four sites, four copies, one program');
+  for (const script of scripts) assert.equal(script, scripts[0], 'every site, one copy each, one program');
 });
 
 test('A RESOLVED REF IS NAMED IN THE LOG, before the checkout that uses it', () => {
@@ -435,7 +436,7 @@ test('AN UNSET REF FAILS, because `set -u` is load-bearing rather than decorativ
   assert.match(run.output, /TOOLING_SHA/, run.output);
 });
 
-test('the extraction can fail, so the four runs above are not run over something invented', () => {
+test('the extraction can fail, so the runs above are not run over something invented', () => {
   const withoutRun = read(RELEASE).replace('        run: |\n          set -euo pipefail\n          ref="${TOOLING_SHA}"', () => '        run: echo hi');
   assert.throws(() => announcementScripts(withoutRun), /no `run: \|` block this reader can see/);
 });
@@ -471,17 +472,18 @@ test('THE JOB IDS OF BOTH PUBLISHED WORKFLOWS ARE UNCHANGED, in the file and thr
   // repositories with no error anywhere and no re-run that undoes it. Nothing in this change may
   // move one, and both files are read because both are required contexts somewhere.
   assert.deepEqual(jobIds(CI, read(CI)), ['verify', 'prepublish', 'actionlint']);
-  assert.deepEqual(jobIds(RELEASE, read(RELEASE)), ['version', 'release']);
+  // `finalize` is ADDED, not renamed: a new context no caller's ruleset names yet.
+  assert.deepEqual(jobIds(RELEASE, read(RELEASE)), ['version', 'release', 'finalize']);
   assert.deepEqual(
     parseWorkflow(read(RELEASE)).jobs.map((job) => job.id),
-    ['version', 'release'],
+    ['version', 'release', 'finalize'],
     'the shared reader and the line reader must agree, or one of them is reading a different file',
   );
 });
 
 test('the job id reader can fail, so the assertion above is not a tautology', () => {
   const renamed = read(RELEASE).replace('\n  version:\n', () => '\n  version-pr:\n');
-  assert.deepEqual(jobIds(RELEASE, renamed), ['version-pr', 'release'], 'a renamed job must be seen as renamed');
+  assert.deepEqual(jobIds(RELEASE, renamed), ['version-pr', 'release', 'finalize'], 'a renamed job must be seen as renamed');
   assert.throws(() => jobIds('synthetic.yml', 'name: x\non:\n  push:\n'), /no top-level `jobs:` key/);
   assert.throws(() => jobIds('synthetic.yml', 'jobs:\n'), /declares `jobs:` and nothing under it/);
 });

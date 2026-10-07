@@ -47,6 +47,7 @@ import {
   optsBackInAfterFailure,
   parseWorkflow,
   readWorkflow,
+  STATUS_CHECK_FUNCTION,
   STEP_CONDITION_LINE,
   workflowEnv,
   workflowPermissions,
@@ -829,12 +830,15 @@ const reachesRegistry = (step) =>
 test('AC12: the parser still understands release.yml, or every assertion below is vacuous', () => {
   const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
 
-  // THE TOPOLOGY ITSELF IS THE CANARY NOW. One job is the shape this file had before the split and
-  // three is a shape nobody has reasoned about, so either is a change that has to come here first.
+  // THE TOPOLOGY ITSELF IS THE CANARY NOW. Three jobs is the shape every assertion in this file was
+  // written against: the un-gated version-PR job, the environment-held publish job, and `finalize`,
+  // which cuts the GitHub release for a staged version promoted after its own run stopped watching
+  // and can publish nothing (AC2, AC6 and AC9 below say why, each from its own side). Any other
+  // shape is one nobody has reasoned about here, so it is a change that has to come here first.
   assert.deepEqual(
     workflow.jobs.map((job) => job.id),
-    ['version', 'release'],
-    'release.yml is two jobs: the un-gated version-PR job, and the environment-held publish job',
+    ['version', 'release', 'finalize'],
+    'release.yml is three jobs: the un-gated version-PR job, the environment-held publish job, and the un-gated finalize job',
   );
   for (const job of workflow.jobs) {
     assert.ok(job.steps.length >= 6, `job \`${job.id}\` parsed to ${job.steps.length} steps`);
@@ -845,7 +849,7 @@ test('AC12: the parser still understands release.yml, or every assertion below i
       );
     }
   }
-  assert.ok(allSteps(workflow).length >= 24, 'the two jobs together should carry the full step list');
+  assert.ok(allSteps(workflow).length >= 24, 'the jobs together should carry the full step list');
 
   // AND THE PARSER REFUSES RATHER THAN RETURNING NOTHING. A parser that answers "no jobs" or "no
   // steps" turns every assertion above into a tautology, so the failure mode is proved here rather
@@ -1382,6 +1386,7 @@ const CONVERGED_ON_THE_SHARED_READER = [
   'actionlint-config.test.mjs',
   'environment-gate.test.mjs',
   'install-check.test.mjs',
+  'promotion.test.mjs',
   'release-notes.test.mjs',
   'workflow-sha.test.mjs',
 ];
@@ -1619,11 +1624,18 @@ test('AC1: the "Version Packages" job references no deployment environment and c
   // Deleting the line instead fails the other way and just as silently: `needs.version.outputs.
   // is-release` then reads empty forever and `release` never starts again. So the value is pinned to
   // the gate's own output and nothing else, and its absence is a failure rather than a default.
+  //
+  // ONE CONJUNCT IS ADDED TO IT, AND IT IS PINNED WHOLE WITH IT, because the only edit it permits is
+  // one that withholds. A version the notes gate calls pending but npm already serves (a stage
+  // promoted after its run stopped watching) has nothing left to publish, so `promoted.live` takes
+  // it out. `x == 'true' && y != 'true'` is true only where the notes gate said true, so no value
+  // of the new term can start the environment-held job on a run the notes gate did not call a
+  // release; and an empty `live`, which is what every fault in that step leaves, changes nothing.
   assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
   assert.equal(
     version.blocks.outputs['is-release'],
-    '${{ steps.notes.outputs.is-release }}',
-    'the discriminator the publish job is gated on must be the notes gate\'s own answer, whole',
+    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live"',
   );
 });
 
@@ -1717,8 +1729,10 @@ test('AC3: the protection gate runs unconditionally, on every path, ahead of eve
 
   // And ACROSS JOBS: every step in any job that checks out a caller tree, authenticates to a
   // registry, packs or publishes is either below the gate in the gate's own job, or in a job that
-  // cannot start until the gate's job has succeeded. A third job added without a `needs:` would fail
-  // here rather than quietly running unguarded.
+  // `needs:` the gate's job. A job added without a `needs:` would fail here rather than quietly
+  // running unguarded. `needs:` alone means "cannot start until that job SUCCEEDED" only for a job
+  // with no status function in its condition; `finalize` has one, and AC9 pins the output that
+  // keeps it from starting after a refused gate.
   for (const [label, matches] of Object.entries(CATEGORIES)) {
     const found = allSteps(workflow).filter(matches);
     assert.ok(found.length > 0, `no step ${label}, so this assertion proves nothing`);
@@ -2158,6 +2172,15 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
   assertNoAmbientNpmCredential(innocentIndex, parseWorkflow(innocentIndex).byId.version);
 
   assertNoStepNpmCredential(version);
+
+  // `finalize` IS SWEPT THE SAME WAY, AT BOTH SCOPES, BECAUSE IT IS THE OTHER JOB NO HUMAN APPROVES.
+  // It runs on a later push for a version npm already serves, with no environment, and it installs
+  // and builds the caller's tree, so third-party lifecycle scripts run in it. The npm write credential
+  // has no business there and nothing in it needs one: it cuts a GitHub release and dispatches docs.
+  const finalize = workflow.byId.finalize;
+  assert.ok(finalize, 'release.yml must keep the finalize job this sweep is about');
+  assertNoAmbientNpmCredential(text, finalize);
+  assertNoStepNpmCredential(finalize);
   // ... and that sweep is not vacuous either, in EITHER of the two forms an expression can name the
   // secret. The dot form is the one the delivered file uses in `release` and the one every earlier
   // proof was written against; the index form is the one that reaches the same secret while
@@ -2219,6 +2242,7 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
       'Collect the npm debug log',
       'Upload the npm debug log',
     ],
+    finalize: [],
   };
   // The set is derived from the condition a step SPELLS, not only from the one the parser read, so a
   // step opting back in through `if :` or `"if":` joins the set and has to be accounted for here
@@ -2274,6 +2298,37 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   );
   assert.equal(workflow.byId.release.keys.needs, 'version');
   assert.match(stageReport.body, /staged-publish\.mjs report/, 'it reports; it does not stage or publish');
+
+  // THE SAME QUESTION ONE SCOPE UP, BECAUSE A JOB CAN OPT BACK IN TOO. `finalize` carries
+  // `!cancelled()` at JOB level, which `test/skipped-required-context.test.mjs` requires of a job
+  // with `needs:` and no environment (README.md, "What a skipped required context does to a merge"),
+  // and which starts it after the version job FAILED. It checks
+  // out a caller tree and packs, so the step classification above does not reach it: its steps carry
+  // no status function, and they run whenever the job does. What keeps it off a refused gate is the
+  // output its condition reads, and that is pinned link by link, the way the stage report's is:
+  //
+  //   its condition requires `needs.version.outputs.finalize == 'true'`;
+  //   that output is the version job's `steps.promoted.outputs.finalize` and nothing else;
+  //   the step that writes it sits BELOW the gate in the gate's own job and does not opt back in,
+  //   so a gate that refused means that step never ran and the output is empty, not `true`.
+  const survivingJobs = workflow.jobs.filter((job) => STATUS_CHECK_FUNCTION.test(job.keys.if ?? ''));
+  assert.deepEqual(
+    survivingJobs.map((job) => job.id),
+    ['finalize'],
+    'a job that starts after its dependency failed has to be considered against AC9 rather than added quietly',
+  );
+  const finalize = workflow.byId.finalize;
+  assert.equal(finalize.keys.needs, 'version');
+  assert.equal(finalize.keys.environment, undefined, 'finalize must not hold the release environment');
+  assert.match(finalize.keys.if, /needs\.version\.outputs\.finalize == 'true'/);
+  assert.match(finalize.keys.if, /needs\.version\.outputs\.is-release != 'true'/);
+  assert.equal(workflow.byId.version.blocks.outputs.finalize, '${{ steps.promoted.outputs.finalize }}');
+  const versionSteps = workflow.byId.version.steps;
+  const promoted = versionSteps.find((step) => step.fields.id === 'promoted');
+  const gateStep = versionSteps.find(isGate);
+  assert.ok(promoted && gateStep, 'the promoted step and the gate must both be in the version job');
+  assert.ok(promoted.index > gateStep.index, 'the step that writes `finalize` must run below the protection gate');
+  assert.equal(optsBackInAfterFailure(promoted), false, 'and it must not itself run after a failure');
 
   // AND THE CLASSIFIER IS ASKED WHAT IT MATCHES, IN BOTH DIRECTIONS. `assert.deepEqual` over the
   // list above passes whether or not the predicate that built it is any good, which is exactly how
@@ -2351,7 +2406,27 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   assert.equal(tolerantJob.keys['continue-on-error'], 'true', 'the reader must SEE the key at job scope');
 });
 
-test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => {
+/**
+ * Every job permission that asks a caller for more than the workflow-level block, which is the set
+ * every caller grants. A called workflow's token can only be narrowed, so each finding is a workflow
+ * that fails at startup, before any job runs, on every caller at once.
+ */
+function beyondTheCallerGrant(text) {
+  const granted = workflowPermissions(text) ?? {};
+  const strength = { none: 0, read: 1, write: 2 };
+  const findings = [];
+  for (const job of parseWorkflow(text).jobs) {
+    for (const [key, value] of Object.entries(effectivePermissions(text, job) ?? {})) {
+      const allowed = granted[key];
+      if (allowed === undefined || strength[value] === undefined || strength[value] > strength[allowed]) {
+        findings.push(`job \`${job.id}\` asks for \`${key}: ${value}\` beyond the caller grant \`${key}: ${allowed ?? 'none'}\``);
+      }
+    }
+  }
+  return findings;
+}
+
+test('AC3 and AC10: every job names `contents`, the gated pair name `actions: read`, and no job asks a caller for more', () => {
   const text = readWorkflow(WORKFLOW, readFileSync);
   const workflow = parseWorkflow(text);
 
@@ -2359,16 +2434,38 @@ test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => 
   // "If you specify the access for any of these permissions, all of those that are not specified are
   // set to `none`", so a block whose only key is `actions: read` does not ADD a permission: it strips
   // `contents` off that job, and `actions/checkout` 403s on the very next step, on a FULLY COMPLIANT
-  // caller, with none of the fail-closed refusal this gate exists to produce. The split doubled the
-  // number of ways to get this wrong, so both jobs are checked, not just the one with the gate in it.
+  // caller, with none of the fail-closed refusal this gate exists to produce. Every job is checked,
+  // not just the one with the gate in it.
+  //
+  // AND NO JOB MAY ASK FOR MORE THAN THE WORKFLOW-LEVEL BLOCK, which is the set every caller grants.
+  // A called workflow's token can only be narrowed, so a job requesting a key, or a strength, its
+  // caller does not grant is an ELEVATION that GitHub refuses at startup, before any job runs and
+  // for every caller at once. `install-check.test.mjs` pins that block to the four keys the callers
+  // grant; this pins every job inside it.
   for (const job of workflow.jobs) {
     const permissions = effectivePermissions(text, job);
     assert.ok(permissions, `job \`${job.id}\` must have permissions in force`);
-    assert.equal(permissions.actions, 'read', `job \`${job.id}\` needs \`actions: read\``);
     assert.ok(
       permissions.contents === 'read' || permissions.contents === 'write',
       `\`contents\` must be named in \`${job.id}\` and must grant read, got ${JSON.stringify(permissions.contents)}`,
     );
+  }
+  assert.deepEqual(beyondTheCallerGrant(text), []);
+  // ... and the subset rule bites, on a real job and on both axes: a key the callers do not grant,
+  // and a key they grant at a weaker strength than the job asks for.
+  const extraKey = text.replace(
+    '      contents: write # create the v<version> tag and the GitHub release\n',
+    () => '      contents: write # create the v<version> tag and the GitHub release\n      issues: write\n',
+  );
+  assert.notEqual(extraKey, text, 'the mutation must land on the finalize job, or this proves nothing');
+  assert.deepEqual(beyondTheCallerGrant(extraKey).map((finding) => finding.split(' asks')[0]), ['job `finalize`']);
+  const stronger = text.replace('\n  actions: read # read the caller', () => '\n  actions: none # read the caller');
+  assert.notEqual(stronger, text, 'the mutation must land on the workflow-level block');
+  assert.ok(beyondTheCallerGrant(stronger).some((finding) => /`actions: read`/.test(finding)));
+  // `actions: read` is the gate's read of the caller's environment protection, in `version`, and is
+  // kept on `release` so a caller grants one shape for both. `finalize` reads no environment.
+  for (const id of ['version', 'release']) {
+    assert.equal(effectivePermissions(text, workflow.byId[id]).actions, 'read', `job \`${id}\` needs \`actions: read\``);
   }
 
   // Pinned whole, in both directions. `contents` stays at `write` in both: the version job pushes
@@ -2386,6 +2483,10 @@ test('AC3 and AC10: both jobs name `contents` alongside `actions: read`', () => 
     'pull-requests': 'write',
     actions: 'read',
   });
+  // `finalize` creates a tag and a GitHub release and nothing else, so `contents: write` is all it
+  // holds. No `id-token`, because it signs nothing and publishes nothing; no `pull-requests`, because
+  // it runs no `changesets/action`; no `actions`, because it reads no environment.
+  assert.deepEqual(effectivePermissions(text, workflow.byId.finalize), { contents: 'write' });
 });
 
 test('the gate is handed the credential and the default-branch fallback the script expects', () => {
@@ -2447,7 +2548,17 @@ function parseCallContract(text) {
 test('AC11: no caller has to change anything, so every input and secret is the one it already had', () => {
   const { inputs, secrets } = parseCallContract(readWorkflow(WORKFLOW, readFileSync));
 
-  assert.deepEqual(Object.keys(inputs), ['package-name', 'dispatch-docs', 'pack-docs-cmd', 'expect-unpublished-deps']);
+  // `promotion-window-minutes` is the one input added since, and the loop below is what admits it:
+  // optional, with a default, so no caller has to pass it.
+  assert.deepEqual(Object.keys(inputs), [
+    'package-name',
+    'dispatch-docs',
+    'pack-docs-cmd',
+    'expect-unpublished-deps',
+    'promotion-window-minutes',
+  ]);
+  assert.equal(inputs['promotion-window-minutes'].type, 'number');
+  assert.equal(inputs['promotion-window-minutes'].default, '120');
   assert.deepEqual(Object.keys(secrets), ['NPM_TOKEN', 'DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
 
   // Exactly one required input and exactly one required secret, and they are the two every caller
