@@ -1,64 +1,49 @@
-<a href="https://cosyte.com">
+<a href="https://cosyte.com/?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png">
     <img alt="Cosyte: a plus mark set in two overlapping rounded squares, one solid and one outlined, beside the Cosyte wordmark" src="https://cosyte.com/tile/cosyte-lockup-tile-on-light-1200x300.png">
   </picture>
 </a>
 
-We build open-source TypeScript libraries for healthcare data: HL7 v2, FHIR, C-CDA, X12, NCPDP, ASTM,
-DICOM, MLLP, terminology and de-identification. We also build and run integrations on them.
+We build open-source TypeScript libraries for healthcare data. Fourteen are on npm at 0.1, the first
+release line whose public API we treat as settled. They cover HL7 v2, MLLP, FHIR R4, C-CDA, X12,
+NCPDP, ASTM and DICOM, plus terminology, HL7 v2 to FHIR conversion, de-identification, synthetic test
+data, dates and a command line.
 
 ```bash
 npm install @cosyte/hl7
 ```
 
-```ts
-import { parseHL7 } from "@cosyte/hl7";
-
-const msg = parseHL7(raw); // raw: an HL7 v2 message as a string
-console.log(msg.patient?.mrn, msg.patient?.fullName); // MRN12345 John Q Doe
-```
-
-No segment or field numbers to look up: the parser accepts vendor-quirky messages as they arrive and
-hands back fields by name. The [quickstart](https://docs.cosyte.com/hl7/quickstart) runs the same lines
-on a synthetic message.
+Each library installs on its own: swap `hl7` for any name in the table. All fourteen are MIT licensed
+and need Node.js 22 or newer (`@cosyte/cli` accepts 22 through 25).
 
 ## Libraries
 
-All 14 are MIT licensed and run on Node.js 22 or later.
-
 | Package | What it does | Links |
 |---|---|---|
-| `@cosyte/hl7` | Parse, build and serialize HL7 v2 messages, and read fields by name | [npm](https://www.npmjs.com/package/@cosyte/hl7) · [docs](https://docs.cosyte.com/hl7/quickstart) · [repo](https://github.com/cosyte/hl7) |
-| `@cosyte/mllp` | Send and receive HL7 v2 over MLLP: framing, ACK correlation, reconnects and TLS | [npm](https://www.npmjs.com/package/@cosyte/mllp) · [docs](https://docs.cosyte.com/mllp/quickstart) · [repo](https://github.com/cosyte/mllp) |
-| `@cosyte/fhir` | Read, write and validate FHIR R4 resources, in JSON and XML | [npm](https://www.npmjs.com/package/@cosyte/fhir) · [docs](https://docs.cosyte.com/fhir/quickstart) · [repo](https://github.com/cosyte/fhir) |
-| `@cosyte/ccda` | Parse, build and serialize C-CDA documents, with typed problems, medications and allergies | [npm](https://www.npmjs.com/package/@cosyte/ccda) · [docs](https://docs.cosyte.com/ccda/quickstart) · [repo](https://github.com/cosyte/ccda) |
-| `@cosyte/x12` | Parse and build X12 005010 healthcare transactions (837, 835, 270/271, 834, 999 and more) with exact decimal amounts | [npm](https://www.npmjs.com/package/@cosyte/x12) · [docs](https://docs.cosyte.com/x12/quickstart) · [repo](https://github.com/cosyte/x12) |
-| `@cosyte/ncpdp` | Parse and build NCPDP SCRIPT ePrescriptions and Telecom pharmacy claims | [npm](https://www.npmjs.com/package/@cosyte/ncpdp) · [docs](https://docs.cosyte.com/ncpdp/quickstart) · [repo](https://github.com/cosyte/ncpdp) |
-| `@cosyte/astm` | Parse and build ASTM E1394 lab-instrument records and E1381 checksummed frames | [npm](https://www.npmjs.com/package/@cosyte/astm) · [docs](https://docs.cosyte.com/astm/quickstart) · [repo](https://github.com/cosyte/astm) |
-| `@cosyte/dicom` | Read and write DICOM Part 10 metadata, with metadata-level de-identification (PS3.15 Basic Profile) | [npm](https://www.npmjs.com/package/@cosyte/dicom) · [docs](https://docs.cosyte.com/dicom/quickstart) · [repo](https://github.com/cosyte/dicom) |
-| `@cosyte/terminology` | Run FHIR `$lookup`, `$validate-code`, `$translate` and `$expand` over code systems you supply | [npm](https://www.npmjs.com/package/@cosyte/terminology) · [docs](https://docs.cosyte.com/terminology/quickstart) · [repo](https://github.com/cosyte/terminology) |
-| `@cosyte/deid` | Apply a HIPAA Safe Harbor policy to HL7 v2, C-CDA, FHIR, X12, NCPDP Telecom and DICOM, failing closed | [npm](https://www.npmjs.com/package/@cosyte/deid) · [docs](https://docs.cosyte.com/deid/quickstart) · [repo](https://github.com/cosyte/deid) |
-| `@cosyte/transform` | Convert HL7 v2 messages to FHIR R4, following the HL7 v2-to-FHIR implementation guide | [npm](https://www.npmjs.com/package/@cosyte/transform) · [docs](https://docs.cosyte.com/transform/quickstart) · [repo](https://github.com/cosyte/transform) |
-| `@cosyte/synth` | Generate seeded, reproducible synthetic test data in HL7 v2, FHIR, C-CDA, X12, NCPDP and ASTM | [npm](https://www.npmjs.com/package/@cosyte/synth) · [docs](https://docs.cosyte.com/synth/quickstart) · [repo](https://github.com/cosyte/synth) |
-| `@cosyte/dates` | Validate and convert healthcare dates without losing precision or guessing a timezone | [npm](https://www.npmjs.com/package/@cosyte/dates) · [docs](https://docs.cosyte.com/dates/quickstart) · [repo](https://github.com/cosyte/dates) |
-| `@cosyte/cli` | Parse, validate, convert and redact from the terminal with the `cosyte` command, or from an agent over MCP | [npm](https://www.npmjs.com/package/@cosyte/cli) · [docs](https://docs.cosyte.com/cli/quickstart) · [repo](https://github.com/cosyte/cli) |
+| `@cosyte/hl7` | Parse, build and serialize HL7 v2 messages, and read fields by name (`msg.patient?.mrn`) instead of by position | [npm](https://www.npmjs.com/package/@cosyte/hl7) · [docs](https://docs.cosyte.com/hl7/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/hl7) |
+| `@cosyte/mllp` | Send and receive HL7 v2 over MLLP: client and server, framing, ACK correlation, reconnects, TLS, and an in-memory transport for tests | [npm](https://www.npmjs.com/package/@cosyte/mllp) · [docs](https://docs.cosyte.com/mllp/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/mllp) |
+| `@cosyte/fhir` | Read, write and validate FHIR R4 in JSON and XML, keeping each value exactly as written | [npm](https://www.npmjs.com/package/@cosyte/fhir) · [docs](https://docs.cosyte.com/fhir/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/fhir) |
+| `@cosyte/ccda` | Parse, build and serialize C-CDA documents, with typed problems, medications, allergies and results | [npm](https://www.npmjs.com/package/@cosyte/ccda) · [docs](https://docs.cosyte.com/ccda/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/ccda) |
+| `@cosyte/x12` | Parse X12 005010 healthcare transactions (837, 835, 270/271, 834, 999 and more) into typed models, with every amount an exact decimal | [npm](https://www.npmjs.com/package/@cosyte/x12) · [docs](https://docs.cosyte.com/x12/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/x12) |
+| `@cosyte/ncpdp` | Parse and build NCPDP SCRIPT ePrescriptions and Telecom pharmacy claims | [npm](https://www.npmjs.com/package/@cosyte/ncpdp) · [docs](https://docs.cosyte.com/ncpdp/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/ncpdp) |
+| `@cosyte/astm` | Parse and build ASTM E1394 lab-instrument records and E1381 checksummed frames | [npm](https://www.npmjs.com/package/@cosyte/astm) · [docs](https://docs.cosyte.com/astm/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/astm) |
+| `@cosyte/dicom` | Read, write and de-identify DICOM Part 10 metadata (PS3.15 Basic Profile), without decoding pixels | [npm](https://www.npmjs.com/package/@cosyte/dicom) · [docs](https://docs.cosyte.com/dicom/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/dicom) |
+| `@cosyte/terminology` | Run FHIR `$lookup`, `$validate-code`, `$translate` and `$expand` over code systems, value sets and maps you supply | [npm](https://www.npmjs.com/package/@cosyte/terminology) · [docs](https://docs.cosyte.com/terminology/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/terminology) |
+| `@cosyte/transform` | Turn parsed HL7 v2 messages into FHIR R4 Bundles, with mappings taken from the HL7 Version 2 to FHIR implementation guide | [npm](https://www.npmjs.com/package/@cosyte/transform) · [docs](https://docs.cosyte.com/transform/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/transform) |
+| `@cosyte/deid` | Apply a de-identification policy (HIPAA Safe Harbor by default) to HL7 v2, C-CDA, FHIR R4, X12, NCPDP Telecom and DICOM metadata, with a manifest that repeats no value | [npm](https://www.npmjs.com/package/@cosyte/deid) · [docs](https://docs.cosyte.com/deid/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/deid) |
+| `@cosyte/synth` | Generate seeded, reproducible synthetic test data in HL7 v2, FHIR R4, C-CDA, X12, NCPDP and ASTM | [npm](https://www.npmjs.com/package/@cosyte/synth) · [docs](https://docs.cosyte.com/synth/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/synth) |
+| `@cosyte/dates` | Validate and convert healthcare dates without adding precision or guessing a timezone | [npm](https://www.npmjs.com/package/@cosyte/dates) · [docs](https://docs.cosyte.com/dates/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/dates) |
+| `@cosyte/cli` | The `cosyte` command: parse, validate, convert and redact healthcare data from the terminal, with an MCP server for agents | [npm](https://www.npmjs.com/package/@cosyte/cli) · [docs](https://docs.cosyte.com/cli/quickstart?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile) · [repo](https://github.com/cosyte/cli) |
 
-## Examples
+## Start here
 
-[cosyte/examples](https://github.com/cosyte/examples) holds runnable end-to-end starters. Every message,
-document and image in it is synthetic.
+- [Docs and quickstarts](https://docs.cosyte.com/?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile), one quickstart per library.
+- [Examples](https://github.com/cosyte/examples): runnable end-to-end starters. Every message, document
+  and image in them is synthetic.
+- [Discussions](https://github.com/cosyte/.github/discussions): the
+  [0.1 announcement](https://github.com/cosyte/.github/discussions/70), questions, ideas and what you
+  build with the libraries. Report bugs in each library's own issue tracker.
+- [cosyte.com](https://cosyte.com/?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile): who we are and what we build.
 
-## How we build them
-
-- **Lenient on parse, spec-clean on emit.** Real vendor traffic parses, and each deviation we tolerate
-  comes back as a stable warning code.
-- **No confident wrong values.** When input contradicts itself, we withhold the value and flag it rather
-  than guess. A wrong dose or a missed allergy is the failure we design against.
-- **Synthetic data only.** No repository holds real patient data, and the parsers' CI runs a PHI scan on
-  every change.
-- **Few dependencies.** Most packages have no third-party runtime dependency, and none has more than one.
-
-Need it integrated? [Talk to us](https://cosyte.com/contact).
-
-[cosyte.com](https://cosyte.com) · [docs.cosyte.com](https://docs.cosyte.com)
+Need it integrated? [Talk to us](https://cosyte.com/contact?utm_source=github&utm_medium=profile&utm_campaign=cosyte-0-1-launch&utm_content=profile).
