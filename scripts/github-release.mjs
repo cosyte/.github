@@ -21,15 +21,21 @@
 //   1. (--require-live) the registry lists the version. A release is never created for a version
 //      no consumer can install. The direct arm does not ask, because it runs seconds after its own
 //      publish, where registry propagation lag would read as a refusal of a version that did ship.
-//   2. the caller's pack-docs command builds the assets.
-//   3. `release-notes.mjs assert` proves the body's bytes against this version and package.
-//   4. `gh release view`, then edit-and-upload or create, in one call with the assets.
-//   5. the docs dispatch, which reports and never fails the run.
+//   2. `release-notes.mjs assert` proves the body's bytes against this version and package.
+//   3. `gh release view`, then edit-and-upload or create, in one call with the assets.
+//   4. the docs dispatch, which reports and never fails the run.
+//
+// THE CALLER'S PACK-DOCS COMMAND IS NOT RUN HERE. It is a shell string the calling repository supplies
+// (`pnpm pack:docs` by default), so it runs where the caller's other commands run: in the workflow
+// step, as `bash -c`, immediately before this script. Every process this script starts is a fixed
+// binary (`gh`, or this Node running `release-notes.mjs`) with an argument vector it built, and none
+// of them is a shell. It attaches whichever of `dist-artifacts/{docs-content,source}.tar.gz` that
+// command left behind, exactly as the step it replaced did.
 //
 // Run it by hand from a caller checkout (it really does create a release):
 //
-//   GH_TOKEN=... node scripts/github-release.mjs --package @cosyte/x12 --version 0.1.1 \
-//     --target <sha> --notes notes.md --pack-docs-cmd "pnpm pack:docs" --dispatch-docs false
+//   pnpm pack:docs && GH_TOKEN=... node scripts/github-release.mjs --package @cosyte/x12 \
+//     --version 0.1.1 --target <sha> --notes notes.md --dispatch-docs false
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -122,7 +128,7 @@ export function runCommand(cmd, args, { env = process.env, quiet = false } = {})
 const USAGE =
   'usage:\n' +
   '  github-release.mjs --package <name> --version <v> --target <sha> --notes <file>\n' +
-  '                     [--pack-docs-cmd <cmd>] [--dispatch-docs true|false] [--require-live]\n' +
+  '                     [--dispatch-docs true|false] [--require-live]\n' +
   '                     [--registry <url>]\n' +
   '  GH_TOKEN creates the release; DISPATCH_TOKEN, when set, dispatches the docs rebuild.\n';
 
@@ -217,21 +223,10 @@ export async function main(argv, io = {}) {
     out(`The registry lists ${coordinate}.\n`);
   }
 
-  // 2. THE ASSETS, built by the caller's own command, from the caller's tree.
-  const packDocs = options['pack-docs-cmd'] ?? env.PACK_DOCS_CMD ?? '';
-  if (packDocs) {
-    const packed = run('bash', ['-c', packDocs], { env });
-    if (packed.code !== 0) {
-      err(
-        `::error title=Docs artifacts not built::\`${packDocs}\` exited ${packed.code}, ` +
-          `so no release was created for ${coordinate}.\n`,
-      );
-      return 1;
-    }
-  }
+  // The assets the caller's pack-docs command left in its tree, in the step before this script.
   const assets = ASSETS.map((name) => path.join(ASSET_DIR, name)).filter((file) => exists(file));
 
-  // 3. THE BODY, PROVED ON ITS BYTES BY THE ENTRY POINT THAT KNOWS NOTHING ABOUT HOW THEY WERE MADE.
+  // 2. THE BODY, PROVED ON ITS BYTES BY THE ENTRY POINT THAT KNOWS NOTHING ABOUT HOW THEY WERE MADE.
   //    It is compared against the version being released here, which on the direct arm is the one
   //    Changesets reported publishing and on the other two is the one the registry was seen serving.
   //    The notes come from git and the version comes from npm, and a disagreement is a defect.
@@ -253,7 +248,7 @@ export async function main(argv, io = {}) {
   }
   out(`Release body for ${tag}:\n${body}\n`);
 
-  // 4. THE RELEASE. An existing one is brought up to date rather than duplicated. A create that
+  // 3. THE RELEASE. An existing one is brought up to date rather than duplicated. A create that
   //    fails because another run created the same release in the meantime (a later push catching up
   //    while this run's own wait saw the promotion) is that same update, not a failure; a create that
   //    fails for any other reason fails the run.
@@ -285,7 +280,7 @@ export async function main(argv, io = {}) {
     }
   }
 
-  // 5. THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth outcome,
+  // 4. THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth outcome,
   //    doing nothing quietly, is indistinguishable from one that works.
   //
   //    A FAILED DISPATCH DOES NOT FAIL THE RUN, DELIBERATELY. By the time this runs the version is

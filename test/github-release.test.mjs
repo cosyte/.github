@@ -3,10 +3,13 @@
 // seen, and in the `finalize` job for a promotion seen by a later run.
 //
 // WHAT THESE TESTS ARE FOR. The script writes to a public surface, so its ORDER is its guarantee:
-// every check that can refuse (the registry serving the version, the caller's pack-docs command, the
-// notes assert) runs before the first `gh` write, and the docs dispatch, which runs last, can never
-// turn a release that happened into a red run. Each case drives `main` with a recording `run`, so the
-// assertions are about the sequence of commands the script actually issues, not about its source.
+// every check that can refuse (the registry serving the version, the notes assert) runs before the
+// first `gh` write, and the docs dispatch, which runs last, can never turn a release that happened
+// into a red run. And it starts no shell: the caller's pack-docs command runs in the workflow step
+// before it, so every process it starts is a fixed binary with an argument vector it built.
+//
+// Each case drives `main` with a recording `run`, so the assertions are about the sequence of
+// commands the script actually issues, not about its source.
 // One case runs the real entry point as a child process, with a fake `gh` on PATH and the real
 // `release-notes.mjs assert`, so the spawn site and the assert's argv are measured too.
 
@@ -39,7 +42,6 @@ function recorder(answers = {}) {
   const calls = [];
   const queues = Object.fromEntries(Object.entries(answers).map(([k, v]) => [k, Array.isArray(v) ? [...v] : v]));
   const keyOf = (cmd, args) => {
-    if (cmd === 'bash') return 'pack';
     if (cmd === 'gh' && args[0] === 'release') return `release ${args[1]}`;
     if (cmd === 'gh' && args[0] === 'api') return 'dispatch';
     if (args.some((a) => /release-notes\.mjs$/.test(a))) return 'assert';
@@ -80,7 +82,7 @@ async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl }
   return { code, stdout, stderr, summary: summary.join(''), ...rec };
 }
 
-const ARGV = ['--package', PKG, '--version', VERSION, '--target', SHA, '--notes', NOTES, '--pack-docs-cmd', 'pnpm pack:docs', '--dispatch-docs', 'true'];
+const ARGV = ['--package', PKG, '--version', VERSION, '--target', SHA, '--notes', NOTES, '--dispatch-docs', 'true'];
 
 const listing = (...versions) => async () => ({
   status: 200,
@@ -107,12 +109,11 @@ test('the tag is v<version>, the create carries --target and its assets, and the
 
 // -- The order, which is the guarantee ---------------------------------------------------------------
 
-test('a new release: pack, assert, look, create at the target with the assets, then dispatch', async () => {
+test('a new release: assert, look, create at the target with the assets, then dispatch', async () => {
   const run = await drive(ARGV, { answers: { 'release view': 1 } });
   assert.equal(run.code, 0);
-  assert.deepEqual(run.keys(), ['pack', 'assert', 'release view', 'release create', 'dispatch']);
-  const [pack, asserted, view, create, dispatch] = run.calls;
-  assert.deepEqual(pack.args, ['-c', 'pnpm pack:docs']);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release create', 'dispatch']);
+  const [asserted, view, create, dispatch] = run.calls;
   assert.deepEqual(asserted.args, [
     '/tooling/scripts/release-notes.mjs', 'assert', '--file', NOTES, '--expect-version', VERSION, '--expect-package', PKG,
   ]);
@@ -122,39 +123,35 @@ test('a new release: pack, assert, look, create at the target with the assets, t
   assert.equal(create.token, 'ghs_test_release_token', 'the release is cut with the automatic token');
   assert.equal(dispatch.token, 'ghp_test_dispatch_token', 'the dispatch authenticates with its own token');
   assert.match(run.stdout, /Dispatched package-released to cosyte\/docs for @cosyte\/hl7@0\.0\.2/);
+  // NO SHELL, EVER: only `gh` and this Node, each with a vector the script built.
+  for (const call of run.calls) assert.ok(call.cmd === 'gh' || call.cmd === process.execPath, `spawned ${call.cmd}`);
 });
 
 test('an existing release is brought up to date, never duplicated, and assets are only uploaded if built', async () => {
   const withAssets = await drive(ARGV);
-  assert.deepEqual(withAssets.keys(), ['pack', 'assert', 'release view', 'release edit', 'release upload', 'dispatch']);
+  assert.deepEqual(withAssets.keys(), ['assert', 'release view', 'release edit', 'release upload', 'dispatch']);
   const none = await drive(ARGV, { exists: () => false });
-  assert.deepEqual(none.keys(), ['pack', 'assert', 'release view', 'release edit', 'dispatch']);
+  assert.deepEqual(none.keys(), ['assert', 'release view', 'release edit', 'dispatch']);
 });
 
 test('a create that loses a race to another run updates the release that run made', async () => {
   const run = await drive(ARGV, { answers: { 'release view': [1, 0], 'release create': 1 } });
   assert.equal(run.code, 0);
-  assert.deepEqual(run.keys(), ['pack', 'assert', 'release view', 'release create', 'release view', 'release edit', 'release upload', 'dispatch']);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release create', 'release view', 'release edit', 'release upload', 'dispatch']);
   assert.match(run.stdout, /created by another run/);
 });
 
 test('a create that fails for any other reason fails the run, and nothing is dispatched', async () => {
   const run = await drive(ARGV, { answers: { 'release view': 1, 'release create': 1 } });
   assert.equal(run.code, 1);
-  assert.deepEqual(run.keys(), ['pack', 'assert', 'release view', 'release create', 'release view']);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release create', 'release view']);
   assert.match(run.stderr, /GitHub release not created/);
 });
 
 test('notes that fail the assert stop everything before the first gh call', async () => {
   const run = await drive(ARGV, { answers: { assert: 1 } });
   assert.equal(run.code, 1);
-  assert.deepEqual(run.keys(), ['pack', 'assert']);
-});
-
-test('a pack-docs command that fails stops everything before the assert and before gh', async () => {
-  const run = await drive(ARGV, { answers: { pack: 2 } });
-  assert.equal(run.code, 1);
-  assert.deepEqual(run.keys(), ['pack']);
+  assert.deepEqual(run.keys(), ['assert']);
 });
 
 // -- The dispatch, which reports and never fails the run -----------------------------------------------
@@ -192,13 +189,13 @@ test('--require-live creates nothing at all unless the registry lists the versio
   ]) {
     const run = await drive(['--require-live', ...ARGV], { fetchImpl });
     assert.equal(run.code, 0, `${label}: a version that is not live yet is not a failed run`);
-    assert.deepEqual(run.keys(), [], `${label}: nothing may be packed, asserted or written`);
+    assert.deepEqual(run.keys(), [], `${label}: nothing may be asserted or written`);
     assert.match(run.stdout, /::warning title=GitHub release not created::/);
     assert.match(run.summary, /v0\.0\.2 NOT created/);
   }
   const live = await drive(['--require-live', ...ARGV], { fetchImpl: listing('0.0.1', '0.0.2'), answers: { 'release view': 1 } });
   assert.equal(live.code, 0);
-  assert.deepEqual(live.keys(), ['pack', 'assert', 'release view', 'release create', 'dispatch']);
+  assert.deepEqual(live.keys(), ['assert', 'release view', 'release create', 'dispatch']);
 });
 
 test('without --require-live the registry is not asked, because the direct arm runs seconds after its publish', async () => {
@@ -240,11 +237,13 @@ test('end to end: the real assert passes a real body, and gh is handed exactly t
   chmodSync(join(bin, 'gh'), 0o755);
   const notes = join(work, 'release-notes.md');
   writeFileSync(notes, readFileSync(BODY, 'utf8'));
-  const pack = 'mkdir -p dist-artifacts && touch dist-artifacts/docs-content.tar.gz dist-artifacts/source.tar.gz';
+  // What the caller's pack-docs command leaves behind, in the step before the script.
+  mkdirSync(join(work, 'dist-artifacts'));
+  for (const asset of ASSETS) writeFileSync(join(work, asset), 'tarball');
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
-      [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--pack-docs-cmd', pack, '--dispatch-docs', 'true'],
+      [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'true'],
       {
         cwd: work,
         encoding: 'utf8',
@@ -257,7 +256,6 @@ test('end to end: the real assert passes a real body, and gh is handed exactly t
       },
     );
     assert.match(stdout, /carries 10 described change\(s\) and no banned content/, 'the real assert ran');
-    assert.ok(existsSync(join(work, 'dist-artifacts/source.tar.gz')), 'the pack command ran in the caller tree');
     const calls = readFileSync(log, 'utf8').trim().split('\n');
     assert.deepEqual(calls, [
       'ghs_test_release_token|release view v0.0.2',

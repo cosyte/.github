@@ -73,7 +73,7 @@ export const DEFAULT_ATTEMPTS = 3;
 export const DEFAULT_RETRY_DELAY_MS = 3_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const encodeName = (name) => name.replace('/', '%2f');
+const encodeName = (name) => name.replaceAll('/', '%2f');
 
 // -- The registry ------------------------------------------------------------------------------------
 
@@ -325,7 +325,7 @@ export async function waitForPromotion({
   const started = now();
   const deadline = started + windowMs;
   let polls = 0;
-  let lastStatus = 'unknown';
+  let lastStatus;
   for (;;) {
     lastStatus = await registryListsVersion(registry, packageName, version, fetchImpl);
     polls += 1;

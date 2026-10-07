@@ -574,7 +574,11 @@ test('all three release-creating sites run the one script from the pinned toolin
   assert.equal(sites.length, 3);
   for (const step of sites) {
     assert.match(step.body, /node \.cosyte-release-tooling\/scripts\/github-release\.mjs/);
-    assert.match(step.body, /--pack-docs-cmd "\$PACK_DOCS_CMD" --dispatch-docs "\$DISPATCH_DOCS"/);
+    assert.match(step.body, /--dispatch-docs "\$DISPATCH_DOCS"/);
+    // The caller's pack-docs command runs in the step, before the script that attaches what it built,
+    // because it is the caller's shell command and the script starts no shell.
+    const packs = step.body.indexOf('bash -c "$PACK_DOCS_CMD"');
+    assert.ok(packs >= 0 && packs < step.body.indexOf('github-release.mjs'), `"${step.label}" must pack before it releases`);
     assert.equal(step.env.PACK_DOCS_CMD, '${{ inputs.pack-docs-cmd }}');
     assert.equal(step.env.DISPATCH_DOCS, '${{ inputs.dispatch-docs }}');
   }

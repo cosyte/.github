@@ -1332,9 +1332,10 @@ jobs:
       # THE PROMOTED ARM: THE RELEASE THE DIRECT ARM CUTS, ONCE THE REGISTRY SERVES THE VERSION.
       #
       # Same script as the direct arm below, so the same notes file (the bytes the version job derived
-      # and the step above the publish already proved), the same pack-docs assets, the same `v<version>`
-      # tag created at this run's commit with `--target "$GITHUB_SHA"`, and the same dispatch, under its
-      # rule that a failed dispatch does not fail the job. Two things differ, and both are inputs rather
+      # and the step above the publish already proved), the same pack-docs assets built by the same
+      # `bash -c "$PACK_DOCS_CMD"`, the same `v<version>` tag created at this run's commit with
+      # `--target "$GITHUB_SHA"`, and the same dispatch, under its rule that a failed dispatch does not
+      # fail the job. Two things differ, and both are inputs rather
       # than code: the version is the one the waiting step saw go live, and `--require-live` makes the
       # script ask the registry once more before it writes anything, so this step can never announce a
       # version no consumer can install.
@@ -1352,10 +1353,10 @@ jobs:
           DISPATCH_DOCS: ${{ inputs.dispatch-docs }}
         shell: bash
         run: |
+          bash -c "$PACK_DOCS_CMD"
           node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
             --package "$PACKAGE_NAME" --version "$PROMOTED_VERSION" --target "$GITHUB_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" \
-            --pack-docs-cmd "$PACK_DOCS_CMD" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
 
       # `mode != 'staged'` IS THE HALF THAT KEEPS A STAGED VERSION OUT OF THIS STEP, AND IT IS HERE
       # EXPLICITLY RATHER THAN LEFT TO FOLLOW FROM `published`.
@@ -1372,7 +1373,9 @@ jobs:
       # promoted arm above and the `finalize` job all run, so the tag's spelling, `--target`, the
       # assets, the notes reconciliation and the dispatch's four outcomes are written once, there, with
       # their reasons. What stays here is what only this arm knows: the version Changesets reported
-      # publishing, and the assertion that the notes gate recognised this commit as a release.
+      # publishing, and the assertion that the notes gate recognised this commit as a release. The
+      # caller's pack-docs command runs here too, in each of the three steps, because it is the
+      # caller's own shell command and the script deliberately starts no shell.
       #
       # THE RECONCILIATION STILL FOLLOWS THE PUBLISH, inside the script: it re-reads the same bytes the
       # step above the publish proved, against the version CHANGESETS REPORTED PUBLISHING, which does
@@ -1401,12 +1404,12 @@ jobs:
             exit 1
           fi
 
+          bash -c "$PACK_DOCS_CMD"
           # No `--require-live` on this arm: it runs seconds after its own publish, where registry
           # propagation lag would read as a refusal of a version that did ship.
           node .cosyte-release-tooling/scripts/github-release.mjs \
             --package "$PACKAGE_NAME" --version "$version" --target "$GITHUB_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" \
-            --pack-docs-cmd "$PACK_DOCS_CMD" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
 
       # THE POST-PUBLISH INSTALL GATE. Nothing in this pipeline has ever installed what it published.
       # Every gate above reads the working tree or a locally packed tarball, so a manifest that is
@@ -1703,7 +1706,7 @@ jobs:
                  "'${FINALIZE_VERSION}'. Refusing to release a body derived for another version."
             exit 1
           fi
+          bash -c "$PACK_DOCS_CMD"
           node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
             --package "$PACKAGE_NAME" --version "$FINALIZE_VERSION" --target "$FINALIZE_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" \
-            --pack-docs-cmd "$PACK_DOCS_CMD" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
