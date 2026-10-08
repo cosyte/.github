@@ -103,28 +103,41 @@ name: Release
 #     or publish-floor check had just failed. The residual is answered by the `version` context,
 #     which fails in its own right, and by AC4's refusal reaching the run as a failure.
 #
-# STAGED PUBLISHING, AND THE ONE SENTENCE THAT EXPLAINS EVERY STEP CONDITION MENTIONING `mode`.
-# npm registry data is immutable: `package@version`, once used, can never be used again, an unpublish
-# included. So the last reversible moment this pipeline had was BEFORE `changesets/action` ran. A
-# version of a package that ALREADY EXISTS on the registry is now submitted to npm's staging area
-# instead of being promoted to it, where a maintainer can download the exact tarball, inspect it, and
-# approve it or simply walk away. An unapproved stage leaves the live registry exactly as it was.
+# DIRECT BY DEFAULT, STAGED ON REQUEST, AND THE ONE SENTENCE THAT EXPLAINS EVERY STEP CONDITION
+# MENTIONING `mode`. npm registry data is immutable: `package@version`, once used, can never be used
+# again, an unpublish included. The `publish-mode` input decides what happens at that moment:
 #
-#   `publish-floor.mjs`   in the `release` job, before anything is packed there: which tool performs
-#                         the publish for THIS caller, whether it clears the floor that tool's
-#                         staging mode needs, and whether the package exists on the registry at all.
-#                         Every unknown is a refusal.
+#   `direct`   THE DEFAULT. Every release publishes straight to the registry with `pnpm run release`
+#              and is live when the run ends. The merge of the Version PR, confirmed by the caller's
+#              `release` environment, is the decision to release, and nobody is asked again.
+#   `staged`   A version of a package that ALREADY EXISTS on the registry is submitted to npm's
+#              staging area instead, where a maintainer can download the exact tarball, inspect it,
+#              and promote it with 2FA or simply walk away. An unapproved stage leaves the live
+#              registry exactly as it was. A package that has NEVER been published cannot be staged
+#              (npm's own rule) and so takes the direct arm, with the run saying out loud that this
+#              one is a one-way door.
+#
+#   `publish-floor.mjs`   in the `release` job, before anything is packed there: which arm the caller
+#                         asked for, which tool performs the publish for THIS caller, and, on the
+#                         staged arm only, whether that tool clears the floor staging needs and
+#                         whether the package exists on the registry at all. Every unknown is a
+#                         refusal. Its `mode` output is the one value every step below reads.
 #   `staged-publish.mjs`  the publish command itself on the staged arm, in place of the caller's
 #                         `pnpm run release`. It stages and stops, and never falls back to a publish.
 #
-# A package that has NEVER been published cannot be staged (npm's own rule) and so takes the direct
-# arm unchanged, with the run saying out loud that this one is a one-way door.
+# A DIRECT PUBLISH NEEDS AN `NPM_TOKEN` THAT MAY PUBLISH WITHOUT A SECOND FACTOR: a granular access
+# token, "Read and write (publish and stage)" on the packages, with "Bypass 2FA" set. Without it npm
+# answers with E403 or EOTP, which this run cannot satisfy; a stage-only token can only take the
+# staged arm. npm says it will remove direct publishing with granular tokens in January 2027
+# (README.md, "Direct publishing, and staging on request", has the sources and what that leaves).
 #
-# A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO LIVE. A stage ends with no `v<version>`
-# tag, no GitHub release and no docs dispatch, which is right while the registry will not serve the
-# version and wrong from the moment a maintainer promotes it. Nothing a maintainer does on npmjs.com
-# reaches back into this pipeline, so the pipeline looks for itself, at the public registry, with no
-# credential, from two places:
+# A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO LIVE. The wait below runs on the staged arm
+# only. `finalize` serves both arms, because a direct publish whose release step never finished looks
+# exactly like a late promotion from the next push: live on npm, no GitHub release. A stage ends with
+# no `v<version>` tag, no GitHub release and no docs dispatch, which is right while the registry will
+# not serve the version and wrong from the moment a maintainer promotes it. Nothing a maintainer does
+# on npmjs.com reaches back into this pipeline, so the pipeline looks for itself, at the public
+# registry, with no credential, from two places:
 #
 #   the `release` job   waits after the stage, up to `promotion-window-minutes`, for the version to
 #                       appear (`promotion.mjs await`). Promoted in time, it runs the same
@@ -350,6 +363,17 @@ on:
         description: "Minutes a staged release waits in its own run for a maintainer to promote it (0 to 240)."
         type: number
         default: 120
+      # HOW THE `release` JOB PUBLISHES A PACKAGE THAT ALREADY EXISTS ON npm, AND THE DEFAULT IS DIRECT.
+      # `direct` publishes every release straight to the registry, so it is live when the run ends and
+      # nobody has to promote it. `staged` submits each version of an existing package to npm's staging
+      # area instead, where it waits for a maintainer to promote it with 2FA (see "DIRECT BY DEFAULT,
+      # STAGED ON REQUEST" at the top of this file). Anything else is refused before anything is packed.
+      # `scripts/publish-floor.mjs` reads it and owns the default; `test/publish-floor.test.mjs` pins
+      # the two to each other. A caller that passes nothing gets `direct`, so no caller changes.
+      publish-mode:
+        description: "How a package already on npm is published: direct (default, live at once) or staged (a maintainer promotes it with 2FA)."
+        type: string
+        default: "direct"
     secrets:
       NPM_TOKEN:
         required: true
@@ -1049,7 +1073,8 @@ jobs:
       # The publish path is unaffected either way: the `changesets/action` step below sets
       # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
       # to a registry.
-      # NODE 24 IN THE JOB THAT PUBLISHES, because staging needs it. A caller on pnpm 10 publishes
+      # NODE 24 IN THE JOB THAT PUBLISHES, because the staged arm needs it; the default direct arm
+      # owes no staging floor and is indifferent to it. A caller on pnpm 10 publishes
       # through the npm CLI, and npm's staged-publishing floor is npm 11.15.0 and Node 22.14.0. Every
       # Node 22 release bundles npm 10.9.x (22.23.3 ships 10.9.9), so on "22" publish-floor.mjs refused
       # every staged release before anything was packed. Node 24.18.0 and later bundle npm 11.16.0 or
@@ -1100,7 +1125,12 @@ jobs:
       # THE PUBLISH PATH IS RESOLVED HERE, BEFORE ANYTHING IS PACKED IN THE JOB THAT PUBLISHES, AND
       # IT DECIDES THE ARM BELOW.
       #
-      # Two questions, one step, both answered before a single byte is packed on this runner:
+      # Three questions, one step, all answered before a single byte is packed on this runner:
+      #
+      #   WHICH ARM DID THE CALLER ASK FOR. `publish-mode`, `direct` unless the caller set `staged`.
+      #   On `direct` the step identifies the publish tool, reads its version and stops there: it
+      #   owes no staging floor and does not ask the registry, because neither changes the arm. The
+      #   two questions below are the staged arm's.
       #
       #   WHICH TOOL PUBLISHES, AND DOES IT CLEAR ITS OWN FLOOR. There is no single floor and
       #   asserting `npm --version >= 11.15.0` here would be wrong. Since pnpm 11, `pnpm publish` is
@@ -1139,6 +1169,10 @@ jobs:
         id: publish-floor
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
+          # The caller's choice of arm, `direct` unless it asked for `staged`. Handed over as an
+          # environment variable rather than spliced into the command, so no input value is ever
+          # shell text; the script refuses anything that is not one of the two.
+          PUBLISH_MODE: ${{ inputs.publish-mode }}
         run: |
           node .cosyte-release-tooling/scripts/publish-floor.mjs --package "$PACKAGE_NAME" --repo .
       - run: pnpm install --frozen-lockfile
@@ -1169,17 +1203,23 @@ jobs:
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
           version: pnpm run version
-          # ▶ THE STAGED ARM IS SELECTED ON THIS LINE, AND THAT IS THE WHOLE REASON IT CAN BE
-          #   SELECTED WITHOUT EDITING A SINGLE CALLER. The command that publishes lives in each
-          #   caller's `package.json` (`release` is `changeset publish`), but the STRING handed to
-          #   the action is composed in THIS repository. So when `publish-floor.mjs` above reports
-          #   that the package already exists on the registry, the action is handed our own script
-          #   instead, and it submits the version to the npm staging area rather than promoting it.
-          #   No caller's `package.json`, `packageManager` or workflow changes.
+          # ▶ THE ARM IS SELECTED ON THIS LINE, AND BY DEFAULT IT IS THE DIRECT ONE. The command that
+          #   publishes lives in each caller's `package.json` (`release` is `changeset publish`), but
+          #   the STRING handed to the action is composed in THIS repository, which is why the arm
+          #   can change without editing a single caller.
           #
-          #   THE DIRECT ARM IS BYTE-IDENTICAL TO WHAT SHIPPED BEFORE. A package that has never been
-          #   published still takes `pnpm run release` and behaves exactly as it always has, because
-          #   npm cannot stage a brand-new package and demanding it would red a correct first release.
+          #   THE DIRECT ARM, `pnpm run release`, IS WHAT EVERY RELEASE TAKES UNLESS ITS CALLER SET
+          #   `publish-mode: staged`. `publish-floor.mjs` above then reports `mode: direct` for an
+          #   existing package and a new one alike, and the version is live when this step ends,
+          #   with nobody asked to promote it. It is byte-identical to the command that shipped
+          #   before staging existed.
+          #
+          #   THE STAGED ARM, ON REQUEST. With `publish-mode: staged` and a package that already
+          #   exists on the registry, `publish-floor.mjs` reports `mode: staged` and the action is
+          #   handed our own script instead, which submits the version to the npm staging area rather
+          #   than promoting it. A package that has never been published still takes `pnpm run
+          #   release`, because npm cannot stage a brand-new package and demanding it would red a
+          #   correct first release.
           #
           #   `mode` is `staged`, `direct` or `refused`, and a refusal never reaches this line at all
           #   because it exits the step above non-zero. Only the literal `staged` selects the staged

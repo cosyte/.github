@@ -1,6 +1,13 @@
-// Tests for scripts/publish-floor.mjs, the step that decides, BEFORE ANYTHING IS PACKED, which tool
-// will perform this caller's publish, whether that tool clears the floor its staging mode needs, and
-// whether the package exists on the registry at all.
+// Tests for scripts/publish-floor.mjs, the step that decides, BEFORE ANYTHING IS PACKED, which arm
+// this release takes, which tool will perform this caller's publish, and, when the caller asked for
+// staging, whether that tool clears the floor staging needs and whether the package exists on the
+// registry at all.
+//
+// THE DEFAULT ARM IS DIRECT. A caller that passes no `publish-mode` publishes every release directly,
+// live when the run ends, with nobody asked to promote it; the direct arm owes no staging floor and
+// asks the registry nothing. Most cases below are about the STAGED arm's rules and ask for it
+// explicitly; the section "The arm the caller asked for" pins the default and the refusal of any
+// value that is neither arm.
 //
 // WHAT THESE TESTS ARE FOR, said once so each case reads against it. There are two ways to get this
 // wrong and only one of them is recoverable.
@@ -34,6 +41,7 @@ import { promisify } from 'node:util';
 import {
   compareVersions,
   decide,
+  DEFAULT_PUBLISH_MODE,
   lockfilesIn,
   meetsFloor,
   NPM_STAGING_FLOOR,
@@ -42,9 +50,11 @@ import {
   parsePackageManagerField,
   parseVersion,
   PNPM_STAGING_FLOOR,
+  PUBLISH_MODES,
   registryExistence,
   registryExistenceWithRetry,
   renderAnnotation,
+  requestedMode,
   resolvePublishTool,
   stagingRequirement,
 } from '../scripts/publish-floor.mjs';
@@ -361,12 +371,19 @@ test('only the unknown answer is retried, because a 200 and a 404 are both the r
 // The verdict, arm by arm
 // ---------------------------------------------------------------------------
 
-/** A caller that is fine in every way the case under test is not exercising. */
+/**
+ * A caller that is fine in every way the case under test is not exercising, and that ASKED FOR THE
+ * STAGED ARM. Most cases in this section are about that arm's rules (its floor, its registry
+ * question, its first-publish exception), so staged is this helper's default; the default arm a
+ * caller gets without asking is `direct`, and the cases that exercise it pass `requestedMode`
+ * explicitly or delete it to prove what an absent value means.
+ */
 function facts(overrides = {}) {
   const publisher = overrides.publisher ?? { tool: 'pnpm', from: 'packageManager=pnpm@11.17.0' };
   const publisherVersion = overrides.publisherVersion ?? { version: '11.17.0' };
   return {
     packageName: '@cosyte/hl7',
+    requestedMode: 'requestedMode' in overrides ? overrides.requestedMode : 'staged',
     publisher,
     publisherVersion,
     requirement:
@@ -534,6 +551,108 @@ test('the annotation level tracks the outcome, so a one-way door is not reported
   assert.match(renderAnnotation(decide(facts())), /^::notice /);
   assert.match(renderAnnotation(decide(facts({ existence: { status: 'never-published' } }))), /^::warning /);
   assert.match(renderAnnotation(decide(facts({ publisher: { tool: null, detail: 'x' } }))), /^::error /);
+  // The default arm is the routine path, so it is a notice: a warning on every release is one
+  // people learn to skip past, and then the first-publish warning above would be skipped with it.
+  assert.match(renderAnnotation(decide(facts({ requestedMode: 'direct' }))), /^::notice title=This release publishes directly::/);
+});
+
+// ---------------------------------------------------------------------------
+// The arm the caller asked for, and the default it gets without asking
+// ---------------------------------------------------------------------------
+//
+// Releases go live without a person promoting them unless the caller opts into staging. So the
+// default is `direct`, and the cases below pin three things: what an absent value means, that the
+// direct arm owes nothing the staged arm owes (a floor, a registry answer), and that a value that is
+// neither arm picks neither arm.
+
+test('the default arm is direct, and it is one of exactly two', () => {
+  assert.equal(DEFAULT_PUBLISH_MODE, 'direct');
+  assert.deepEqual([...PUBLISH_MODES], ['direct', 'staged']);
+  const absent = facts();
+  delete absent.requestedMode;
+  const verdict = decide(absent);
+  assert.equal(verdict.mode, 'direct', 'a caller that asks for nothing publishes directly');
+  assert.equal(verdict.outputs['requested-mode'], 'direct');
+});
+
+test('requestedMode: the flag wins, then the environment, and only an ABSENT value takes the default', () => {
+  assert.equal(requestedMode(undefined, undefined), 'direct');
+  assert.equal(requestedMode(undefined, 'staged'), 'staged');
+  assert.equal(requestedMode('staged', 'direct'), 'staged');
+  assert.equal(requestedMode('direct', 'staged'), 'direct');
+  // An empty value is a value. It is returned as given so that `decide` refuses it, rather than
+  // quietly becoming the default: a caller's expression that evaluated to nothing is not a choice.
+  assert.equal(requestedMode(undefined, ''), '');
+});
+
+test('direct: an existing package publishes directly, live at once, and the run says so', () => {
+  const verdict = decide(facts({ requestedMode: 'direct' }));
+  assert.equal(verdict.failing, false);
+  assert.equal(verdict.mode, 'direct');
+  assert.equal(verdict.level, 'notice');
+  assert.match(verdict.message, /publishes DIRECTLY through pnpm 11\.17\.0/);
+  assert.match(verdict.message, /publish-mode is "direct" \(the default\)/);
+  assert.match(verdict.message, /nobody asked to promote it/);
+  assert.match(verdict.message, /Set publish-mode to "staged"/, 'it names the way back to staging');
+  assert.deepEqual(verdict.outputs, {
+    mode: 'direct',
+    'requested-mode': 'direct',
+    'publish-tool': 'pnpm',
+    'publish-tool-version': '11.17.0',
+    'stage-tool': '',
+    'stage-tool-version': '',
+    floor: '',
+    'registry-status': 'not-asked',
+  });
+});
+
+test('direct: no staging floor is owed, because nothing is staged', () => {
+  // The exact facts that refuse on the staged arm (pnpm 10 delegating to npm 10.9.8, below npm's
+  // staging floor, on Node 22.13.1, below its Node half) publish directly here.
+  const below = { publisherVersion: { version: '10.0.0' }, floorVersion: { version: '10.9.8' }, nodeVersion: '22.13.1' };
+  assert.equal(decide(facts(below)).mode, 'refused', 'the staged arm refuses these facts');
+  const verdict = decide(facts({ ...below, requestedMode: 'direct' }));
+  assert.equal(verdict.failing, false, 'a direct publish must not red for a staging capability it does not use');
+  assert.equal(verdict.mode, 'direct');
+});
+
+test('direct: the registry answer decides nothing, so its silence cannot refuse the release', () => {
+  for (const existence of [
+    { status: 'unknown', detail: 'GET https://registry.npmjs.org/x answered HTTP 503' },
+    { status: 'never-published' },
+    { status: 'published', versions: 7 },
+  ]) {
+    const verdict = decide(facts({ requestedMode: 'direct', existence }));
+    assert.equal(verdict.mode, 'direct', `registry ${existence.status} must not change the direct arm`);
+    assert.equal(verdict.outputs['registry-status'], 'not-asked');
+  }
+});
+
+test('direct: the publish tool is still identified and read, because a direct publish needs one too', () => {
+  const cases = [
+    [{ publisher: { tool: null, detail: 'nothing in the tree says' } }, /could not identify the tool/],
+    [{ publisherVersion: { version: null, detail: 'spawn pnpm ENOENT' } }, /could not read the version of pnpm/],
+    [
+      { publisherVersion: { version: '10.34.5' }, floorVersion: { version: null, detail: 'no npm' } },
+      /publishes through npm/,
+    ],
+  ];
+  for (const [overrides, why] of cases) {
+    const verdict = decide(facts({ ...overrides, requestedMode: 'direct' }));
+    assert.equal(verdict.failing, true);
+    assert.equal(verdict.mode, 'refused');
+    assert.match(verdict.message, why);
+  }
+});
+
+test('a publish mode that is neither arm is refused, and picks neither arm', () => {
+  for (const asked of ['', 'stage', 'Direct', 'STAGED', 'direct ', 'auto']) {
+    const verdict = decide(facts({ requestedMode: asked }));
+    assert.equal(verdict.failing, true, `${JSON.stringify(asked)} must be refused`);
+    assert.equal(verdict.outputs.mode, 'refused');
+    assert.match(verdict.message, new RegExp(`publish-mode is ${JSON.stringify(asked).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.match(verdict.message, /must be one of "direct" or "staged"/);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -644,7 +763,7 @@ test('end to end: a pnpm 11 caller of an existing package exits 0 and selects th
   try {
     const run = await runFloor(caller, {
       registry: registry.url,
-      env: { FAKE_PNPM_VERSION: '11.17.0', FAKE_NPM_VERSION: '10.9.8' },
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: '11.17.0', FAKE_NPM_VERSION: '10.9.8' },
     });
     assert.equal(run.code, 0, run.stderr);
     const outputs = outputsOf(caller);
@@ -665,7 +784,7 @@ test('end to end: a pnpm 10 caller below the npm floor EXITS NON-ZERO, naming bo
   try {
     const run = await runFloor(caller, {
       registry: registry.url,
-      env: { FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '10.9.8' },
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '10.9.8' },
     });
     assert.equal(run.code, 1, 'a refusal has to reach the caller as a FAILED step');
     assert.match(run.stdout, /::error title=The publish path is below its staged-publishing floor::/);
@@ -682,7 +801,7 @@ test('end to end: a pnpm 10 caller whose npm DOES clear the floor stages through
   try {
     const run = await runFloor(caller, {
       registry: registry.url,
-      env: { FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '11.17.0' },
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '11.17.0' },
     });
     assert.equal(run.code, 0, run.stderr);
     const outputs = outputsOf(caller);
@@ -701,7 +820,10 @@ test('end to end: a 404 selects the direct arm and warns that staging was not av
     res.end('{}');
   });
   try {
-    const run = await runFloor(caller, { registry: registry.url, env: { FAKE_PNPM_VERSION: '11.17.0' } });
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: '11.17.0' },
+    });
     assert.equal(run.code, 0);
     assert.equal(outputsOf(caller).mode, 'direct');
     assert.match(run.stdout, /::warning title=Staged publishing is not available/);
@@ -720,7 +842,10 @@ test('end to end: a registry that will not answer EXITS NON-ZERO rather than gue
     res.end('');
   });
   try {
-    const run = await runFloor(caller, { registry: registry.url, env: { FAKE_PNPM_VERSION: '11.17.0' } });
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: '11.17.0' },
+    });
     assert.equal(run.code, 1);
     assert.equal(hits, 2, 'the ladder was spent before the verdict was taken');
     assert.match(run.stderr, /could not determine whether the package already exists/);
@@ -742,7 +867,11 @@ test('end to end: a tool that is not installed EXITS NON-ZERO and never asks the
     }),
   );
   try {
-    const run = await runFloor(caller, { registry: registry.url, env: { FAKE_PNPM_VERSION: 'MISSING' } });
+    // On the staged arm, which is the only arm that would otherwise ask the registry at all.
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { PUBLISH_MODE: 'staged', FAKE_PNPM_VERSION: 'MISSING' },
+    });
     assert.equal(run.code, 1);
     assert.match(run.stderr, /could not read the version of pnpm/);
     assert.equal(hits, 0, 'a run that is already refusing does not spend a retry ladder first');
@@ -758,6 +887,105 @@ test('end to end: a caller with no packageManager and no lockfile EXITS NON-ZERO
     const run = await runFloor(caller, { registry: registry.url });
     assert.equal(run.code, 1);
     assert.match(run.stderr, /could not identify the tool/);
+  } finally {
+    await registry.close();
+  }
+});
+
+test('end to end: with no mode given, an existing package publishes directly and the registry is never asked', async () => {
+  // A pnpm 10 caller on an npm below the staging floor: the staged arm would refuse this runner, and
+  // the default arm must not, because it stages nothing.
+  const caller = makeCaller({ packageManager: 'pnpm@10.34.5', lockfiles: ['pnpm-lock.yaml'] });
+  let hits = 0;
+  const registry = await stubRegistry((req, res) => {
+    hits += 1;
+    packumentWith({ '0.0.7': {} })(req, res);
+  });
+  try {
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '10.9.8' },
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const outputs = outputsOf(caller);
+    assert.equal(outputs.mode, 'direct');
+    assert.equal(outputs['requested-mode'], 'direct');
+    assert.equal(outputs['registry-status'], 'not-asked');
+    assert.equal(outputs['publish-tool'], 'pnpm');
+    assert.equal(hits, 0, 'whether the package exists decides nothing on the direct arm, so it is not asked');
+    assert.match(run.stdout, /^mode: direct$/m);
+    assert.match(run.stdout, /::notice title=This release publishes directly::/);
+    assert.match(readFileSync(caller.summary, 'utf8'), /### This release publishes directly/);
+  } finally {
+    await registry.close();
+  }
+});
+
+test('end to end: PUBLISH_MODE=direct publishes directly even when the registry would not answer', async () => {
+  const caller = makeCaller({ packageManager: 'pnpm@11.17.0' });
+  let hits = 0;
+  const registry = await stubRegistry((_req, res) => {
+    hits += 1;
+    res.writeHead(503);
+    res.end('');
+  });
+  try {
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { PUBLISH_MODE: 'direct', FAKE_PNPM_VERSION: '11.17.0' },
+    });
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(outputsOf(caller).mode, 'direct');
+    assert.equal(hits, 0);
+  } finally {
+    await registry.close();
+  }
+});
+
+test('end to end: --mode wins over PUBLISH_MODE, so a hand run can ask for either arm', async () => {
+  const caller = makeCaller({ packageManager: 'pnpm@11.17.0' });
+  const registry = await stubRegistry(packumentWith({ '0.0.7': {} }));
+  try {
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      args: ['--mode', 'staged'],
+      env: { PUBLISH_MODE: 'direct', FAKE_PNPM_VERSION: '11.17.0' },
+    });
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(outputsOf(caller).mode, 'staged');
+    assert.equal(outputsOf(caller)['requested-mode'], 'staged');
+  } finally {
+    await registry.close();
+  }
+});
+
+test('end to end: an unknown PUBLISH_MODE EXITS NON-ZERO before any tool is spawned or the registry asked', async () => {
+  const caller = makeCaller({ packageManager: 'pnpm@11.17.0' });
+  const argvLog = join(caller.root, 'argv.log');
+  let hits = 0;
+  const registry = await stubRegistry((req, res) => {
+    hits += 1;
+    packumentWith({ '0.0.7': {} })(req, res);
+  });
+  try {
+    for (const value of ['stage', '']) {
+      const run = await runFloor(caller, {
+        registry: registry.url,
+        env: { PUBLISH_MODE: value, FAKE_PNPM_VERSION: '11.17.0', ARGV_LOG: argvLog },
+      });
+      assert.equal(run.code, 1, `PUBLISH_MODE=${JSON.stringify(value)} must fail the step`);
+      assert.match(run.stdout, /::error title=The requested publish mode is not one this pipeline knows::/);
+      assert.match(run.stderr, /must be one of "direct" or "staged"/);
+      assert.equal(outputsOf(caller).mode, 'refused');
+    }
+    assert.equal(hits, 0, 'a refused mode asks the registry nothing');
+    let spawned = '';
+    try {
+      spawned = readFileSync(argvLog, 'utf8');
+    } catch {
+      // No file is the expected outcome: nothing was spawned to write it.
+    }
+    assert.equal(spawned, '', 'a refused mode spawns no tool');
   } finally {
     await registry.close();
   }
@@ -930,4 +1158,43 @@ test('A1: the publish command is the staged script on the staged arm and unchang
     'the notes gate still guards it, at the job that holds the command',
   );
   assert.match(releaseJobHeader(workflow), /\n {4}environment: release\n/, 'and a human still holds that job');
+});
+
+test('the caller input that picks the arm defaults to direct, and reaches the floor gate', () => {
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const code = workflow
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .join('\n');
+
+  // DECLARED ONCE, OPTIONAL, WITH THE SCRIPT'S OWN DEFAULT. Every caller pins `@main` and passes
+  // nothing for this, so the declared default IS the arm they get: if it drifted from the script's,
+  // a hand run and a real run would publish differently.
+  const declared = /\n {6}publish-mode:\n {8}description: [^\n]+\n {8}type: string\n {8}default: "([^"]*)"\n/.exec(code);
+  assert.ok(declared, '`publish-mode` must be a string input with a quoted default');
+  assert.equal(declared[1], DEFAULT_PUBLISH_MODE);
+  assert.equal(declared[1], 'direct', 'releases go live without a person promoting them unless a caller asks');
+  assert.doesNotMatch(
+    code.slice(declared.index, declared.index + declared[0].length),
+    /required: true/,
+    'no caller may be made to pass it',
+  );
+
+  // HANDED TO THE GATE AS DATA, NOT SPLICED INTO ITS COMMAND. The gate's `mode` output is the one
+  // value every arm condition below reads, so the input has to arrive there and nowhere else.
+  const gate = releaseSteps(workflow).find((s) => /publish-floor\.mjs/.test(s.body));
+  assert.match(gate.body, /\n {10}PUBLISH_MODE: \$\{\{ inputs\.publish-mode \}\}\n/);
+  assert.doesNotMatch(gate.body, /run: [^\n]*inputs\.publish-mode/, 'the input must never be shell text');
+  const readers = code.split('\n').filter((line) => /inputs\.publish-mode/.test(line));
+  assert.equal(readers.length, 1, 'only the floor gate reads the input; every other step reads its verdict');
+
+  // AND THE VERDICT IT PRODUCES BY DEFAULT SELECTS THE DIRECT COMMAND. The publish line hands the
+  // action `pnpm run release` on every `mode` except the literal `staged`, so `direct` lands there.
+  const action = releaseSteps(workflow).find((s) => /changesets\/action@/.test(s.body));
+  const publish = /\n {10}publish: (.*)/.exec(action.body)[1];
+  assert.equal(
+    publish,
+    "${{ steps.publish-floor.outputs.mode == 'staged' && format('node .cosyte-release-tooling/scripts/" +
+      "staged-publish.mjs stage --package {0}', inputs.package-name) || 'pnpm run release' }}",
+  );
 });

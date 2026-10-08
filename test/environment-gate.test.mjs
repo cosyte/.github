@@ -2548,17 +2548,21 @@ function parseCallContract(text) {
 test('AC11: no caller has to change anything, so every input and secret is the one it already had', () => {
   const { inputs, secrets } = parseCallContract(readWorkflow(WORKFLOW, readFileSync));
 
-  // `promotion-window-minutes` is the one input added since, and the loop below is what admits it:
-  // optional, with a default, so no caller has to pass it.
+  // `promotion-window-minutes` and `publish-mode` are the two inputs added since, and the loop below
+  // is what admits them: optional, with a default, so no caller has to pass either. `publish-mode`'s
+  // default is the arm every caller gets, and it is `direct`: a release is live when its run ends.
   assert.deepEqual(Object.keys(inputs), [
     'package-name',
     'dispatch-docs',
     'pack-docs-cmd',
     'expect-unpublished-deps',
     'promotion-window-minutes',
+    'publish-mode',
   ]);
   assert.equal(inputs['promotion-window-minutes'].type, 'number');
   assert.equal(inputs['promotion-window-minutes'].default, '120');
+  assert.equal(inputs['publish-mode'].type, 'string');
+  assert.equal(inputs['publish-mode'].default, '"direct"');
   assert.deepEqual(Object.keys(secrets), ['NPM_TOKEN', 'DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
 
   // Exactly one required input and exactly one required secret, and they are the two every caller
