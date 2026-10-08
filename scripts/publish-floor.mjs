@@ -1,14 +1,35 @@
 #!/usr/bin/env node
 // @ts-check
 //
-// WHICH TOOL PUBLISHES, WHICH FLOOR THAT TOOL OWES, AND WHETHER THIS PACKAGE CAN BE STAGED AT ALL.
+// WHICH TOOL PUBLISHES, WHICH ARM THIS RELEASE TAKES, AND, WHEN STAGING WAS ASKED FOR, WHICH FLOOR
+// THAT TOOL OWES AND WHETHER THIS PACKAGE CAN BE STAGED AT ALL.
 //
 // A `@cosyte/*` version becomes permanent the instant it is published: npm's registry data is
 // immutable and `package@version`, once used, can never be used again, an unpublish included. The
 // last reversible moment this pipeline had was BEFORE `changesets/action` ran. Staged publishing
-// inserts one after the tarball exists and before a consumer can resolve it, and this script decides,
-// before anything is packed, whether this run gets that moment and whether the tool it would need is
-// actually here.
+// inserts one after the tarball exists and before a consumer can resolve it, at the price of a
+// person promoting every release with 2FA. This script decides, before anything is packed, which arm
+// this run takes and whether the tool it would need is actually here.
+//
+// ---------------------------------------------------------------------------
+// THE ARM IS THE CALLER'S CHOICE, AND THE DEFAULT IS DIRECT
+// ---------------------------------------------------------------------------
+//
+// `release.yml` hands this script its `publish-mode` input as `PUBLISH_MODE` (or `--mode` by hand):
+//
+//   direct   (the default) every release publishes directly and is live when the run ends, with
+//            nobody asked to promote it. The registry is not consulted, because whether the package
+//            exists decides nothing on this arm, and no staging floor is owed, because nothing is
+//            staged. The publish tool is still identified and its version still read: "we could not
+//            tell what publishes here" is not a fact a direct publish gets to ignore.
+//   staged   a version of a package that already exists on the registry is submitted to npm's
+//            staging area, where it waits for a maintainer to promote it with 2FA. A package that has
+//            never been published cannot be staged and publishes directly, with a warning. The
+//            floors and the registry question below are this arm's; the tool questions are both.
+//
+// Anything else, the empty string included, is a refusal: a typo in a caller's input must not pick
+// an arm, in either direction. An absent value (a hand run with neither the flag nor the variable)
+// takes the default, which is the same default the workflow input declares.
 //
 // ---------------------------------------------------------------------------
 // THERE IS NO SINGLE FLOOR, AND ASSUMING ONE IS THE DEFECT THIS SCRIPT EXISTS TO AVOID
@@ -79,7 +100,8 @@
 //
 // Run it by hand against any caller checkout:
 //
-//   node scripts/publish-floor.mjs --package @cosyte/hl7 --repo .
+//   node scripts/publish-floor.mjs --package @cosyte/hl7 --repo .                 # the direct arm
+//   node scripts/publish-floor.mjs --package @cosyte/hl7 --repo . --mode staged   # the staged arm
 
 import { execFile } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -118,6 +140,25 @@ const LOCKFILE_TOOLS = Object.freeze({
 
 /** The only two publish tools this pipeline knows how to reason about. */
 export const SUPPORTED_TOOLS = Object.freeze(['pnpm', 'npm']);
+
+/** The two arms a caller can ask for through `release.yml`'s `publish-mode` input. */
+export const PUBLISH_MODES = Object.freeze(['direct', 'staged']);
+/** The arm a caller gets without asking. `test/publish-floor.test.mjs` pins the input to this. */
+export const DEFAULT_PUBLISH_MODE = 'direct';
+
+/**
+ * Which arm was asked for: the `--mode` flag, else `PUBLISH_MODE`, else the default. Only an ABSENT
+ * value takes the default; a present one is returned as given, and `decide` refuses anything that is
+ * not one of `PUBLISH_MODES`.
+ * @param {string | undefined} flag
+ * @param {string | undefined} fromEnv
+ * @returns {string}
+ */
+export function requestedMode(flag, fromEnv) {
+  if (flag !== undefined) return flag;
+  if (fromEnv !== undefined) return fromEnv;
+  return DEFAULT_PUBLISH_MODE;
+}
 
 // -- semver, the three fields of it this script actually compares ---------------------------------
 
@@ -394,6 +435,7 @@ export function readToolVersion(tool, { cwd = process.cwd(), timeoutMs = DEFAULT
  * @typedef {object} Verdict
  * @property {'staged' | 'direct' | 'refused'} mode
  * @property {boolean} failing
+ * @property {'notice' | 'warning' | 'error'} level
  * @property {string} title
  * @property {string} message
  * @property {Record<string, string>} outputs
@@ -404,6 +446,7 @@ export function readToolVersion(tool, { cwd = process.cwd(), timeoutMs = DEFAULT
  *
  * @param {object} facts
  * @param {string} facts.packageName
+ * @param {string} [facts.requestedMode] the arm the caller asked for; absent means the default
  * @param {{tool: 'pnpm' | 'npm', from: string} | {tool: null, detail: string}} facts.publisher
  * @param {{version: string} | {version: null, detail: string}} facts.publisherVersion
  * @param {any} facts.requirement
@@ -414,6 +457,15 @@ export function readToolVersion(tool, { cwd = process.cwd(), timeoutMs = DEFAULT
  */
 export function decide(facts) {
   const { packageName, publisher, publisherVersion, requirement, floorVersion, nodeVersion, existence } = facts;
+  const asked = facts.requestedMode === undefined ? DEFAULT_PUBLISH_MODE : facts.requestedMode;
+
+  // The arm the caller asked for comes first: nothing below means anything until it is known.
+  if (!PUBLISH_MODES.includes(asked)) {
+    return refusal('The requested publish mode is not one this pipeline knows', [
+      `Refusing to release ${packageName}: publish-mode is ${JSON.stringify(asked)}, and it must be one of ${PUBLISH_MODES.map((m) => `"${m}"`).join(' or ')}.`,
+      `Leave the input out to publish directly (the default), or set it to "staged" to submit each version of an existing package for a maintainer to promote with 2FA.`,
+    ]);
+  }
 
   // A6, first half: which tool performs the publish.
   if (!publisher.tool) {
@@ -445,6 +497,37 @@ export function decide(facts) {
   }
   const foundFloorVersion = floorVersion ? floorVersion.version : publisherVersion.version;
 
+  // THE DEFAULT ARM. The caller did not ask for staging, so every release publishes directly and is
+  // live when the run ends. Whether the package exists decides nothing here, so the registry answer is
+  // not read (`main` does not ask), and no staging floor binds a run that stages nothing. A notice,
+  // not a warning: this is the routine path, and a warning on every release is one people learn to
+  // skip past.
+  if (asked === 'direct') {
+    return {
+      mode: 'direct',
+      failing: false,
+      level: 'notice',
+      title: 'This release publishes directly',
+      message: [
+        `${packageName} publishes DIRECTLY through ${publisher.tool} ${publisherVersion.version}, because publish-mode is "direct" (the default).`,
+        'The version is permanent and live the moment it lands, with nobody asked to promote it.',
+        'Set publish-mode to "staged" to submit each version of an existing package for a maintainer to promote with 2FA instead.',
+      ].join('\n'),
+      outputs: {
+        mode: 'direct',
+        'requested-mode': 'direct',
+        'publish-tool': publisher.tool,
+        'publish-tool-version': publisherVersion.version,
+        'stage-tool': '',
+        'stage-tool-version': '',
+        floor: '',
+        'registry-status': 'not-asked',
+      },
+    };
+  }
+
+  // FROM HERE ON THE CALLER ASKED FOR STAGING, and every rule below is the staged arm's.
+  //
   // A12: whether the package already exists decides which arm runs, and silence is not an answer.
   if (existence.status === 'unknown') {
     return refusal('The registry did not say whether this package exists', [
@@ -459,14 +542,16 @@ export function decide(facts) {
     return {
       mode: 'direct',
       failing: false,
+      level: 'warning',
       title: 'Staged publishing is not available for this release',
       message: [
         `${packageName} has never been published, and npm is explicit that a package "already exists on the npm registry - you cannot stage a brand-new package".`,
         `This release therefore publishes DIRECTLY through ${publisher.tool} ${publisherVersion.version} and is permanent the moment it lands. There is no approval step and no reversible moment after this one.`,
-        `Every later release of ${packageName} takes the staged path.`,
+        `Every later release of ${packageName} takes the staged path while publish-mode stays "staged".`,
       ].join('\n'),
       outputs: {
         mode: 'direct',
+        'requested-mode': 'staged',
         'publish-tool': publisher.tool,
         'publish-tool-version': publisherVersion.version,
         'stage-tool': '',
@@ -496,14 +581,16 @@ export function decide(facts) {
   return {
     mode: 'staged',
     failing: false,
+    level: 'notice',
     title: 'This release will be staged for review',
     message: [
-      `${packageName} already exists on the registry, so this version is submitted to the npm staging area instead of being promoted to it.`,
+      `${packageName} already exists on the registry and publish-mode is "staged", so this version is submitted to the npm staging area instead of being promoted to it.`,
       `Staging tool: ${requirement.stageTool} ${foundFloorVersion} (floor ${requirement.floor}). ${requirement.source}.`,
       'It does not become resolvable to a consumer until a maintainer approves it, with 2FA, by hand.',
     ].join('\n'),
     outputs: {
       mode: 'staged',
+      'requested-mode': 'staged',
       'publish-tool': publisher.tool,
       'publish-tool-version': publisherVersion.version,
       'stage-tool': requirement.stageTool,
@@ -523,6 +610,7 @@ function refusal(title, lines) {
   return {
     mode: 'refused',
     failing: true,
+    level: 'error',
     title,
     message: lines.filter(Boolean).join('\n'),
     outputs: { mode: 'refused' },
@@ -533,9 +621,10 @@ function refusal(title, lines) {
 
 const USAGE =
   'usage:\n' +
-  '  publish-floor.mjs --package <name> [--repo <dir>] [--registry <url>]\n' +
+  '  publish-floor.mjs --package <name> [--mode direct|staged] [--repo <dir>] [--registry <url>]\n' +
   '                    [--attempts <n>] [--retry-delay-ms <n>]\n' +
-  '  PACKAGE_NAME is read from the environment when --package is absent.\n';
+  '  PACKAGE_NAME is read from the environment when --package is absent, and PUBLISH_MODE when\n' +
+  `  --mode is absent. With neither, the mode is "${DEFAULT_PUBLISH_MODE}".\n`;
 
 /** A positive integer option, or the fallback. A bad value is never a smaller ladder by accident. */
 export function numericOption(raw, fallback, { min = 1 } = {}) {
@@ -570,7 +659,10 @@ export function lockfilesIn(dir, exists = existsSync) {
  * @param {Verdict} verdict
  */
 export function renderAnnotation(verdict) {
-  const level = verdict.failing ? 'error' : verdict.mode === 'direct' ? 'warning' : 'notice';
+  // Each verdict names its own level. A refusal is an error whatever it says, and a direct publish is
+  // a warning only where staging was asked for and npm could not give it (a first publish); the
+  // default direct arm is a notice, because it is the routine path.
+  const level = verdict.failing ? 'error' : verdict.level;
   const first = verdict.message.split('\n')[0];
   return `::${level} title=${verdict.title}::${first}`;
 }
@@ -611,6 +703,22 @@ export async function main(argv, io = {}) {
   }
   const repo = options.repo || '.';
   const registry = options.registry || env.NPM_REGISTRY || DEFAULT_REGISTRY;
+  const mode = requestedMode(options.mode, env.PUBLISH_MODE);
+
+  // An arm nobody can name is refused before any tool is spawned or any registry is asked.
+  if (!PUBLISH_MODES.includes(mode)) {
+    const verdict = decide({
+      packageName,
+      requestedMode: mode,
+      publisher: { tool: null, detail: 'not read: the requested publish mode was refused first' },
+      publisherVersion: { version: null, detail: 'not read' },
+      requirement: { stageTool: null, detail: 'not read' },
+      floorVersion: null,
+      nodeVersion: process.versions.node,
+      existence: { status: 'unknown', detail: 'not asked' },
+    });
+    return report(verdict, { out, err, env, appendFile });
+  }
 
   // The caller's own manifest is the only place the publish tool is declared.
   let manifest;
@@ -647,12 +755,14 @@ export async function main(argv, io = {}) {
   }
 
   // The registry is only asked once the tool questions have answers, so a run that is going to refuse
-  // on the tool does not spend a retry ladder first.
+  // on the tool does not spend a retry ladder first. And it is only asked on the staged arm: on the
+  // direct arm whether the package exists decides nothing, so a registry that does not answer must
+  // not be able to refuse a release whose arm it cannot change.
   /** @type {any} */
   let existence = { status: 'unknown', detail: 'the registry was never asked' };
   const toolsReadable =
     publisher.tool && publisherVersion.version && requirement.stageTool && (!floorVersion || floorVersion.version);
-  if (toolsReadable) {
+  if (toolsReadable && mode === 'staged') {
     existence = await registryExistenceWithRetry(registry, packageName, withFetchTimeout(fetchImpl), {
       attempts: numericOption(options.attempts, DEFAULT_REGISTRY_ATTEMPTS),
       delayMs: numericOption(options['retry-delay-ms'], DEFAULT_RETRY_DELAY_MS, { min: 0 }),
@@ -661,6 +771,7 @@ export async function main(argv, io = {}) {
 
   const verdict = decide({
     packageName,
+    requestedMode: mode,
     publisher,
     publisherVersion,
     requirement,

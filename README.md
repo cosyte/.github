@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, or **staged publishing** when the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then resolves which tool will perform *this* caller's publish and refuses, before anything is packed in the job that publishes, if that tool is below the floor its mode needs or if the registry will not say whether the package exists. A version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
@@ -57,6 +57,7 @@ jobs:
     uses: cosyte/.github/.github/workflows/release.yml@workflows-YYYY-MM-DD-COMMIT
     with:
       package-name: "@cosyte/hl7"
+      # publish-mode: staged # optional; the default, direct, is live when the run ends. See below
     secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
     permissions: # actions: read is a PREREQUISITE, see below
       actions: read
@@ -547,7 +548,7 @@ So the job is split on the one line that matters, which is **reversibility**:
 |---|---|---|---|
 | `version` | **none** | the protection gate, the caller checkout, `Verify`, the release-notes derivation, the changelog gate, and `changesets/action` with **no publish command at all** | `RELEASE_PR_TOKEN` (or its `GITHUB_TOKEN` fallback) |
 | `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
-| `finalize` | **none** | `needs: version`, only when the pending version is **already live on npm** with no GitHub release. The tag, the GitHub release and the docs dispatch for a staged version promoted after its own run stopped waiting (see "When a maintainer promotes it", below) | `GITHUB_TOKEN` at `contents: write` and `DOCS_REPO_DISPATCH_TOKEN`; **no `NPM_TOKEN`, nothing that can publish** |
+| `finalize` | **none** | `needs: version`, only when the pending version is **already live on npm** with no GitHub release. The tag, the GitHub release and the docs dispatch for a staged version promoted after its own run stopped waiting, or a direct publish whose release step never finished (see "When a maintainer promotes it", below) | `GITHUB_TOKEN` at `contents: write` and `DOCS_REPO_DISPATCH_TOKEN`; **no `NPM_TOKEN`, nothing that can publish** |
 
 **Merging the Version PR is the release decision; the environment approval is that same decision
 confirmed on the runner about to make it permanent.** One approval per release, on the irreversible
@@ -588,8 +589,9 @@ terminated early by a line of the body itself.
 
 **The publish-path floor gate stays in `release`, which is the opposite answer to the protection
 gate's and for the opposite reason.** `publish-floor.mjs` asks which tool will perform *this*
-caller's publish, whether that tool clears the floor its staging mode needs, and whether the package
-exists on the registry at all; three step conditions in `release` read its answer as
+caller's publish, which arm the caller asked for (`publish-mode`, `direct` by default), and on the
+staged arm whether that tool clears staging's floor and whether the package exists on the registry
+at all; the step conditions in `release` read its answer as
 `steps.publish-floor.outputs.mode`. A step output does not cross a job boundary, and the tool it
 measures is the one on the runner that publishes, so the step belongs in the job that publishes,
 ahead of that job's `pnpm install` and `Verify` ladder. It carries no `if:` of its own: the
@@ -1241,23 +1243,86 @@ weather. That stays three-valued and warns, exactly as it does post-publish.
   contains the tooling checkout (`tooling-in-tarball`) rather than trusting every caller's `files`
   field to keep it out.
 
-## Staged publishing
+## Direct publishing, and staging on request
 
 **A version is permanent the instant it is published.** npm's own policy is that registry data is
 immutable and that `package@version`, once used, can never be used again, an unpublish included. Every
 gate above this line exists because of that sentence, and all of them run *before* the tarball
-exists. Staged publishing adds the one thing none of them could: a reversible moment *after* it.
+exists.
 
-A version of a package that **already exists on the registry** is now submitted to npm's staging
-area instead of being promoted to it. It is uploaded, it is inspectable, and **no consumer can
-resolve it**: `npm view <package> versions` does not list it and an ordinary install will not find
-it. It becomes real only when a maintainer approves it, by hand, with 2FA.
+**By default, every release publishes directly and is live when its run ends.** The `release` job
+hands `changesets/action` the caller's own `pnpm run release`, the version reaches the registry with
+provenance, and the GitHub release, the docs dispatch and the post-publish install gate follow in the
+same run. Nobody is asked to promote anything: merging the Version PR, confirmed by the caller's
+`release` environment, is the decision to release. The arm is the `publish-mode` input, and a caller
+that passes nothing gets `direct`:
 
-### What it changes for a maintainer
+| `publish-mode` | A package already on npm | A package never published |
+|---|---|---|
+| `direct` (the default) | published directly, live when the run ends | published directly |
+| `staged` | **staged** for a maintainer to promote with 2FA (below) | published directly, with a warning: npm cannot stage a brand-new package |
+| anything else, the empty string included | refused before anything is packed | refused before anything is packed |
 
-A release run that used to end with "published" now ends with a job summary saying a version is
-staged and waiting, and then **waits with you**: its `release` job stays in progress for up to
-`promotion-window-minutes` (default 120) while it watches the registry, so that a promotion in the
+On the direct arm, [`scripts/publish-floor.mjs`](scripts/publish-floor.mjs) still identifies the tool
+that will publish and reads its version, and refuses if it cannot. It owes no staging floor and does
+not ask the registry anything, because neither would change the arm.
+
+### What a direct release needs from `NPM_TOKEN`
+
+npm judges the token at the moment of publish, so this is the one requirement of the direct arm that
+no gate here can check in advance. All of it read on 2026-10-08:
+
+- **A granular access token, "Read and write (publish and stage)" on the packages, with "Bypass 2FA"
+  set.** npm: "When the Bypass 2FA option is set to true, this setting takes precedence over
+  account-level and package-level 2FA settings for package and automation actions such as
+  publishing", and the option "is set to false by default at token creation"
+  ([About access tokens](https://docs.npmjs.com/about-access-tokens), last edited 2026-09-10).
+  Without it, npm answers a publish from CI with **E403** or **EOTP**: it wants a one-time password
+  no run can give. A new token is a step for the owner, on npmjs.com, with 2FA.
+- **A stage-only token cannot publish directly.** "Read and write (stage only): the token cannot
+  publish new package versions directly" (same page). With one of those, set `publish-mode: staged`.
+- **Write tokens expire.** "All npm existing granular tokens with write permissions are now capped at
+  90-day maximum lifetime"
+  ([GitHub changelog, 2025-11-05](https://github.blog/changelog/2025-11-05-npm-security-update-classic-token-creation-disabled-and-granular-token-changes/)).
+  An expired token fails the publish step, not the floor gate.
+- **Provenance needs nothing new.** The publish step sets `NPM_CONFIG_PROVENANCE` for a public caller
+  and the job holds `id-token: write`, which is how npm documents enabling it
+  ([Generating provenance statements](https://docs.npmjs.com/generating-provenance-statements), last
+  edited 2026-05-04). `@cosyte/hl7@0.0.10`, which this workflow published directly on 2026-08-07,
+  carries a provenance attestation.
+
+### Direct publishing with a token has an end date
+
+npm: "The ability to publish new package versions directly with a granular access token will be
+removed in January 2027" ([About access tokens](https://docs.npmjs.com/about-access-tokens)). The
+announcements say the same and name what is left: "You should move automated publishing to trusted
+publishing (OIDC) or staged publishing"
+([GitHub changelog, 2026-07-31](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/));
+the stage-only token "doesn't change existing tokens or their direct-publish capabilities" until then
+([GitHub changelog, 2026-09-18](https://github.blog/changelog/2026-09-18-stage-only-npm-tokens-for-safer-automation/)).
+When that removal lands, npm refuses a direct release made with `NPM_TOKEN`, and a release that has to
+go live without a person needs trusted publishing, which this workflow does not do yet. Until then the
+default stays direct, and `publish-mode: staged` is the way back to a person promoting each version.
+
+### Staging, on request
+
+With `publish-mode: staged`, a version of a package that **already exists on the registry** is
+submitted to npm's staging area instead of being promoted to it. Staging adds the one thing none of
+the gates above could: a reversible moment *after* the tarball exists. The version is uploaded, it is
+inspectable, and **no consumer can resolve it**: `npm view <package> versions` does not list it and an
+ordinary install will not find it. It becomes real only when a maintainer approves it, by hand, with
+2FA: "You will be prompted for 2FA verification whether you approve the package in the CLI or on
+npmjs.com" ([Staged publishing](https://docs.npmjs.com/staged-publishing), last edited 2026-09-29,
+read 2026-10-08). And it is chosen per publish command: "Instead of publishing directly with `npm
+publish`, you can submit packages to a staging area with `npm stage publish`" (same page), which is
+what lets this workflow choose it per caller. The rest of this section, down to the post-publish
+install gate, is about that arm.
+
+### What staging changes for a maintainer
+
+Where a direct release run ends with "published", a staged one ends with a job summary saying a
+version is staged and waiting, and then **waits with you**: its `release` job stays in progress for
+up to `promotion-window-minutes` (default 120) while it watches the registry, so that a promotion in the
 same sitting gets its GitHub release and docs rebuild from the same run. That is the wait, not a hang.
 **Nothing chases you** either way: an unapproved stage is not a pending task somewhere, it is simply a
 version that never happened. Walk away and the live registry keeps exactly the versions it already
@@ -1308,8 +1373,9 @@ bundled with Node governs nothing about the publish. Node 22 bundles npm 10.9.8,
 npm floor, so that implementation would red every pnpm-11 release in this org for a binary that is
 not on their publish path. `test/publish-floor.test.mjs` carries that defect as a named test.
 
-**If your release run now fails with "the publish path is below its staged-publishing floor", the fix
-is in your repository, not this one.** The refusal names the version it found and the floor it needs.
+**If a staged release run fails with "the publish path is below its staged-publishing floor", the fix
+is in your repository, not this one.** The direct arm owes no such floor. The refusal names the
+version it found and the floor it needs.
 The `release` job itself runs on Node 24, whose bundled npm (11.16.0 and later from Node 24.18.0) clears
 the npm floor, so a pnpm-10 caller normally meets it without a change.
 Either raise your `packageManager` pin to pnpm 11.3.0 or later, which is a one-line change and needs
