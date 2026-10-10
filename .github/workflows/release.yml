@@ -870,7 +870,7 @@ jobs:
       #   recoverable; that is not.
       - name: Create or refresh the "Version Packages" pull request
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v1
         with:
           # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
@@ -1200,7 +1200,7 @@ jobs:
       #   rather than `pnpm version`, which is pnpm's built-in and shadows the script.
       - name: Publish to npm
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v1
         with:
           version: pnpm run version
           # ▶ THE ARM IS SELECTED ON THIS LINE, AND BY DEFAULT IT IS THE DIRECT ONE. The command that
