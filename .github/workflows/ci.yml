@@ -21,6 +21,11 @@ name: CI
 # on disk; `release.yml`'s install gate asks the consumer's question but only AFTER the publish is
 # permanent. These two ask it BEFORE, which is the only place it can prevent anything. See
 # `scripts/prepublish-check.mjs` and the README's "The two pre-publish layers".
+#
+# And the `published` job, which runs only when the CALLER's workflow runs on `schedule` or
+# `workflow_dispatch`: it installs the caller's published package at `latest` into a clean directory
+# and imports it the way users do, between releases. See `scripts/published-check.mjs` and the
+# README's "The scheduled check of the published package".
 
 on:
   workflow_call:
@@ -113,6 +118,16 @@ on:
         description: "Resolve docs-content/ links, images and sidebar ids (needs docs-content/sidebars.json)."
         type: boolean
         default: false
+      # THE SMOKE SAMPLE THE `published` JOB RUNS, AND ONLY THAT JOB READS IT. A path in the caller's
+      # checkout to ONE self-contained `.mjs`, `.cjs` or `.js` file that imports the package by name
+      # and `node:` builtins only, carries its synthetic input inline, and exits non-zero when the
+      # package gets it wrong. It is copied into the clean room and run there, so a relative import
+      # of a fixture next to it will not resolve. Synthetic data only: this runs in a public log.
+      # Empty, the default, means the job installs and imports and runs nothing else.
+      published-smoke-sample:
+        description: "On scheduled runs, a self-contained synthetic sample to run against the published package (empty: import only)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -311,3 +326,54 @@ jobs:
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1
         with:
           fail_on_error: true
+
+  # THE PUBLISHED PACKAGE, AS USERS INSTALL IT, ON THE DAYS BETWEEN RELEASES. `release.yml`'s install
+  # gate asks the consumer's question once, straight after a publish; this asks it again on every
+  # scheduled run, against whatever `latest` is that day, because a dependency or a Node release can
+  # break an install that nothing in the caller changed. See `scripts/published-check.mjs`.
+  #
+  # ONLY ON THE CALLER'S `schedule` AND `workflow_dispatch` EVENTS. In a called workflow `github`
+  # is the caller's context, so `github.event_name` is the event the caller's workflow ran on. On a
+  # push or a pull request this job is skipped, which adds a skipped `published` context to every
+  # pull request and changes nothing else: it is a new context no caller's ruleset requires. A
+  # caller with no `schedule:` trigger never runs it, and the red run of one that does lands in that
+  # caller's repository, which is where a fix can be made.
+  #
+  # NOTHING IS INSTALLED IN THE WORKSPACE. The caller's checkout is read for `package.json` and the
+  # sample and nothing else; the install happens in a clean room under `RUNNER_TEMP`, which is not
+  # inside the workspace. The Node matrix is the caller's, because "a Node release breaks the
+  # install" is one of the things this exists to catch. The OS axis is not: the clean room is built
+  # for GitHub-hosted Linux.
+  published:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(inputs.node-versions) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # At `job.workflow_sha`, for the reason the `prepublish` job gives: the script that runs is the
+      # one belonging to the version of this workflow the caller resolved.
+      - name: Check out the shared CI tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ job.workflow_sha }}
+          path: .cosyte-ci-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      # The outer bound. The script's inner ones are 180s for the install, 60s per import arm and
+      # 120s for the sample, so reaching this is a bug rather than a slow registry.
+      - name: The published package must install, import and run in a clean directory
+        timeout-minutes: 10
+        env:
+          PUBLISHED_SMOKE_SAMPLE: ${{ inputs.published-smoke-sample }}
+        shell: bash
+        run: |
+          node .cosyte-ci-tooling/scripts/published-check.mjs \
+            --repo . --sample "$PUBLISHED_SMOKE_SAMPLE"

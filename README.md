@@ -10,7 +10,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 | Workflow | Purpose | Used by |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
+| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented. Plus **the `published` job, on the caller's `schedule` and `workflow_dispatch` runs only**: it installs the caller's own package at its `latest` npm version into a clean directory, imports it with `import` and with `require` (a JSON config entry is resolved, not parsed), and runs the synthetic smoke sample the caller names in **`published-smoke-sample`** (default empty: the import only). See [The scheduled check of the published package](#the-scheduled-check-of-the-published-package) | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
@@ -1672,6 +1672,95 @@ It is an **exact** allowance, not a mute: any absent dependency **not** named in
 new unpublished dependency is still caught. And it is self-clearing. The moment `@cosyte/fhir`
 publishes, nothing is absent, the installs simply pass, and the gate reports the entry as **stale** in
 the step summary so it gets deleted. **Delete it then; it is not load-bearing.**
+
+## The scheduled check of the published package
+
+**The install gate above asks the consumer's question once per release, and nothing asked it again
+until the next one.** The answer can change with no release at all: a dependency publishes a broken
+version inside a range the package declares, a Node patch release changes how something loads, a
+dist-tag moves. `ci.yml`'s `published` job asks it again on every scheduled run of the caller's CI,
+against whatever `latest` is that day, so a package that broke for its users is red within a day, in
+its own repository, where the fix is made.
+
+It runs **only when the caller's workflow ran on `schedule` or `workflow_dispatch`**. In a called
+workflow the `github` context is the caller's, so the job reads the event the caller's workflow ran
+on. On a push or a pull request it is skipped, which is a new, skipped `published` context that no
+ruleset requires. A caller with no `schedule:` trigger never runs it; adding one turns it on:
+
+```yaml
+# <parser>/.github/workflows/ci.yml
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  schedule: [{ cron: "17 4 * * *" }] # nightly; any time works
+  workflow_dispatch:
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      published-smoke-sample: test/smoke/published.mjs # optional; see below
+```
+
+[`scripts/published-check.mjs`](scripts/published-check.mjs) does the work, in four steps, and any
+of them failing reds the run:
+
+1. **Read the caller's own package name** from its root `package.json`. A root that is
+   `"private": true`, or names nothing, has no published package to test and fails saying so.
+2. **`npm install <name>@latest` in a clean room**, as an anonymous user, under `RUNNER_TEMP` and
+   never inside the checkout, with nothing installed in the workspace at all. The clean room, the
+   anonymous npm environment, `--ignore-scripts` and the allow-listed environment of the children
+   below are **imported from `install-check.mjs`**, not restated, so the two checks of the published
+   package cannot drift apart; [Clean means anonymous](#clean-means-anonymous-not-merely-empty) and
+   [What it does not narrow](#what-it-does-not-narrow) own the reasons.
+3. **Load every entry point by name, once with `import` and once with `require`**, each in its own
+   process. A package that exports `.` is loaded by its bare name; one that does not has each
+   exported subpath loaded instead.
+4. **Run the smoke sample**, when the caller names one.
+
+**A config package is resolved, not parsed.** `@cosyte/prettier-config` exports `./index.json`, and
+`@cosyte/tsconfig` exports only `./base.json` and `./library.json`. `import` of a JSON file throws
+`ERR_IMPORT_ATTRIBUTE_MISSING`, and what consumes such a file is a tool reading a path, not a module
+loader. So each arm resolves every entry (`import.meta.resolve`, `require.resolve`), confirms the file
+is there, and loads it only when it is `.js`, `.mjs` or `.cjs`. **`import.meta.resolve` does not
+check that the file exists** (measured on Node 24.22.0: it returns a URL for an export map entry
+pointing at a missing file, where `require.resolve` throws), so the ESM arm stats what it resolved.
+
+**`published-smoke-sample`** names one file in the caller's checkout, `.mjs`, `.cjs` or `.js`. It is
+copied into the clean room and run there, so its `import "@cosyte/<name>"` resolves from what was
+just installed and from nowhere else. That has two consequences for the author: it must be
+**self-contained** (the package and `node:` builtins only, its input inline, since a relative import
+of a fixture beside it will not resolve), and its input must be **synthetic**, because this runs in a
+public log. It exits non-zero when the package gets the answer wrong. Empty, the default, means the
+install and the imports are the whole check. A sample that does not exist, or is not JavaScript, fails
+before the registry is asked anything.
+
+The job runs on the caller's `node-versions` matrix, because a Node release breaking the install is
+one of the things it exists to catch. It does **not** take the `os` axis: the clean room is built for
+GitHub-hosted Linux.
+
+### It fails closed, which is the opposite of the install gate
+
+The install gate fails open on anything it cannot explain, because a red there misreports a permanent
+release a moment after it happened. Neither half of that holds here: nothing is published by this
+job, and the version under test has been on the registry for at least a day, so there is no
+propagation to wait out. A red run is the finding: **the package as users get it today does not
+work.** A registry that does not answer reds the run too. npm retries a transient fault itself before
+giving up, and the annotation leads with npm's own error code (`E404 ...`, `ETIMEDOUT ...`), so a red
+run that is weather reads as weather. A crash in the script is red as well, because a check that
+swallowed its own crash would be a green scheduled run over nothing tested.
+
+[`test/published-check.test.mjs`](test/published-check.test.mjs) runs the step's own command, taken
+out of `ci.yml`, in copies of the fixture callers under
+[`test/fixtures/published-check/`](test/fixtures/published-check), against a registry on localhost
+that serves them `npm pack`ed. The good caller passes; the caller with a deliberately wrong name fails
+on `E404`; a sample that gets the wrong answer fails. Against the same registry, a config package
+passes with its entries resolved and a package whose export map points at a file its tarball dropped
+fails; and a JSON entry that is missing fails on both arms, not only on `require`. Run it by hand
+against anything published, from a directory whose `package.json` names it:
+
+```bash
+node scripts/published-check.mjs --repo . --sample test/smoke/published.mjs
+```
 
 ## Release notes
 
