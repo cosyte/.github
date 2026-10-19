@@ -714,7 +714,8 @@ test('direct: a tool below the trusted-publishing floor is refused, naming the v
     assert.equal(verdict.failing, true, `npm ${npm} cannot make the OIDC exchange`);
     assert.equal(verdict.mode, 'refused');
     assert.equal(verdict.title, 'The publish path is below the trusted-publishing floor');
-    assert.match(verdict.message, new RegExp(`npm ${npm.replace(/\./g, '\\.')} is below the npm 11\\.5\\.1 that trusted publishing needs`));
+    const named = `npm ${npm} is below the npm 11.5.1 that trusted publishing needs`;
+    assert.ok(verdict.message.includes(named), `the refusal must say "${named}", and said:\n${verdict.message}`);
     assert.match(verdict.message, /before anything is packed/);
     assert.match(verdict.message, /hands it no npm token/);
   }
