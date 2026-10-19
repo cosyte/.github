@@ -122,7 +122,9 @@ on:
       # checkout to ONE self-contained `.mjs`, `.cjs` or `.js` file that imports the package by name
       # and `node:` builtins only, carries its synthetic input inline, and exits non-zero when the
       # package gets it wrong. It is copied into the clean room and run there, so a relative import
-      # of a fixture next to it will not resolve. Synthetic data only: this runs in a public log.
+      # of a fixture next to it will not resolve. Prefer `.mjs` or `.cjs`: the clean room has no
+      # `"type"`, so a `.js` sample in ESM syntax relies on Node's module detection rather than on
+      # the caller's `"type": "module"`. Synthetic data only: this runs in a public log.
       # Empty, the default, means the job installs and imports and runs nothing else.
       published-smoke-sample:
         description: "On scheduled runs, a self-contained synthetic sample to run against the published package (empty: import only)."

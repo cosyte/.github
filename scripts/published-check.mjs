@@ -82,6 +82,14 @@ export const SAMPLE_TIMEOUT_MS = 120_000;
 /** What Node runs as JavaScript without a loader or a flag on every supported line. */
 export const SAMPLE_EXTENSIONS = Object.freeze([".mjs", ".cjs", ".js"]);
 
+/**
+ * The probes and the copied sample are written into the clean room under these CONSTANT names and
+ * run by name with the clean room as `cwd`. The clean room's absolute path comes from `RUNNER_TEMP`
+ * or the command line, and a path built from it is not handed to a child process as an argument.
+ */
+export const PROBE_FILES = Object.freeze({ esm: "published-probe.mjs", cjs: "published-probe.cjs" });
+export const SAMPLE_FILES = Object.freeze({ ".mjs": "smoke-sample.mjs", ".cjs": "smoke-sample.cjs", ".js": "smoke-sample.js" });
+
 /** The prefix a probe line carries, so module-init output on stdout is never read as a report. */
 export const PROBE_MARK = "@@published-check ";
 
@@ -264,14 +272,17 @@ export function readProbe(arm, specs, result) {
 export async function probeEntries({ room, specs, env }) {
   /** @type {Check[]} */
   const checks = [];
-  for (const [arm, fn, ext] of /** @type {const} */ ([
-    ["esm", esmProbe, ".mjs"],
-    ["cjs", cjsProbe, ".cjs"],
+  for (const [arm, fn] of /** @type {const} */ ([
+    ["esm", esmProbe],
+    ["cjs", cjsProbe],
   ])) {
-    const probe = path.join(room, `published-probe${ext}`);
     const call = arm === "esm" ? `await ${fn.name}(process.argv.slice(2));` : `${fn.name}(process.argv.slice(2));`;
-    await writeFile(probe, `${fn.toString()}\n${call}\n`);
-    const run = await runCommand(process.execPath, [probe, ...specs], { cwd: room, env, timeoutMs: PROBE_TIMEOUT_MS });
+    await writeFile(path.join(room, PROBE_FILES[arm]), `${fn.toString()}\n${call}\n`);
+    const run = await runCommand(process.execPath, [PROBE_FILES[arm], ...specs], {
+      cwd: room,
+      env,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
     checks.push(...readProbe(arm, specs, run));
   }
   return checks;
@@ -424,9 +435,10 @@ export async function runPublishedCheck({
     if (located.file) {
       // Copied INTO the clean room, so the sample's own `import "<name>"` resolves from the clean
       // room's `node_modules` and from nowhere in the caller's checkout. Its extension is kept,
-      // because the extension is what tells Node whether it is ESM or CommonJS.
-      const copy = path.join(room, `smoke-sample${path.extname(located.file)}`);
-      await copyFile(located.file, copy);
+      // because the extension is what tells Node whether it is ESM or CommonJS. `locateSample` has
+      // already refused any extension `SAMPLE_FILES` does not name.
+      const copy = SAMPLE_FILES[/** @type {keyof typeof SAMPLE_FILES} */ (path.extname(located.file))];
+      await copyFile(located.file, path.join(room, copy));
       const run = await runCommand(process.execPath, [copy], { cwd: room, env, timeoutMs: SAMPLE_TIMEOUT_MS });
       record({
         label: `smoke sample ${sample}`,
@@ -473,7 +485,12 @@ export function renderSummary(result) {
   return lines.join("\n");
 }
 
-const escapeCell = (s) => String(s).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+// Backslashes first, so a `\|` already in the text cannot turn the escape below into a cell boundary.
+const escapeCell = (s) =>
+  String(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ");
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────────────────────
 

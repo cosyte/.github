@@ -1725,7 +1725,9 @@ is there, and loads it only when it is `.js`, `.mjs` or `.cjs`. **`import.meta.r
 check that the file exists** (measured on Node 24.22.0: it returns a URL for an export map entry
 pointing at a missing file, where `require.resolve` throws), so the ESM arm stats what it resolved.
 
-**`published-smoke-sample`** names one file in the caller's checkout, `.mjs`, `.cjs` or `.js`. It is
+**`published-smoke-sample`** names one file in the caller's checkout, `.mjs`, `.cjs` or `.js`; prefer
+`.mjs` or `.cjs`, because the clean room's `package.json` has no `"type"`, so a `.js` sample in ESM
+syntax relies on Node's module detection rather than on the caller's `"type": "module"`. It is
 copied into the clean room and run there, so its `import "@cosyte/<name>"` resolves from what was
 just installed and from nowhere else. That has two consequences for the author: it must be
 **self-contained** (the package and `node:` builtins only, its input inline, since a relative import

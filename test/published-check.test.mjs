@@ -310,6 +310,9 @@ test('the annotation is one line naming the first failure; a pass has none; no e
   const summary = renderSummary(failing);
   assert.match(summary, /Published package check: FAIL/);
   assert.match(summary, /\| import @cosyte\/x \| \*\*FAIL\*\* \| ERR_MODULE_NOT_FOUND: gone \|/);
+  // A backslash before a pipe is escaped too, or `\|` in the text would end the cell early.
+  const piped = renderSummary({ ...failing, checks: [{ label: 'a\\|b', ok: false, detail: 'c|d' }] });
+  assert.match(piped, /^\| a\\\\\\\|b \| \*\*FAIL\*\* \| c\\\|d \|$/m);
   // Assembled from codepoints rather than written, so this file itself stays free of the characters
   // in every spelling the em-dash gate bans, the JavaScript escape included.
   const DASHES = [String.fromCodePoint(0x2013), String.fromCodePoint(0x2014)];
