@@ -21,7 +21,8 @@
 //            nobody asked to promote it. The registry is not consulted, because whether the package
 //            exists decides nothing on this arm, and no staging floor is owed, because nothing is
 //            staged. The publish tool is still identified and its version still read: "we could not
-//            tell what publishes here" is not a fact a direct publish gets to ignore.
+//            tell what publishes here" is not a fact a direct publish gets to ignore. And the
+//            trusted-publishing floor below IS owed, because that is how the publish authenticates.
 //   staged   a version of a package that already exists on the registry is submitted to npm's
 //            staging area, where it waits for a maintainer to promote it with 2FA. A package that has
 //            never been published cannot be staged and publishes directly, with a warning. The
@@ -64,6 +65,46 @@
 // The npm floor is stated as one conjunctive sentence in npm's own document, so both halves of it are
 // asserted. pnpm's document states no Node floor for `pnpm stage`, so none is invented for that arm:
 // a floor nobody documents is not a floor this pipeline gets to enforce.
+//
+// ---------------------------------------------------------------------------
+// EVERY ARM AUTHENTICATES THROUGH TRUSTED PUBLISHING, SO EVERY ARM OWES ITS FLOOR
+// ---------------------------------------------------------------------------
+//
+// `release.yml` hands the publish no npm token. The tool that talks to the registry asks GitHub for
+// the job's OIDC id-token (`id-token: write`) and exchanges it at npm for a short-lived token scoped
+// to this one package, so a long-lived credential exists nowhere. A tool that cannot make that
+// exchange has nothing to publish with, which makes this floor binding on the direct arm too:
+//
+//   "Trusted publishing requires npm CLI version 11.5.1 or later and Node version 22.14.0 or higher."
+//   (https://docs.npmjs.com/trusted-publishers, read 2026-10-19)
+//
+// It is the same table as above with lower numbers, because the tool that exchanges the token is the
+// tool that talks to the registry, and that is the same tool that stages:
+//
+//   publish tool      who exchanges the token      floor that binds
+//   pnpm >= 11        pnpm, natively               pnpm >= 11.0.0
+//   pnpm <= 10        the npm CLI, by delegation   npm >= 11.5.1 and Node >= 22.14.0
+//   npm               the npm CLI                  npm >= 11.5.1 and Node >= 22.14.0
+//
+// Read in the sources, 2026-10-19, because the delegation row is what every caller runs today:
+//
+//   pnpm 10.0.0 and 10.34.5   `pnpm publish` packs the tarball itself, then spawns `npm publish
+//                             --ignore-scripts <tarball>` with the parent's whole environment
+//                             (releasing/plugin-commands-publishing/src/publish.ts:278 at v10.34.5,
+//                             :246 at v10.0.0; exec/run-npm/src/index.ts copies `process.env`). pnpm
+//                             10 has no OIDC code of its own; the npm it spawns does the exchange.
+//   npm 11.5.1                `npm publish` calls `oidc()` before the upload, for a tarball argument
+//                             as for a directory (lib/commands/publish.js:141 at v11.5.1).
+//   npm 11.15.0               `npm stage publish` is a subclass of that command and makes the same
+//                             call (lib/commands/publish.js:145 at v11.15.0).
+//   pnpm 11.0.0               the native publish exchanges the token itself when no token is
+//                             configured (releasing/commands/src/publish/publishPackedPkg.ts:115).
+//   pnpm 11.3.0               `pnpm stage publish` runs that same publish with `stage: true`, and the
+//                             exchange wins over a configured token (publishPackedPkg.ts:195).
+//
+// So the staging floors above already clear these: a tool that can stage can authenticate. The two
+// are still asserted separately, because a first publish on the staged arm takes the direct path
+// and owes this floor without owing that one.
 //
 // ---------------------------------------------------------------------------
 // EVERY UNKNOWN IS A REFUSAL, AND THE ASYMMETRY IS THE WHOLE DESIGN
@@ -118,6 +159,12 @@ export const NPM_STAGING_NODE_FLOOR = '22.14.0';
 export const PNPM_STAGING_FLOOR = '11.3.0';
 /** pnpm publishes natively from this major on, so the npm CLI stops being on the publish path. */
 export const PNPM_NATIVE_PUBLISH_MAJOR = 11;
+/** npm docs, "Trusted publishing for npm packages": npm CLI 11.5.1 or later. */
+export const NPM_TRUSTED_PUBLISHING_FLOOR = '11.5.1';
+/** The same sentence's other half: Node 22.14.0 or higher. */
+export const NPM_TRUSTED_PUBLISHING_NODE_FLOOR = '22.14.0';
+/** pnpm 11.0.0, the first native `pnpm publish`, exchanges the OIDC token itself. */
+export const PNPM_TRUSTED_PUBLISHING_FLOOR = '11.0.0';
 
 export const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
 // `globalThis.fetch` has NO default request timeout, and one unbounded fetch against a socket that
@@ -312,6 +359,47 @@ export function stagingRequirement({ tool, version }) {
   };
 }
 
+/**
+ * Which tool exchanges this job's OIDC token for the publish, and which floor it owes. Owed on EVERY
+ * arm, because `release.yml` hands the publish no npm token and a tool that cannot make the exchange
+ * has nothing to publish with. The tool is always the one `stagingRequirement` names for the same
+ * publisher, since the tool that talks to the registry is the one that authenticates to it.
+ *
+ * @param {{tool: 'pnpm' | 'npm', version: string}} publisher
+ * @returns {{authTool: 'pnpm' | 'npm', floor: string, nodeFloor: string | null, source: string} | {authTool: null, detail: string}}
+ */
+export function trustedPublishingRequirement({ tool, version }) {
+  const parsed = parseVersion(version);
+  if (!parsed) {
+    return {
+      authTool: null,
+      detail: `${tool} reported a version this gate cannot parse (${JSON.stringify(version)})`,
+    };
+  }
+  if (tool === 'pnpm' && parsed.major >= PNPM_NATIVE_PUBLISH_MAJOR) {
+    return {
+      authTool: 'pnpm',
+      floor: PNPM_TRUSTED_PUBLISHING_FLOOR,
+      nodeFloor: null,
+      source: 'pnpm publishes natively from v11 on and makes the OIDC exchange itself (pnpm v11.0.0, releasing/commands/src/publish/publishPackedPkg.ts)',
+    };
+  }
+  if (tool === 'pnpm') {
+    return {
+      authTool: 'npm',
+      floor: NPM_TRUSTED_PUBLISHING_FLOOR,
+      nodeFloor: NPM_TRUSTED_PUBLISHING_NODE_FLOOR,
+      source: `pnpm ${parsed.raw} packs the tarball and hands it to \`npm publish\`, so the npm CLI makes the OIDC exchange and its floor binds (https://docs.npmjs.com/trusted-publishers)`,
+    };
+  }
+  return {
+    authTool: 'npm',
+    floor: NPM_TRUSTED_PUBLISHING_FLOOR,
+    nodeFloor: NPM_TRUSTED_PUBLISHING_NODE_FLOOR,
+    source: 'the npm CLI performs the publish and makes the OIDC exchange (https://docs.npmjs.com/trusted-publishers)',
+  };
+}
+
 // -- Does this package already exist on the registry -----------------------------------------------
 
 const encodeName = (name) => name.replace('/', '%2f');
@@ -497,12 +585,28 @@ export function decide(facts) {
   }
   const foundFloorVersion = floorVersion ? floorVersion.version : publisherVersion.version;
 
+  // WHO EXCHANGES THE OIDC TOKEN, AND AT WHAT VERSION. It is the tool `requirement` already names
+  // (the npm a pnpm 10 caller delegates to, else the publisher), so its version is the one read above.
+  const trusted = trustedPublishingRequirement({ tool: publisher.tool, version: publisherVersion.version });
+  const authVersion = foundFloorVersion;
+  const authLine = trusted.authTool
+    ? `It authenticates through npm trusted publishing (OIDC), with no npm token: ${trusted.authTool} ${authVersion} exchanges this job's id-token for a short-lived publish token (floor ${trusted.authTool} ${trusted.floor}${trusted.nodeFloor ? ` and Node ${trusted.nodeFloor}, on Node ${nodeVersion}` : ''}). ${trusted.source}.`
+    : '';
+  const authOutputs = {
+    'auth-tool': trusted.authTool ?? '',
+    'auth-tool-version': trusted.authTool ? authVersion : '',
+    'trusted-publishing-floor': trusted.authTool ? trusted.floor : '',
+  };
+
   // THE DEFAULT ARM. The caller did not ask for staging, so every release publishes directly and is
   // live when the run ends. Whether the package exists decides nothing here, so the registry answer is
-  // not read (`main` does not ask), and no staging floor binds a run that stages nothing. A notice,
-  // not a warning: this is the routine path, and a warning on every release is one people learn to
-  // skip past.
+  // not read (`main` does not ask), and no staging floor binds a run that stages nothing. The
+  // trusted-publishing floor does bind, because without it there is nothing to publish with. A
+  // notice, not a warning: this is the routine path, and a warning on every release is one people
+  // learn to skip past.
   if (asked === 'direct') {
+    const belowTrusted = trustedFloorShortfall(trusted, authVersion, nodeVersion);
+    if (belowTrusted) return trustedFloorRefusal(packageName, publisher, publisherVersion, trusted, belowTrusted);
     return {
       mode: 'direct',
       failing: false,
@@ -510,14 +614,18 @@ export function decide(facts) {
       title: 'This release publishes directly',
       message: [
         `${packageName} publishes DIRECTLY through ${publisher.tool} ${publisherVersion.version}, because publish-mode is "direct" (the default).`,
+        authLine,
         'The version is permanent and live the moment it lands, with nobody asked to promote it.',
         'Set publish-mode to "staged" to submit each version of an existing package for a maintainer to promote with 2FA instead.',
-      ].join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n'),
       outputs: {
         mode: 'direct',
         'requested-mode': 'direct',
         'publish-tool': publisher.tool,
         'publish-tool-version': publisherVersion.version,
+        ...authOutputs,
         'stage-tool': '',
         'stage-tool-version': '',
         floor: '',
@@ -537,8 +645,11 @@ export function decide(facts) {
     ]);
   }
 
-  // A4: a brand-new package cannot be staged, so it publishes directly and this run says so.
+  // A4: a brand-new package cannot be staged, so it publishes directly and this run says so. It owes
+  // the trusted-publishing floor the direct arm owes, and not the staging floor it cannot use.
   if (existence.status === 'never-published') {
+    const belowTrusted = trustedFloorShortfall(trusted, authVersion, nodeVersion);
+    if (belowTrusted) return trustedFloorRefusal(packageName, publisher, publisherVersion, trusted, belowTrusted);
     return {
       mode: 'direct',
       failing: false,
@@ -547,13 +658,17 @@ export function decide(facts) {
       message: [
         `${packageName} has never been published, and npm is explicit that a package "already exists on the npm registry - you cannot stage a brand-new package".`,
         `This release therefore publishes DIRECTLY through ${publisher.tool} ${publisherVersion.version} and is permanent the moment it lands. There is no approval step and no reversible moment after this one.`,
+        authLine,
         `Every later release of ${packageName} takes the staged path while publish-mode stays "staged".`,
-      ].join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n'),
       outputs: {
         mode: 'direct',
         'requested-mode': 'staged',
         'publish-tool': publisher.tool,
         'publish-tool-version': publisherVersion.version,
+        ...authOutputs,
         'stage-tool': '',
         'stage-tool-version': '',
         floor: '',
@@ -577,6 +692,10 @@ export function decide(facts) {
       `Fix it in the CALLING repository, not here: raise its \`packageManager\` pin (pnpm >= ${PNPM_STAGING_FLOOR} stages natively) or move that repository onto a Node whose bundled npm is >= ${NPM_STAGING_FLOOR}.`,
     ]);
   }
+  // Unreachable while every staging floor clears its trusted-publishing floor, which
+  // `test/publish-floor.test.mjs` pins; asserted anyway so the staged arm never relies on it.
+  const belowTrusted = trustedFloorShortfall(trusted, authVersion, nodeVersion);
+  if (belowTrusted) return trustedFloorRefusal(packageName, publisher, publisherVersion, trusted, belowTrusted);
 
   return {
     mode: 'staged',
@@ -586,19 +705,57 @@ export function decide(facts) {
     message: [
       `${packageName} already exists on the registry and publish-mode is "staged", so this version is submitted to the npm staging area instead of being promoted to it.`,
       `Staging tool: ${requirement.stageTool} ${foundFloorVersion} (floor ${requirement.floor}). ${requirement.source}.`,
+      authLine,
       'It does not become resolvable to a consumer until a maintainer approves it, with 2FA, by hand.',
-    ].join('\n'),
+    ]
+      .filter(Boolean)
+      .join('\n'),
     outputs: {
       mode: 'staged',
       'requested-mode': 'staged',
       'publish-tool': publisher.tool,
       'publish-tool-version': publisherVersion.version,
+      ...authOutputs,
       'stage-tool': requirement.stageTool,
       'stage-tool-version': foundFloorVersion,
       floor: requirement.floor,
       'registry-status': 'published',
     },
   };
+}
+
+/**
+ * What keeps the tool that exchanges the OIDC token below its floor, or null when nothing does. A
+ * requirement with no tool is never reached here: `decide` refuses an unparseable version first.
+ * @returns {string | null}
+ */
+function trustedFloorShortfall(trusted, authVersion, nodeVersion) {
+  if (!trusted.authTool) return `${trusted.detail}, so the tool that would authenticate cannot be checked`;
+  const below = [];
+  if (!meetsFloor(authVersion, trusted.floor)) {
+    below.push(`${trusted.authTool} ${authVersion} is below the ${trusted.authTool} ${trusted.floor} that trusted publishing needs`);
+  }
+  if (trusted.nodeFloor && !meetsFloor(nodeVersion, trusted.nodeFloor)) {
+    below.push(`Node ${nodeVersion} is below the Node ${trusted.nodeFloor} that trusted publishing needs`);
+  }
+  return below.length ? below.join('; and ') : null;
+}
+
+/**
+ * A publish whose tool cannot make the OIDC exchange has no credential at all, so it is refused here,
+ * before anything is packed, rather than at the registry after the verify ladder.
+ * @returns {Verdict}
+ */
+function trustedFloorRefusal(packageName, publisher, publisherVersion, trusted, shortfall) {
+  return refusal('The publish path is below the trusted-publishing floor', [
+    `Refusing to release ${packageName} before anything is packed: ${shortfall}.`,
+    `The publish is performed by ${publisher.tool} ${publisherVersion.version}, and it authenticates through npm trusted publishing (OIDC), because this pipeline hands it no npm token.${trusted.source ? ` ${trusted.source}.` : ''}`,
+    trusted.authTool === 'npm'
+      ? `The npm here is the one bundled with the Node that release.yml sets up for this job, so the fix is a Node whose bundled npm is >= ${NPM_TRUSTED_PUBLISHING_FLOOR}; a pnpm >= ${PNPM_TRUSTED_PUBLISHING_FLOOR} pin in the calling repository publishes natively instead.`
+      : trusted.authTool === 'pnpm'
+        ? `Raise the calling repository's \`packageManager\` pin to pnpm >= ${PNPM_TRUSTED_PUBLISHING_FLOOR}.`
+        : '',
+  ]);
 }
 
 /**

@@ -41,8 +41,9 @@ name: Release
 #   least as much as this file requests. The two failure modes are different and only one of them is
 #   self-explaining, which is exactly why the ordering above is not optional.
 # Changesets flow: a push to main with pending changesets opens a "Version Packages" PR; merging it
-# bumps versions and publishes to npm WITH PROVENANCE, uploads the docs artifacts, and fires a
-# repository_dispatch to cosyte/docs so the site rebuilds. Actions are pinned to SHAs.
+# bumps versions and publishes to npm through trusted publishing (OIDC), WITH PROVENANCE, uploads the
+# docs artifacts, and fires a repository_dispatch to cosyte/docs so the site rebuilds. Actions are
+# pinned to SHAs.
 #
 # ▶ THREE JOBS, AND THE CALLER'S `release` ENVIRONMENT HOLDS EXACTLY ONE OF THEM. READ THIS BEFORE
 #   MOVING A STEP BETWEEN THEM.
@@ -62,7 +63,8 @@ name: Release
 #
 #     `version`   NO environment. Runs the protection gate, checks out, verifies, derives the release
 #                 notes, and hands `changesets/action` NO publish command at all, so it can open or
-#                 refresh the Version PR and CANNOT publish. Never sees `NPM_TOKEN`.
+#                 refresh the Version PR and CANNOT publish. Holds no `id-token: write`, so it
+#                 has no way to authenticate to npm at all.
 #     `release`   `needs: version`, `if:` the version job's `is-release` output, `environment:
 #                 release`. Resolves the publish path, publishes, cuts the GitHub release, dispatches
 #                 the docs rebuild, and runs the post-publish install gate. This is the whole of the
@@ -71,9 +73,9 @@ name: Release
 #                 when the version job found the pending version ALREADY LIVE on npm with no GitHub
 #                 release, which is a staged version promoted after its own run stopped watching.
 #                 Tags the release commit, cuts the GitHub release and dispatches the docs rebuild.
-#                 It is handed no publish command, no `NPM_TOKEN` and no registry credential file, so
-#                 it cannot publish; and there is nothing left for it to publish, because npm already
-#                 serves the version. See "A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO
+#                 It is handed no publish command, no `id-token: write` and no registry credential
+#                 file, so it cannot publish; and there is nothing left for it to publish, because npm
+#                 already serves the version. See "A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO
 #                 LIVE" below.
 #
 #   ONE APPROVAL PER RELEASE, ON THE HALF THAT CANNOT BE UNDONE. Merging the Version PR is the human
@@ -125,11 +127,25 @@ name: Release
 #   `staged-publish.mjs`  the publish command itself on the staged arm, in place of the caller's
 #                         `pnpm run release`. It stages and stops, and never falls back to a publish.
 #
-# A DIRECT PUBLISH NEEDS AN `NPM_TOKEN` THAT MAY PUBLISH WITHOUT A SECOND FACTOR: a granular access
-# token, "Read and write (publish and stage)" on the packages, with "Bypass 2FA" set. Without it npm
-# answers with E403 or EOTP, which this run cannot satisfy; a stage-only token can only take the
-# staged arm. npm says it will remove direct publishing with granular tokens in January 2027
-# (README.md, "Direct publishing, and staging on request", has the sources and what that leaves).
+# EVERY PUBLISH AUTHENTICATES THROUGH npm TRUSTED PUBLISHING (OIDC), AND NO npm TOKEN EXISTS. The
+# `release` job holds `id-token: write`; the tool that talks to the registry asks GitHub for the job's
+# OIDC token and exchanges it at npm for a short-lived token scoped to the one package, held in that
+# process's memory and nowhere else. Both arms, direct and staged, authenticate this way, and nothing
+# in this file declares, reads or hands on an npm secret.
+#
+#   npm VALIDATES THE CALLING WORKFLOW, NOT THIS FILE. So each package's trusted-publisher entry on
+#   npmjs.com names the package's OWN repository and its `release.yml` (the caller), never
+#   cosyte/.github, and the calling job must grant `id-token: write` as well as this file requesting
+#   it (https://docs.npmjs.com/trusted-publishers, Troubleshooting, read 2026-10-19).
+#
+#   AN ENTRY MADE AFTER 2026-09-03 ALLOWS ONLY `npm stage publish` until direct publishing is turned
+#   on for it, so the default direct arm needs that switch and the staged arm does not. An entry that
+#   no publish has used within 48 hours expires.
+#
+#   THE TOOL HAS TO BE ABLE TO MAKE THE EXCHANGE: npm 11.5.1 and Node 22.14.0, or pnpm 11 natively.
+#   `publish-floor.mjs` checks it before anything is packed, on both arms, and prints the tool and
+#   its version. README.md, "How a release authenticates to npm", has the sources and the owner's
+#   one-time steps on npmjs.com.
 #
 # A STAGED VERSION IS FINISHED BY WHICHEVER RUN SEES IT GO LIVE. The wait below runs on the staged arm
 # only. `finalize` serves both arms, because a direct publish whose release step never finished looks
@@ -246,8 +262,9 @@ name: Release
 #     published successfully", which is not a 50 kB tarball upload.
 #   - It CLOSES at the `Drop the release credentials from disk` step, which BOTH jobs carry
 #     immediately after their `changesets/action` step rather than at the end of the job. Past it,
-#     `~/.netrc` and the `~/.npmrc` the action writes with the raw NPM_TOKEN are expected to be gone,
-#     the caller's `pack:docs` and the post-publish install gate included; that step warns rather
+#     `~/.netrc` and any `~/.npmrc` are expected to be gone (the action writes the npmrc only when it
+#     is handed an npm token, and nothing here hands it one any more), the caller's `pack:docs` and
+#     the post-publish install gate included; that step warns rather
 #     than fails if a removal does not take, so read its log rather than assuming. The gate's entry
 #     probe additionally gets an environment built from nothing (`probeChildEnv`).
 #   - NEITHER OF THOSE REACHES INSIDE THE `changesets/action` STEP ITSELF. That window is real, it
@@ -260,7 +277,8 @@ name: Release
 # the two jobs puts the publish job on the version arm, and a job without the token would then open
 # a Version PR authored by `GITHUB_TOKEN`, which is the exact trap this token exists to close. The
 # exposure is accepted and written down rather than traded for that risk. What the SPLIT removed is
-# the other credential: `NPM_TOKEN` is now handed to the environment-held job and to nothing else.
+# the other credential: the npm one, which is now an OIDC exchange that only the environment-held
+# job holds `id-token: write` to make.
 #
 # IF THE NETRC FALLBACK DOES NOT APPLY, the push fails loudly and the run goes red with npm
 # untouched, because the publish arm does not push at all: `createGithubReleases: false` means
@@ -301,9 +319,10 @@ name: Release
 #   REPOSITORY or ORGANIZATION secret rather than an environment one. It is written here and not
 #   implemented here because nothing in this file can read a caller's secret placement, and adding an
 #   input or a secret to surface it would break the contract with thirteen callers that pin `@main`.
-#   `NPM_TOKEN` is unaffected from either placement: it is consumed in `release` alone, which does
-#   reference the environment. `DOCS_REPO_DISPATCH_TOKEN` is consumed there AND in `finalize`, which
-#   references none, so the same rule applies to it there: stored on the `release` environment it
+#   npm takes no secret at all, from either placement: the publish authenticates by OIDC.
+#   `DOCS_REPO_DISPATCH_TOKEN` is consumed in `release`, which references the environment, AND in
+#   `finalize`, which references none, so the same rule applies to it there: stored on the `release`
+#   environment it
 #   reads empty in `finalize`, whose dispatch then takes its loud "Docs rebuild not triggered" branch
 #   rather than failing. Store it as a repository or organization secret and both jobs read it.
 
@@ -374,9 +393,11 @@ on:
         description: "How a package already on npm is published: direct (default, live at once) or staged (a maintainer promotes it with 2FA)."
         type: string
         default: "direct"
+    # NO npm SECRET, AND THE ABSENCE IS THE POINT. Every publish authenticates through npm trusted
+    # publishing (see "EVERY PUBLISH AUTHENTICATES" at the top of this file), so no npm token is
+    # declared, read or handed to any step. A caller passing `secrets: inherit` names no secret, so
+    # dropping the declaration asks nothing of it.
     secrets:
-      NPM_TOKEN:
-        required: true
       DOCS_REPO_DISPATCH_TOKEN:
         required: false
       # The credential that authors and pushes the "Version Packages" PR. See "WHO AUTHORS THE
@@ -405,9 +426,9 @@ on:
 #
 # WHAT THIS BLOCK IS, NOW THAT EVERY JOB DECLARES ITS OWN. It is the workflow-level default and the
 # whole of what this file REQUESTS from a caller, which is the set the elevation rule below is
-# checked against. Each job then narrows it: the version job drops `id-token`, because provenance is
-# a publish-time concern and that job cannot publish. A job block replaces this one rather than
-# adding to it, so each job names every key it needs.
+# checked against. Each job then narrows it: the version job drops `id-token`, because trusted
+# publishing and provenance are publish-time concerns and that job cannot publish. A job block
+# replaces this one rather than adding to it, so each job names every key it needs.
 #
 # ▶ `actions: read` IS THE ONE THING IN THIS FILE A CALLER HAS TO GRANT FIRST. See "THE CALLER-SIDE
 #   PRECONDITION" at the top of this file. A called workflow's token can only be equal to or more
@@ -417,16 +438,16 @@ on:
 #   gate included. Grant it in the caller first; this file second.
 permissions:
   contents: write # create tags / GitHub release
-  id-token: write # npm provenance
+  id-token: write # npm trusted publishing (OIDC) and provenance
   pull-requests: write # open the "Version Packages" PR
   actions: read # read the caller's `release` environment protection (the gate in the version job)
 
 jobs:
   # THE UN-GATED HALF, AND EVERY WORD OF THAT IS DELIBERATE. This job references NO deployment
   # environment, so it never waits on an approval, and it is handed NO publish command and NO
-  # `NPM_TOKEN`, so there is nothing here for an approval to protect. What it does is open or refresh
-  # the "Version Packages" pull request, which is the pull request whose MERGE is the human decision
-  # to release. See "THREE JOBS" at the top of this file.
+  # `id-token: write`, so there is nothing here for an approval to protect. What it does is open or
+  # refresh the "Version Packages" pull request, which is the pull request whose MERGE is the human
+  # decision to release. See "THREE JOBS" at the top of this file.
   #
   # It also carries the protection gate, unconditionally, for every path this workflow has.
   version:
@@ -436,9 +457,10 @@ jobs:
     # that asked only for what a reader thinks this job needs would strip `contents` and 403 the very
     # next checkout. `actions: read` is the gate's read of the caller's environment protection;
     # `contents: write` is the checkout plus the branch `changesets/action` pushes; `pull-requests:
-    # write` is the Version PR itself. `id-token: write` is deliberately ABSENT: npm provenance is a
-    # publish-time concern and this job cannot publish, so the token that signs a publish has no
-    # business existing on a runner no human approved.
+    # write` is the Version PR itself. `id-token: write` is deliberately ABSENT: it is the npm
+    # credential now (trusted publishing exchanges it for a publish token) as well as what signs
+    # provenance, this job cannot publish, and a token that can mint a publish has no business
+    # existing on a runner no human approved.
     permissions:
       contents: write # checkout + push the changeset-release branch
       pull-requests: write # open the "Version Packages" PR
@@ -642,12 +664,12 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       # NO `registry-url` IN THIS JOB, AND THE OMISSION IS THE POINT. `registry-url` is the input that
       # makes setup-node write an `.npmrc` holding `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
-      # and point `NPM_CONFIG_USERCONFIG` at it. This job publishes nothing and is handed no
-      # `NPM_TOKEN`, so asking for that file would create a registry credential file on a runner no
+      # and point `NPM_CONFIG_USERCONFIG` at it. This job publishes nothing and holds no npm
+      # credential, so asking for that file would create a registry credential file on a runner no
       # human approved, for no consumer: `pnpm install --frozen-lockfile` and `pnpm attw` both read
       # the public registry anonymously, and `registry=https://registry.npmjs.org` is a restatement of
-      # pnpm's and npm's own default. The publish job below sets it, because that is the job that
-      # authenticates.
+      # pnpm's and npm's own default. No job in this file sets it now: the publish job below
+      # authenticates by OIDC, which needs no credential file.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -792,7 +814,7 @@ jobs:
       # cross a job boundary, and the tool it measures is the one on the runner that PUBLISHES, so
       # the step lives there, ahead of that job's `pnpm install` and its `Verify` ladder. This job's
       # own ladder does pack, in `pnpm attw`, and that tarball is read by attw and thrown away: this
-      # job is handed no publish command and no `NPM_TOKEN`, so nothing it packs can be promoted
+      # job is handed no publish command and no `id-token: write`, so nothing it packs can be promoted
       # anywhere and there is no floor for it to owe.
       - run: pnpm install --frozen-lockfile
       - name: Verify
@@ -883,12 +905,11 @@ jobs:
           # It MUST be set here rather than via the `github-token` input, which this env var takes
           # precedence over in the action's own source at the sha pinned above.
           #
-          # NO `NPM_TOKEN` AND NO `NODE_AUTH_TOKEN`, WHICH IS THE POINT OF THE SPLIT. Before the
-          # split this step held both, in the one job the environment gated, so the npm credential
-          # was reachable only after an approval. A version job that inherited them would be a new
-          # window on a write credential that no human ever approved, and it would be a new window
-          # even though nothing in this job can publish. There is nothing to leak here because there
-          # is nothing here.
+          # NO npm CREDENTIAL, WHICH IS THE POINT OF THE SPLIT. No npm token exists any more, and the
+          # only way anything in this file authenticates to npm is the OIDC exchange `id-token:
+          # write` allows, which this job does not hold. A version job that could make it would be a
+          # new window on a publish credential that no human ever approved, even though nothing in
+          # this job can publish. There is nothing to leak here because there is nothing here.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
       # DELETE THE RELEASE CREDENTIAL FROM DISK AS SOON AS ITS LAST CONSUMER HAS FINISHED.
       #
@@ -897,13 +918,13 @@ jobs:
       # never. Left alone it survives to job end, readable by every step below. Its only reader is
       # the `git push` the action makes inside its own step, so there is no consumer from here.
       #
-      # `~/.npmrc` is swept too, and in THIS job it is expected to be absent: the action writes it
-      # only on the publish arm (src/index.ts:79-107), which needs a publish command this job does
-      # not supply and an `NPM_TOKEN` this job is not handed. The sweep is written the same way in
-      # both jobs on purpose: a step that only removes what it expects to find stops removing the
-      # thing nobody expected. The line numbers are read out of the action at that sha, and a bump
-      # can move them while this step still exits 0 and still prints "Removed";
-      # `test/install-check.test.mjs` pins the sha for exactly that reason.
+      # `~/.npmrc` is swept too, and it is expected to be absent in BOTH jobs now: the action writes
+      # it only on the publish arm AND only when it is handed an npm token (src/index.ts:78-109), and
+      # nothing in this file hands it one. The sweep is written the same way in both jobs on
+      # purpose: a step that only removes what it expects to find stops removing the thing nobody
+      # expected. The line numbers are read out of the action at that sha, and a bump can move them
+      # while this step still exits 0 and still prints "Removed"; `test/install-check.test.mjs` pins
+      # the sha for exactly that reason.
       #
       # `rm` is safe on a hosted runner specifically because `runs-on` is pinned to `ubuntu-latest`
       # in this file, so there is no persistent user npmrc to destroy. It warns rather than fails,
@@ -971,14 +992,22 @@ jobs:
     # measured effect of asking for one on every merge was a pipeline that released nothing at all.
     environment: release
     # NAMED IN FULL for the same reason as the version job: one named key sets every unnamed key to
-    # `none`. `contents: write` creates the tag and the GitHub release; `id-token: write` is npm
+    # `none`. `contents: write` creates the tag and the GitHub release; `id-token: write` is the npm
+    # credential, which trusted publishing exchanges for a short-lived publish token, and what signs
     # provenance; `pull-requests: write` is there because `changesets/action` can still take its
     # version arm if a changeset lands between the two jobs, and a 403 on that arm would be a
     # confusing failure of a run that has already been approved; `actions: read` keeps this job's
     # token shaped like the version job's, so a caller grants one set for both.
+    #
+    # ▶ `id-token: write` IS JOB-WIDE, AND UNDER TRUSTED PUBLISHING THAT MAKES IT A PUBLISH CREDENTIAL
+    #   IN EVERY STEP. `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and its URL are in the environment of each
+    #   step of a job that holds it, so the caller's `pnpm install` lifecycle scripts, its `Verify`
+    #   ladder and its `pack:docs` can mint the same package-scoped token the publish step mints, for
+    #   as long as this job runs. README.md, "What it does not narrow", owns that residual and what
+    #   bounds it.
     permissions:
       contents: write # create tags / GitHub release
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing (OIDC) and provenance
       pull-requests: write # the action's version arm, if a changeset lands between the jobs
       actions: read # keep both jobs' token requests identical for the caller
     steps:
@@ -1046,44 +1075,27 @@ jobs:
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-      # `registry-url` makes setup-node write an .npmrc holding
-      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it.
-      # It is declared in THIS job and nowhere else, because this is the only job that authenticates
-      # to a registry.
+      # NO `registry-url`, IN THIS JOB AS IN EVERY OTHER, BECAUSE NOTHING HERE AUTHENTICATES WITH A
+      # FILE. `registry-url` makes setup-node write an .npmrc holding
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it,
+      # which is how this job handed npm a token until the publish moved to trusted publishing. The
+      # tool that publishes now makes the OIDC exchange itself and keeps the result in memory: npm
+      # 11.5.1 and later (lib/utils/oidc.js) and pnpm 11 (releasing/commands/src/publish/
+      # publishPackedPkg.ts) both make it against the registry they already default to. The file
+      # would carry an `_authToken` line naming a variable nothing sets, which npm would send as a
+      # literal if the exchange ever failed; without it the failure is npm's own "need auth", which
+      # says what is wrong. `registry=https://registry.npmjs.org` was always a restatement of pnpm's
+      # and npm's own default.
       #
-      # WHAT THE v6 -> v7 MAJOR CHANGED HERE, AND WHY IT IS SAFE, MEASURED 2026-08-03 RATHER THAN
-      # ASSUMED. v6 exported a DUMMY `NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX` job-wide whenever the
-      # caller had not set one; v7 (actions/setup-node#1558) exports it only when it is already set.
-      # So in every step below that does not set it, that `${NODE_AUTH_TOKEN}` no longer resolves.
-      #
-      # The effect is a WARNING, not a failure, and it is bigger than the token line: pnpm's
-      # env-replace throws, and pnpm catches it at FILE scope and discards the WHOLE userconfig,
-      # `registry=` included. Measured on pnpm 10.0.0, 10.34.5 and 11.17.0 (the `packageManager`
-      # versions pinned across the callers): `pnpm install --frozen-lockfile` prints
-      # "Failed to replace env in config" on STDERR and exits 0, and dropping `registry=` is a no-op
-      # because it is restating pnpm's default. `pnpm attw` shells out to `npm pack`, and npm's own
-      # env-replace does not throw at all: it leaves the literal `${NODE_AUTH_TOKEN}` and exits 0
-      # (checked on npm 10.9.8 and 11.16.0).
-      #
-      # ▶ THE LATENT HALF, so it is not rediscovered: this is benign ONLY because the discarded
-      # `registry=` equals pnpm's default. ADD A `scope:` INPUT HERE AND THE DISCARDED LINE BECOMES A
-      # SCOPED REGISTRY THAT SILENTLY STOPS APPLYING to every step that lacks the token. If a scope
-      # is ever needed, set `NODE_AUTH_TOKEN` at JOB level too, not just on the publish step.
-      #
-      # The publish path is unaffected either way: the `changesets/action` step below sets
-      # `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` explicitly, and nothing else here authenticates
-      # to a registry.
-      # NODE 24 IN THE JOB THAT PUBLISHES, because the staged arm needs it; the default direct arm
-      # owes no staging floor and is indifferent to it. A caller on pnpm 10 publishes
-      # through the npm CLI, and npm's staged-publishing floor is npm 11.15.0 and Node 22.14.0. Every
-      # Node 22 release bundles npm 10.9.x (22.23.3 ships 10.9.9), so on "22" publish-floor.mjs refused
-      # every staged release before anything was packed. Node 24.18.0 and later bundle npm 11.16.0 or
-      # newer (nodejs.org/dist/index.json). publish-floor.mjs still reads the real npm at runtime and
-      # refuses below the floor, so a Node 24 that regressed would fail closed, not publish.
+      # NODE 24 IN THE JOB THAT PUBLISHES, because both arms need its npm. A caller on pnpm 10
+      # publishes through the npm CLI: trusted publishing needs npm 11.5.1 and Node 22.14.0, and the
+      # staged arm needs npm 11.15.0. Every Node 22 release bundles npm 10.9.x (22.23.3 ships 10.9.9),
+      # which clears neither. Node 24.18.0 and later bundle npm 11.16.0 or newer
+      # (nodejs.org/dist/index.json). publish-floor.mjs still reads the real npm at runtime and refuses
+      # below the floor its arm owes, so a Node 24 that regressed would fail closed, not publish.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           cache: pnpm
       # THE RELEASE NOTES ARRIVE, THEY ARE NOT RE-DERIVED. These are the exact bytes the version job
       # derived before anyone was asked to approve anything, carried across the job boundary as a
@@ -1164,7 +1176,7 @@ jobs:
       # IT PRECEDES `pnpm install` DELIBERATELY, which puts it ahead of the `Verify` ladder below.
       # `pnpm attw` shells out to `npm pack`, so "before anything is packed" is only true on this side
       # of that step. The un-gated job's own ladder packs for `attw` and throws the tarball away; it
-      # is handed no publish command and no `NPM_TOKEN`, so nothing it packs can be promoted.
+      # is handed no publish command and no `id-token: write`, so nothing it packs can be promoted.
       - name: Resolve the publish path and prove it clears its floor
         id: publish-floor
         env:
@@ -1246,12 +1258,19 @@ jobs:
           # MUST be set here rather than via the `github-token` input, which this env var takes
           # precedence over in the action's own source at the sha pinned above.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
-          # THE npm CREDENTIAL, AND THIS IS THE ONLY JOB IN THIS FILE THAT IS EVER HANDED IT. It is
-          # reachable here only because the caller's `release` environment let this job start, which
-          # is the whole of what the split bought.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # npm provenance requires a PUBLIC source repo; auto-enables when the calling repo is public.
+          # NO npm TOKEN, AND THAT IS HOW THIS STEP AUTHENTICATES NOW. With none in its environment
+          # the action writes no `~/.npmrc` and logs that OIDC is available and it is "using npm
+          # trusted publishing" (src/index.ts:110-116 at the sha pinned above). The tool
+          # `publish-floor.mjs` named above then exchanges this job's OIDC token at npm for a
+          # short-lived token scoped to the one package: on a pnpm 10 caller that is `npm publish`,
+          # which pnpm hands the tarball it packed (releasing/plugin-commands-publishing/src/
+          # publish.ts at v10.34.5), and on pnpm 11 it is pnpm's own publish. npm checks that token
+          # against the package's trusted-publisher entry, which names the CALLING repository and its
+          # `release.yml`. Putting an npm token back here is not a fallback: it is the long-lived
+          # credential this pipeline stopped holding.
+          #
+          # Provenance needs a PUBLIC source repo. npm adds it by itself after an exchange from a
+          # public repo; this says the same thing out loud, and says false for a private caller.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
           # Where `staged-publish.mjs stage` leaves what it staged, and where the report step below
           # looks for it. Named in one place so the two cannot drift onto different paths; the script
@@ -1265,31 +1284,31 @@ jobs:
       # "Removed" while leaving the new location untouched. `test/install-check.test.mjs` pins that
       # sha for this reason: when it reds on a bump, re-read `src/index.ts` rather than the pin.
       #
-      # `changesets/action` writes BOTH of these itself, in the step above, and removed neither.
-      # They survived to job end, readable by every step below, the post-publish install gate
+      # `changesets/action` writes these itself, in the step above, and removes neither. Left
+      # alone they survive to job end, readable by every step below, the post-publish install gate
       # included, whose entry probe evaluates third-party module-init code from a range-resolved
       # tree. TWO files, not one, and the second is the one an earlier draft of this step missed:
       #
       #   ~/.netrc   the git credential: `RELEASE_PR_TOKEN`, or the `GITHUB_TOKEN` fallback. Written
       #              unconditionally (src/index.ts:49-52), before the action's arm switch.
-      #   ~/.npmrc   `//registry.npmjs.org/:_authToken=` with the RAW `NPM_TOKEN` in plaintext
-      #              (src/index.ts:79-107), written on the PUBLISH arm, which is exactly the arm
-      #              that sets `published == 'true'` and is therefore the only one on which the
-      #              entry probe below ever runs.
+      #   ~/.npmrc   `//registry.npmjs.org/:_authToken=` with a raw npm token in plaintext, written
+      #              on the PUBLISH arm only when the step is handed one (src/index.ts:78-109). This
+      #              file hands it none since the publish moved to trusted publishing, so it is
+      #              expected to be absent, and it is swept anyway: a step that removes only what it
+      #              expects to find stops removing the thing nobody expected.
       #
       # NEITHER HAS A CONSUMER FROM HERE. The netrc's only reader is the `git push` the action makes
-      # inside its own step. The `~/.npmrc` is not even what authenticated the publish: `setup-node`
-      # exports `NPM_CONFIG_USERCONFIG` job-wide pointing at its own file under `RUNNER_TEMP`, and a
-      # userconfig set that way outranks `~/.npmrc`. Everything below authenticates some other way:
+      # inside its own step, and the publish authenticated through an OIDC exchange whose token lived
+      # in that process's memory. Everything below authenticates some other way:
       # `gh` with `GH_TOKEN`, `actions/upload-artifact` with the runtime token, and the install gate
       # deliberately anonymously, with its own userconfig and its own cache. No step below pushes
       # over git or publishes to npm. IF YOU ADD ONE THAT DOES, it fails loudly rather than quietly
       # reaching for a token, and the fix is to put it above this step, not to delete this step.
       #
-      # WHAT THIS DOES NOT REMOVE, so the log is not read as a clean-runner claim: the `RUNNER_TEMP`
-      # npmrc `setup-node` wrote, which holds the literal unexpanded `${NODE_AUTH_TOKEN}` and no
-      # secret (setup-node v7 stopped exporting that variable job-wide); and the caller's checkout,
-      # which is a public repo. `rm` is safe on a hosted runner specifically because `runs-on` is
+      # WHAT THIS DOES NOT REMOVE, so the log is not read as a clean-runner claim: the caller's
+      # checkout, which is a public repo; and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which is not a file
+      # and which every step below can still exchange at npm while the job runs (see the note on
+      # this job's `permissions:`). `rm` is safe on a hosted runner specifically because `runs-on` is
       # pinned to `ubuntu-latest` in this file, so there is no persistent user npmrc to destroy.
       #
       # IT WARNS RATHER THAN FAILS, on the same axis the dispatch step below turns on: by this point
@@ -1342,9 +1361,9 @@ jobs:
 
       # WAIT, IN THIS RUN, FOR A MAINTAINER TO PROMOTE WHAT WAS JUST STAGED. The report above told them;
       # this asks the public registry, every 30 seconds and with no credential, until the version is
-      # resolvable or `promotion-window-minutes` lapses. It can only read: no npm token is in this
-      # step's environment, the `~/.npmrc` `changesets/action` wrote was deleted above, and it spawns no
-      # package manager. `scripts/promotion.mjs` owns the window, its ceiling and its default.
+      # resolvable or `promotion-window-minutes` lapses. It can only read: no npm token exists in this
+      # job, it makes no OIDC exchange, and it spawns no package manager. `scripts/promotion.mjs` owns
+      # the window, its ceiling and its default.
       #
       # IT TAKES THE VERSION FROM THE STAGING REPORT, so it waits only for something this run actually
       # staged. No report means the action took its version arm and staged nothing, and the step ends
@@ -1623,7 +1642,7 @@ jobs:
   #   required-reviewer gate on the irreversible act, and that act already happened when a maintainer
   #   promoted the version with 2FA. What is left is a tag, a GitHub release and a docs dispatch, each
   #   of which a re-run or a hand edit can correct. So this job is handed no publish command, no
-  #   `NPM_TOKEN`, no `registry-url` and no environment, and it runs no `changesets/action`.
+  #   `id-token: write`, no `registry-url` and no environment, and it runs no `changesets/action`.
   #
   #   ITS PERMISSIONS ARE A SUBSET OF WHAT EVERY CALLER ALREADY GRANTS, AND THAT IS NOT OPTIONAL. A
   #   called workflow's token can only be narrowed, so a job asking for a key the calling job does not

@@ -46,10 +46,13 @@ import {
   meetsFloor,
   NPM_STAGING_FLOOR,
   NPM_STAGING_NODE_FLOOR,
+  NPM_TRUSTED_PUBLISHING_FLOOR,
+  NPM_TRUSTED_PUBLISHING_NODE_FLOOR,
   numericOption,
   parsePackageManagerField,
   parseVersion,
   PNPM_STAGING_FLOOR,
+  PNPM_TRUSTED_PUBLISHING_FLOOR,
   PUBLISH_MODES,
   registryExistence,
   registryExistenceWithRetry,
@@ -57,6 +60,7 @@ import {
   requestedMode,
   resolvePublishTool,
   stagingRequirement,
+  trustedPublishingRequirement,
 } from '../scripts/publish-floor.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -196,6 +200,52 @@ test('A5: an npm caller owes the npm floor, both halves of npm own conjunctive s
   assert.equal(requirement.stageTool, 'npm');
   assert.equal(requirement.floor, NPM_STAGING_FLOOR);
   assert.equal(requirement.nodeFloor, NPM_STAGING_NODE_FLOOR);
+});
+
+// ---------------------------------------------------------------------------
+// The trusted-publishing floor: what the tool that exchanges the OIDC token owes, on every arm
+// ---------------------------------------------------------------------------
+//
+// `release.yml` hands the publish no npm token, so the tool that talks to the registry has to make
+// the OIDC exchange itself, and a tool that cannot has nothing to publish with. The numbers are npm's
+// own ("npm CLI version 11.5.1 or later and Node version 22.14.0 or higher",
+// https://docs.npmjs.com/trusted-publishers) and the first native pnpm publish, 11.0.0.
+
+test('the trusted-publishing floors are the documented ones', () => {
+  assert.equal(NPM_TRUSTED_PUBLISHING_FLOOR, '11.5.1');
+  assert.equal(NPM_TRUSTED_PUBLISHING_NODE_FLOOR, '22.14.0');
+  assert.equal(PNPM_TRUSTED_PUBLISHING_FLOOR, '11.0.0');
+});
+
+test('every staging floor clears its trusted-publishing floor, so a tool that can stage can authenticate', () => {
+  assert.ok(meetsFloor(NPM_STAGING_FLOOR, NPM_TRUSTED_PUBLISHING_FLOOR));
+  assert.ok(meetsFloor(NPM_STAGING_NODE_FLOOR, NPM_TRUSTED_PUBLISHING_NODE_FLOOR));
+  assert.ok(meetsFloor(PNPM_STAGING_FLOOR, PNPM_TRUSTED_PUBLISHING_FLOOR));
+});
+
+test('the pnpm versions callers pin today authenticate through the npm they delegate to', () => {
+  for (const version of ['10.0.0', '10.34.5']) {
+    const trusted = trustedPublishingRequirement({ tool: 'pnpm', version });
+    assert.equal(trusted.authTool, 'npm', `pnpm ${version} hands its tarball to \`npm publish\``);
+    assert.equal(trusted.floor, NPM_TRUSTED_PUBLISHING_FLOOR);
+    assert.equal(trusted.nodeFloor, NPM_TRUSTED_PUBLISHING_NODE_FLOOR);
+    // ... and it is the same tool the staging rule names, so one `--version` read serves both floors.
+    assert.equal(trusted.authTool, stagingRequirement({ tool: 'pnpm', version }).floorTool);
+  }
+});
+
+test('pnpm 11 and later make the exchange natively, and an npm caller owes npm own floor', () => {
+  for (const version of ['11.0.0', '11.17.0', '12.14.0']) {
+    const trusted = trustedPublishingRequirement({ tool: 'pnpm', version });
+    assert.equal(trusted.authTool, 'pnpm');
+    assert.equal(trusted.floor, PNPM_TRUSTED_PUBLISHING_FLOOR);
+    assert.equal(trusted.nodeFloor, null, 'pnpm documents no Node floor of its own, so none is invented');
+  }
+  const npm = trustedPublishingRequirement({ tool: 'npm', version: '11.16.0' });
+  assert.equal(npm.authTool, 'npm');
+  assert.equal(npm.floor, NPM_TRUSTED_PUBLISHING_FLOOR);
+  assert.equal(npm.nodeFloor, NPM_TRUSTED_PUBLISHING_NODE_FLOOR);
+  assert.equal(trustedPublishingRequirement({ tool: 'npm', version: 'unknown' }).authTool, null);
 });
 
 test('A6: a tool that reports an unparseable version yields no requirement at all', () => {
@@ -452,16 +502,31 @@ test('A4: a package that has never been published publishes directly, and the ru
 });
 
 test('A4: the direct arm does NOT demand a staging floor it will not use', () => {
-  // pnpm 9 clears no staging floor anywhere, and it does not have to: this release cannot stage.
+  // pnpm 9 delegating to npm 11.5.1 clears no staging floor anywhere, and it does not have to: this
+  // release cannot stage. It does clear the trusted-publishing floor, which is how it authenticates.
   const verdict = decide(
     facts({
       publisherVersion: { version: '9.15.0' },
-      floorVersion: { version: '10.9.8' },
+      floorVersion: { version: NPM_TRUSTED_PUBLISHING_FLOOR },
       existence: { status: 'never-published' },
     }),
   );
   assert.equal(verdict.failing, false, 'a first release must not red for a capability npm forbids it');
   assert.equal(verdict.mode, 'direct');
+  assert.equal(verdict.outputs['auth-tool'], 'npm');
+});
+
+test('A4: a first publish on the staged arm still owes the trusted-publishing floor', () => {
+  const verdict = decide(
+    facts({
+      publisherVersion: { version: '10.34.5' },
+      floorVersion: { version: '10.9.8' },
+      existence: { status: 'never-published' },
+    }),
+  );
+  assert.equal(verdict.failing, true, 'a publish with nothing to authenticate with is refused before anything is packed');
+  assert.equal(verdict.mode, 'refused');
+  assert.match(verdict.message, /npm 10\.9\.8 is below the npm 11\.5\.1 that trusted publishing needs/);
 });
 
 test('A2: a publish path below its floor fails, naming the version found and the floor needed', () => {
@@ -594,11 +659,15 @@ test('direct: an existing package publishes directly, live at once, and the run 
   assert.match(verdict.message, /publish-mode is "direct" \(the default\)/);
   assert.match(verdict.message, /nobody asked to promote it/);
   assert.match(verdict.message, /Set publish-mode to "staged"/, 'it names the way back to staging');
+  assert.match(verdict.message, /authenticates through npm trusted publishing \(OIDC\), with no npm token: pnpm 11\.17\.0/);
   assert.deepEqual(verdict.outputs, {
     mode: 'direct',
     'requested-mode': 'direct',
     'publish-tool': 'pnpm',
     'publish-tool-version': '11.17.0',
+    'auth-tool': 'pnpm',
+    'auth-tool-version': '11.17.0',
+    'trusted-publishing-floor': PNPM_TRUSTED_PUBLISHING_FLOOR,
     'stage-tool': '',
     'stage-tool-version': '',
     floor: '',
@@ -607,13 +676,57 @@ test('direct: an existing package publishes directly, live at once, and the run 
 });
 
 test('direct: no staging floor is owed, because nothing is staged', () => {
-  // The exact facts that refuse on the staged arm (pnpm 10 delegating to npm 10.9.8, below npm's
-  // staging floor, on Node 22.13.1, below its Node half) publish directly here.
-  const below = { publisherVersion: { version: '10.0.0' }, floorVersion: { version: '10.9.8' }, nodeVersion: '22.13.1' };
+  // The exact facts that refuse on the staged arm (pnpm 10 delegating to npm 11.5.1, below npm's
+  // staging floor and exactly at its trusted-publishing floor) publish directly here.
+  const below = { publisherVersion: { version: '10.0.0' }, floorVersion: { version: NPM_TRUSTED_PUBLISHING_FLOOR } };
   assert.equal(decide(facts(below)).mode, 'refused', 'the staged arm refuses these facts');
   const verdict = decide(facts({ ...below, requestedMode: 'direct' }));
   assert.equal(verdict.failing, false, 'a direct publish must not red for a staging capability it does not use');
   assert.equal(verdict.mode, 'direct');
+});
+
+test('direct: the tool that makes the OIDC exchange is named, with its version, for the callers of today', () => {
+  // pnpm 10.34.5 is what callers pin, and Node 24.18.0 and later bundle npm 11.16.0 or newer.
+  const verdict = decide(
+    facts({
+      requestedMode: 'direct',
+      publisher: { tool: 'pnpm', from: 'packageManager=pnpm@10.34.5' },
+      publisherVersion: { version: '10.34.5' },
+      floorVersion: { version: '11.16.0' },
+      nodeVersion: '24.18.0',
+    }),
+  );
+  assert.equal(verdict.failing, false);
+  assert.equal(verdict.mode, 'direct');
+  assert.match(verdict.message, /publishes DIRECTLY through pnpm 10\.34\.5/);
+  assert.match(verdict.message, /npm 11\.16\.0 exchanges this job's id-token for a short-lived publish token/);
+  assert.match(verdict.message, /floor npm 11\.5\.1 and Node 22\.14\.0, on Node 24\.18\.0/);
+  assert.equal(verdict.outputs['auth-tool'], 'npm');
+  assert.equal(verdict.outputs['auth-tool-version'], '11.16.0');
+  assert.equal(verdict.outputs['trusted-publishing-floor'], NPM_TRUSTED_PUBLISHING_FLOOR);
+});
+
+test('direct: a tool below the trusted-publishing floor is refused, naming the version found and the floor', () => {
+  const pnpm10 = { publisher: { tool: 'pnpm', from: 'packageManager=pnpm@10.34.5' }, publisherVersion: { version: '10.34.5' } };
+  // One patch below the floor: Node 22's bundled npm is 10.9.x, the shape this refuses in practice.
+  for (const npm of ['11.5.0', '10.9.9']) {
+    const verdict = decide(facts({ ...pnpm10, requestedMode: 'direct', floorVersion: { version: npm } }));
+    assert.equal(verdict.failing, true, `npm ${npm} cannot make the OIDC exchange`);
+    assert.equal(verdict.mode, 'refused');
+    assert.equal(verdict.title, 'The publish path is below the trusted-publishing floor');
+    assert.match(verdict.message, new RegExp(`npm ${npm.replace(/\./g, '\\.')} is below the npm 11\\.5\\.1 that trusted publishing needs`));
+    assert.match(verdict.message, /before anything is packed/);
+    assert.match(verdict.message, /hands it no npm token/);
+  }
+  // Exactly at the floor is not below it.
+  const at = decide(facts({ ...pnpm10, requestedMode: 'direct', floorVersion: { version: NPM_TRUSTED_PUBLISHING_FLOOR } }));
+  assert.equal(at.failing, false);
+  // And the Node half of npm's sentence binds too.
+  const oldNode = decide(
+    facts({ ...pnpm10, requestedMode: 'direct', floorVersion: { version: '11.16.0' }, nodeVersion: '22.13.1' }),
+  );
+  assert.equal(oldNode.failing, true);
+  assert.match(oldNode.message, /Node 22\.13\.1 is below the Node 22\.14\.0 that trusted publishing needs/);
 });
 
 test('direct: the registry answer decides nothing, so its silence cannot refuse the release', () => {
@@ -893,8 +1006,43 @@ test('end to end: a caller with no packageManager and no lockfile EXITS NON-ZERO
 });
 
 test('end to end: with no mode given, an existing package publishes directly and the registry is never asked', async () => {
-  // A pnpm 10 caller on an npm below the staging floor: the staged arm would refuse this runner, and
-  // the default arm must not, because it stages nothing.
+  // A pnpm 10 caller on an npm below the staging floor and at the trusted-publishing floor: the
+  // staged arm would refuse this runner, and the default arm must not, because it stages nothing.
+  const caller = makeCaller({ packageManager: 'pnpm@10.34.5', lockfiles: ['pnpm-lock.yaml'] });
+  let hits = 0;
+  const registry = await stubRegistry((req, res) => {
+    hits += 1;
+    packumentWith({ '0.0.7': {} })(req, res);
+  });
+  try {
+    const run = await runFloor(caller, {
+      registry: registry.url,
+      env: { FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: NPM_TRUSTED_PUBLISHING_FLOOR },
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const outputs = outputsOf(caller);
+    assert.equal(outputs.mode, 'direct');
+    assert.equal(outputs['requested-mode'], 'direct');
+    assert.equal(outputs['registry-status'], 'not-asked');
+    assert.equal(outputs['publish-tool'], 'pnpm');
+    assert.equal(outputs['publish-tool-version'], '10.34.5');
+    assert.equal(outputs['auth-tool'], 'npm');
+    assert.equal(outputs['auth-tool-version'], NPM_TRUSTED_PUBLISHING_FLOOR);
+    // THE STEP PRINTS THE TOOL AND ITS VERSION, in the log a maintainer reads, not only in outputs.
+    assert.match(run.stdout, /publishes DIRECTLY through pnpm 10\.34\.5/);
+    assert.match(run.stdout, /npm 11\.5\.1 exchanges this job's id-token/);
+    assert.equal(hits, 0, 'whether the package exists decides nothing on the direct arm, so it is not asked');
+    assert.match(run.stdout, /^mode: direct$/m);
+    assert.match(run.stdout, /::notice title=This release publishes directly::/);
+    assert.match(readFileSync(caller.summary, 'utf8'), /### This release publishes directly/);
+  } finally {
+    await registry.close();
+  }
+});
+
+test('end to end: with no mode given, an npm below the trusted-publishing floor EXITS NON-ZERO', async () => {
+  // The runner a Node 22 job would give a pnpm 10 caller: npm 10.9.x cannot make the OIDC exchange,
+  // and with no npm token handed to the publish it has nothing else to publish with.
   const caller = makeCaller({ packageManager: 'pnpm@10.34.5', lockfiles: ['pnpm-lock.yaml'] });
   let hits = 0;
   const registry = await stubRegistry((req, res) => {
@@ -906,16 +1054,11 @@ test('end to end: with no mode given, an existing package publishes directly and
       registry: registry.url,
       env: { FAKE_PNPM_VERSION: '10.34.5', FAKE_NPM_VERSION: '10.9.8' },
     });
-    assert.equal(run.code, 0, run.stderr);
-    const outputs = outputsOf(caller);
-    assert.equal(outputs.mode, 'direct');
-    assert.equal(outputs['requested-mode'], 'direct');
-    assert.equal(outputs['registry-status'], 'not-asked');
-    assert.equal(outputs['publish-tool'], 'pnpm');
-    assert.equal(hits, 0, 'whether the package exists decides nothing on the direct arm, so it is not asked');
-    assert.match(run.stdout, /^mode: direct$/m);
-    assert.match(run.stdout, /::notice title=This release publishes directly::/);
-    assert.match(readFileSync(caller.summary, 'utf8'), /### This release publishes directly/);
+    assert.equal(run.code, 1, 'a refusal has to reach the caller as a FAILED step');
+    assert.match(run.stdout, /::error title=The publish path is below the trusted-publishing floor::/);
+    assert.match(run.stderr, /npm 10\.9\.8 is below the npm 11\.5\.1 that trusted publishing needs/);
+    assert.equal(outputsOf(caller).mode, 'refused');
+    assert.equal(hits, 0, 'the direct arm still asks the registry nothing');
   } finally {
     await registry.close();
   }
