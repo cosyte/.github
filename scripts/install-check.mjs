@@ -684,11 +684,11 @@ export async function installIntoCleanRoom({
   // and THE FLAG IS STILL RIGHT: the job's own `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (`id-token: write`,
   // which npm trusted publishing exchanges for a publish token) is in this step's environment,
   // `cleanRoomEnv` below copies all of `process.env` except the `npm_config_*` namespace, and a
-  // lifecycle script is a shell command with the whole environment rather than a module evaluation. That variable is not impossible to
-  // remove, and the sentence used to say so: a step-level `env:` entry in `release.yml` overrides
-  // the runner's value and this gate needs neither it nor its URL. Not done here, because it is a
-  // second behaviour change to the shared workflow in one slice, and it is stated so the next
-  // person can take it rather than rediscover it.
+  // lifecycle script is a shell command with the whole environment rather than a module evaluation.
+  // That variable is not impossible to remove, and the sentence used to say so: a step-level `env:`
+  // entry in `release.yml` overrides the runner's value and this gate needs neither it nor its URL.
+  // Not done here, because it is a second behaviour change to the shared workflow in one slice, and
+  // it is stated so the next person can take it rather than rediscover it.
   //
   // ▶ IT NARROWS THE WINDOW, IT DOES NOT CLOSE IT. The flag governs only the install;
   // `probeEntryPoints` below still executes third-party MODULE-INIT code. Measured on
