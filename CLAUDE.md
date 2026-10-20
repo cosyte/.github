@@ -28,7 +28,7 @@ on a finding.
 ## Hazard: public at once, and a merge reaches every library
 
 This repo is public. A pushed branch, a PR and its text are public as soon as they exist, and a
-merge is live at once: name no private repo, and call the operator "the owner". `ci.yml`,
+merge is live at once: name no private repo and no person, and say "the owner". `ci.yml`,
 `release.yml` and the `gate-*` workflows run in every library's CI and release. A caller on `@main`
 gets a merge on its next run, and a push to `main` that moves a reusable or `scripts/` mints a
 `workflows-*` release the rest adopt. A job id is a check context in the callers' rulesets, so
