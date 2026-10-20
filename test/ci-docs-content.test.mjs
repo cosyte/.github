@@ -26,6 +26,13 @@ const LINES = WORKFLOW.split('\n');
 /** The input this change adds, and the ONLY one it may add. */
 const INPUT = 'check-docs-content';
 
+/**
+ * The inputs added AFTER this change, in file order. Each has a default that changes nothing for a
+ * caller that omits it, and each is pinned by its own suite: `published-smoke-sample` by
+ * `test/published-check.test.mjs`.
+ */
+const LATER_INPUTS = ['published-smoke-sample'];
+
 /** The inputs that existed before this change, in file order. */
 const EXISTING_INPUTS = [
   'node-versions',
@@ -92,16 +99,19 @@ const addedSteps = verifySteps().filter((step) => step.includes('docs-content'))
 // THE JOB SET, AND WHAT SKIPS
 // ---------------------------------------------------------------------------
 
-test('the job set is unchanged, so this change adds no status check context', () => {
+test('the job set is pinned, and the docs-content gate added no status check context to it', () => {
   const jobs = block(lineIndex(/^jobs:$/))
     .filter((line) => /^  [a-z][\w-]*:$/.test(line))
     .map((line) => line.trim().replace(':', ''));
-  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint']);
+  // `published` came later, from the scheduled check of the published package, and it is not a
+  // place this gate could live: it is skipped on every push and pull request. The gate's host is
+  // still `verify`, asserted below.
+  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint', 'published']);
 });
 
 test('every job-level condition is unchanged, and no job gains `continue-on-error`', () => {
   const conditions = {};
-  for (const job of ['verify', 'prepublish', 'actionlint']) {
+  for (const job of ['verify', 'prepublish', 'actionlint', 'published']) {
     const body = block(lineIndex(new RegExp(`^  ${job}:$`)));
     const jobLevel = body.filter((line) => indentOf(line) === 4 && line.trim() !== '');
     const ifLine = jobLevel.find((line) => /^    if:/.test(line));
@@ -118,6 +128,7 @@ test('every job-level condition is unchanged, and no job gains `continue-on-erro
     verify: null,
     prepublish: 'if: ${{ inputs.run-prepublish-manifest-lint || inputs.run-prepublish-install }}',
     actionlint: 'if: ${{ inputs.run-actionlint }}',
+    published: "if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
   });
 });
 
@@ -143,7 +154,11 @@ test('EXACTLY ONE input is added, and its default is false', () => {
   const inputs = block(lineIndex(/^    inputs:$/))
     .filter((line) => /^      [a-z][\w-]*:$/.test(line))
     .map((line) => line.trim().replace(':', ''));
-  assert.deepEqual(inputs, [...EXISTING_INPUTS, INPUT], 'no input removed, renamed, or added beyond one');
+  assert.deepEqual(
+    inputs,
+    [...EXISTING_INPUTS, INPUT, ...LATER_INPUTS],
+    'no input removed, renamed, or added beyond one',
+  );
 
   const definition = block(lineIndex(new RegExp(`^      ${INPUT}:$`))).join('\n');
   assert.match(definition, /^\s+type: boolean$/m);

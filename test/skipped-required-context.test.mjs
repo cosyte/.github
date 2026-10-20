@@ -769,7 +769,10 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
 
 /** Every job id of every published reusable, at the pin. */
 const PUBLISHED_JOB_IDS = {
-  'ci.yml': ['verify', 'prepublish', 'actionlint'],
+  // ADDED, NOT RENAMED: `published` is a new context no caller's ruleset names, and the three ids
+  // before it are where they were. It runs only on a caller's `schedule` and `workflow_dispatch`
+  // events, so on every push and pull request it is skipped, and a skipped context requires nothing.
+  'ci.yml': ['verify', 'prepublish', 'actionlint', 'published'],
   'codeql.yml': ['analyze'],
   'drift-check.yml': ['drift'],
   // ADDED, NOT RENAMED, and the distinction is the one this table exists to make legible. Both

@@ -1,0 +1,6 @@
+{
+  "name": "@cosyte-fixture/published-check-no-such-package",
+  "version": "1.2.3",
+  "description": "Fixture for test/published-check.test.mjs: a name the registry does not have.",
+  "license": "MIT"
+}

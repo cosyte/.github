@@ -1,0 +1,14 @@
+{
+  "name": "@cosyte-fixture/missing-esm",
+  "version": "2.0.0",
+  "description": "Fixture for test/published-check.test.mjs: exports an ESM build its files field drops.",
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist/index.cjs"]
+}

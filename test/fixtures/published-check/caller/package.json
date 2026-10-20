@@ -1,0 +1,16 @@
+{
+  "name": "@cosyte-fixture/published-check",
+  "version": "1.2.3",
+  "description": "Fixture for test/published-check.test.mjs. Never published.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"]
+}
