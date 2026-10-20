@@ -811,7 +811,11 @@ const isRefAnnouncement = (step) =>
  */
 const CATEGORIES = {
   'checks out a caller tree': (step) => isCheckout(step) && !isToolingCheckout(step),
+  // UNDER TRUSTED PUBLISHING THE STEP THAT PUBLISHES IS THE STEP THAT AUTHENTICATES: it exchanges
+  // the job's OIDC token at npm for a publish token, with no token or token file anywhere. The three
+  // older spellings stay, because any of them reappearing is a credential this file stopped holding.
   'authenticates to the registry': (step) =>
+    step.with.publish !== undefined ||
     step.with['registry-url'] !== undefined ||
     step.env.NODE_AUTH_TOKEN !== undefined ||
     step.env.NPM_TOKEN !== undefined,
@@ -1388,6 +1392,7 @@ const CONVERGED_ON_THE_SHARED_READER = [
   'install-check.test.mjs',
   'promotion.test.mjs',
   'release-notes.test.mjs',
+  'trusted-publishing.test.mjs',
   'workflow-sha.test.mjs',
 ];
 
@@ -1851,21 +1856,21 @@ function assertNoAmbientNpmCredential(text, job) {
  * or not the pattern it matches with is any good, and "the pattern was not good enough" is exactly
  * how the index spelling stayed reachable through five earlier proofs.
  */
-function assertNoStepNpmCredential(job) {
+function assertNoStepNpmCredential(job, where = 'the un-approved job') {
   for (const step of job.steps) {
-    assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to the un-approved job`);
-    assert.equal(step.env.NODE_AUTH_TOKEN, undefined, `"${step.label}" hands NODE_AUTH_TOKEN to the un-approved job`);
+    assert.equal(step.env.NPM_TOKEN, undefined, `"${step.label}" hands NPM_TOKEN to ${where}`);
+    assert.equal(step.env.NODE_AUTH_TOKEN, undefined, `"${step.label}" hands NODE_AUTH_TOKEN to ${where}`);
     // `registry-url` is what makes setup-node write `_authToken=${NODE_AUTH_TOKEN}` into an npmrc
     // and point NPM_CONFIG_USERCONFIG at it. A registry credential FILE in a job no human approved
     // is the same defect as the variable, one indirection out.
     assert.equal(
       step.with['registry-url'],
       undefined,
-      `"${step.label}" writes a registry credential file in the un-approved job`,
+      `"${step.label}" writes a registry credential file in ${where}`,
     );
     // The step's RAW text, so a value under a name nothing here knows is still refused, in either
     // form an expression can name the secret.
-    assert.doesNotMatch(step.body, NPM_SECRET_REF, `"${step.label}" reads the npm secret in the un-approved job`);
+    assert.doesNotMatch(step.body, NPM_SECRET_REF, `"${step.label}" reads the npm secret in ${where}`);
     assertNoUnresolvableSecretIndex(step.body, `"${step.label}"`);
   }
 }
@@ -2201,13 +2206,29 @@ test('AC6: the npm publish credential never reaches the un-gated job', () => {
     );
   }
 
-  // NOT VACUOUS: the credential still exists, and it is in the job the environment holds.
-  const publisher = workflow.byId.release.steps.filter((step) => step.env.NODE_AUTH_TOKEN !== undefined);
-  assert.equal(publisher.length, 1, 'exactly one step is handed the npm credential');
-  assert.equal(publisher[0].env.NPM_TOKEN, '${{ secrets.NPM_TOKEN }}');
-  assert.equal(publisher[0].env.NODE_AUTH_TOKEN, '${{ secrets.NPM_TOKEN }}');
+  // THE ENVIRONMENT-HELD JOB IS SWEPT TOO NOW, BECAUSE NO npm TOKEN EXISTS FOR IT TO HOLD. Every
+  // publish authenticates through npm trusted publishing: the publishing tool exchanges the job's
+  // OIDC token at npm, so `id-token: write` is the npm credential and nothing else is. The sweeps
+  // above hold for `release` as they do for the two jobs no human approves.
+  const release = workflow.byId.release;
+  assertNoAmbientNpmCredential(text, release);
+  assertNoStepNpmCredential(release, 'the environment-held job, which publishes through trusted publishing');
+
+  // NOT VACUOUS: the publish still happens, in exactly one step, in the job the environment holds,
+  // and that job, and no other, holds the permission the OIDC exchange needs.
+  const publisher = release.steps.filter((step) => step.with.publish !== undefined);
+  assert.equal(publisher.length, 1, 'exactly one step publishes');
+  assert.equal(release.keys.environment, 'release');
+  assert.equal(effectivePermissions(text, release)['id-token'], 'write', 'the publishing job makes the OIDC exchange');
+  for (const job of [version, finalize]) {
+    assert.equal(
+      effectivePermissions(text, job)['id-token'],
+      undefined,
+      `job \`${job.id}\` holds id-token: write, which is now a publish credential, on a runner no human approved`,
+    );
+  }
   // The publish command itself, pinned WHOLE rather than matched, because this is the string the
-  // credential above is spent on. Two arms, both non-empty: the staged one when `publish-floor`
+  // OIDC exchange is spent on. Two arms, both non-empty: the staged one when `publish-floor`
   // reported that the package already exists on the registry, and the direct one otherwise. There
   // is no third arm and no empty arm; withholding is the job-level `if:`, pinned in AC2/AC10.
   assert.equal(
@@ -2563,12 +2584,13 @@ test('AC11: no caller has to change anything, so every input and secret is the o
   assert.equal(inputs['promotion-window-minutes'].default, '120');
   assert.equal(inputs['publish-mode'].type, 'string');
   assert.equal(inputs['publish-mode'].default, '"direct"');
-  assert.deepEqual(Object.keys(secrets), ['NPM_TOKEN', 'DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
+  // `NPM_TOKEN` IS GONE, AND REMOVING A DECLARED SECRET ASKS NOTHING OF A CALLER THAT PASSES
+  // `secrets: inherit`, which names none. Every publish authenticates through npm trusted publishing.
+  assert.deepEqual(Object.keys(secrets), ['DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
 
-  // Exactly one required input and exactly one required secret, and they are the two every caller
-  // already passes. The rule for anything new is in the loop below rather than in this list.
+  // Exactly one required input and no required secret. The rule for anything new is in the loop
+  // below rather than in this list.
   assert.equal(inputs['package-name'].required, 'true');
-  assert.equal(secrets.NPM_TOKEN.required, 'true');
   assert.equal(secrets.DOCS_REPO_DISPATCH_TOKEN.required, 'false');
   assert.equal(secrets.RELEASE_PR_TOKEN.required, 'false');
 
@@ -2578,7 +2600,6 @@ test('AC11: no caller has to change anything, so every input and secret is the o
     assert.ok(declared.default !== undefined, `input \`${name}\` must carry a default`);
   }
   for (const [name, declared] of Object.entries(secrets)) {
-    if (name === 'NPM_TOKEN') continue;
     assert.equal(declared.required, 'false', `secret \`${name}\` must be optional: thirteen callers pin @main`);
   }
 });

@@ -1471,10 +1471,10 @@ test("release.yml drops the release credentials between the publish and everythi
       optsBackInAfterFailure(job.steps[drop]),
       `in \`${id}\`, the drop must opt back in after a failure or it never runs on the arm it exists for`,
     );
-    // Both files, in both jobs. The npmrc holds the raw NPM_TOKEN in plaintext on the publish arm,
-    // which is the only arm the entry probe runs on at all; in the version job it is expected to be
-    // absent, and it is swept anyway, because a step that removes only what it expects to find stops
-    // removing the thing nobody expected.
+    // Both files, in both jobs. The npmrc held a raw npm token in plaintext on the publish arm until
+    // the publish moved to trusted publishing; the action writes it only when handed a token, so it
+    // is expected to be absent in both jobs now, and it is swept anyway, because a step that removes
+    // only what it expects to find stops removing the thing nobody expected.
     assert.match(steps[drop], /"\$HOME\/\.netrc"/);
     assert.match(steps[drop], /"\$HOME\/\.npmrc"/);
     // It must not be able to red a release that already published, and `exit 1` is not the only way
@@ -1486,17 +1486,17 @@ test("release.yml drops the release credentials between the publish and everythi
 
   // AND THE ORDERING THAT IS ONLY ABOUT THE PUBLISHING JOB, measured INSIDE it. These two steps run
   // code this org did not write, the caller's own `pack:docs` command and the entry probe's
-  // third-party module-init, and the `~/.npmrc` they must not see holds the raw npm token in
-  // plaintext. Both live in the `release` job only, so comparing them against a `drop` resolved
-  // anywhere else is how this assertion stopped meaning anything.
+  // third-party module-init, and the `~/.netrc` they must not see holds the PR token in plaintext.
+  // Both live in the `release` job only, so comparing them against a `drop` resolved anywhere else
+  // is how this assertion stopped meaning anything.
   const release = workflow.byId.release;
   // NOT VACUOUS, AND PROVABLY THE RIGHT JOB: it is the one the caller's environment holds and the
-  // one the npm credential is handed to. If this ever fails, the ordering below is measuring some
-  // other job and the fix is the lookup, not the workflow.
+  // one that publishes. If this ever fails, the ordering below is measuring some other job and the
+  // fix is the lookup, not the workflow.
   assert.equal(release.keys.environment, "release", "the job read must be the one in the caller's environment");
   assert.ok(
-    release.steps.some((step) => step.env.NODE_AUTH_TOKEN === "${{ secrets.NPM_TOKEN }}"),
-    "the job read must be the one holding the npm credential this step exists to remove",
+    release.steps.some((step) => step.fields.id === "changesets" && step.with.publish !== undefined),
+    "the job read must be the one whose changesets/action step publishes",
   );
   const drop = stepAt(release, "Drop the release credentials from disk");
   const ghRelease = stepAt(release, "Publish the GitHub release + dispatch docs rebuild");

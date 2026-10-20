@@ -136,8 +136,9 @@
 // upward walk finds no sibling `node_modules`. It gets its own `package.json` so the walk stops
 // there, its own cache so nothing is served from a warm monorepo cache, and EMPTY user and global
 // npmrc files so the install is exactly what an anonymous outsider gets. That last one is not
-// cosmetic: `setup-node` writes an `_authToken` into the job's npmrc, and installing with it would
-// mask a package accidentally published private.
+// cosmetic: `setup-node` wrote an `_authToken` into the job's npmrc while the publish used a token,
+// any npmrc can carry one, and installing with it would mask a package accidentally published
+// private.
 //
 // Two npm behaviours learned building this, both of which cost a measurement:
 //   - Pointing NPM_CONFIG_USERCONFIG and NPM_CONFIG_GLOBALCONFIG at the SAME file makes npm abort
@@ -617,10 +618,11 @@ export async function makeCleanRoom(parent) {
 // false. It was benign only by accident of a second line, the blanking of `NODE_AUTH_TOKEN`, which
 // made the token interpolate empty.
 //
-// That accident is one edit away from arming: the comment at `release.yml`'s `setup-node` step
-// already instructs a future maintainer to set `NODE_AUTH_TOKEN` at JOB level if a `scope:` input is
-// ever added. Do that with the old code and the probe silently installs AUTHENTICATED, which would
-// mask exactly the failure this gate is meant to catch, with no error and no test failure.
+// That accident was one edit away from arming: `release.yml`'s `setup-node` step then told a future
+// maintainer to set `NODE_AUTH_TOKEN` at JOB level if a `scope:` input was ever added. Do that with
+// the old code and the probe silently installs AUTHENTICATED, which would mask exactly the failure
+// this gate is meant to catch, with no error and no test failure. The publish has since moved to
+// trusted publishing and that step writes no npmrc, but the next job npmrc is one input away.
 //
 // Stripping the whole `npm_config_*` namespace rather than overriding the two names known to matter
 // is the difference between defending against a list and defending against the mechanism. npm maps
@@ -680,13 +682,13 @@ export async function installIntoCleanRoom({
   // executed with them readable, on a tree that is range-resolved at probe time rather than
   // lockfile-pinned. `release.yml` now deletes both immediately after that action, before this step,
   // and THE FLAG IS STILL RIGHT: the job's own `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (`id-token: write`,
-  // for npm provenance) is in this step's environment, `cleanRoomEnv` below copies all of
-  // `process.env` except the `npm_config_*` namespace, and a lifecycle script is a shell command
-  // with the whole environment rather than a module evaluation. That variable is not impossible to
-  // remove, and the sentence used to say so: a step-level `env:` entry in `release.yml` overrides
-  // the runner's value and this gate needs neither it nor its URL. Not done here, because it is a
-  // second behaviour change to the shared workflow in one slice, and it is stated so the next
-  // person can take it rather than rediscover it.
+  // which npm trusted publishing exchanges for a publish token) is in this step's environment,
+  // `cleanRoomEnv` below copies all of `process.env` except the `npm_config_*` namespace, and a
+  // lifecycle script is a shell command with the whole environment rather than a module evaluation.
+  // That variable is not impossible to remove, and the sentence used to say so: a step-level `env:`
+  // entry in `release.yml` overrides the runner's value and this gate needs neither it nor its URL.
+  // Not done here, because it is a second behaviour change to the shared workflow in one slice, and
+  // it is stated so the next person can take it rather than rediscover it.
   //
   // ▶ IT NARROWS THE WINDOW, IT DOES NOT CLOSE IT. The flag governs only the install;
   // `probeEntryPoints` below still executes third-party MODULE-INIT code. Measured on
@@ -776,10 +778,9 @@ export const PROBE_ENV_PASSTHROUGH = Object.freeze([
 // not persist to later steps, and setup-node v7 stopped exporting the dummy `NODE_AUTH_TOKEN`
 // job-wide. What IS in every step of that job is `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and
 // `ACTIONS_ID_TOKEN_REQUEST_URL`, present because the workflow requests `id-token: write` for npm
-// provenance, and they exchange for a signed OIDC token naming the repo. Two more reasons this is a
-// guard rather than hygiene, and both are one line of YAML away: `release.yml`'s own setup-node
-// comment instructs a future maintainer to set `NODE_AUTH_TOKEN` at JOB level if a `scope:` input
-// is ever added, which arms exactly this; and a caller's secret becomes job-wide the moment someone
+// trusted publishing and provenance, and they exchange for a signed OIDC token naming the repo, which
+// npm exchanges in turn for a token that can publish the package. One more reason this is a guard
+// rather than hygiene, one line of YAML away: a caller's secret becomes job-wide the moment someone
 // hoists an `env:` block to make it available to two steps.
 //
 // ▶ AN ALLOW-LIST, WHICH IS NOT A CONTRADICTION OF `cleanRoomEnv` ABOVE REJECTING ONE. There the

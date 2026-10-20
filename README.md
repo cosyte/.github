@@ -11,7 +11,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no `NPM_TOKEN`**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **with provenance**, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
@@ -58,11 +58,14 @@ jobs:
     with:
       package-name: "@cosyte/hl7"
       # publish-mode: staged # optional; the default, direct, is live when the run ends. See below
-    secrets: inherit # NPM_TOKEN + RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
+    # npm authenticates by trusted publishing (OIDC), so there is no npm token to pass. The package's
+    # trusted-publisher entry on npmjs.com names THIS repository and `release.yml` (this file),
+    # never cosyte/.github. See "How a release authenticates to npm".
+    secrets: inherit # RELEASE_PR_TOKEN + DOCS_REPO_DISPATCH_TOKEN
     permissions: # actions: read is a PREREQUISITE, see below
       actions: read
       contents: write
-      id-token: write
+      id-token: write # npm trusted publishing and provenance: npm needs it here AND in release.yml
       pull-requests: write
 ```
 
@@ -547,8 +550,8 @@ So the job is split on the one line that matters, which is **reversibility**:
 | job | environment | what it does | what it is handed |
 |---|---|---|---|
 | `version` | **none** | the protection gate, the caller checkout, `Verify`, the release-notes derivation, the changelog gate, and `changesets/action` with **no publish command at all** | `RELEASE_PR_TOKEN` (or its `GITHUB_TOKEN` fallback) |
-| `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `NPM_TOKEN`** |
-| `finalize` | **none** | `needs: version`, only when the pending version is **already live on npm** with no GitHub release. The tag, the GitHub release and the docs dispatch for a staged version promoted after its own run stopped waiting, or a direct publish whose release step never finished (see "When a maintainer promotes it", below) | `GITHUB_TOKEN` at `contents: write` and `DOCS_REPO_DISPATCH_TOKEN`; **no `NPM_TOKEN`, nothing that can publish** |
+| `release` | **`release`** | `needs: version`, `if:` the version job's `is-release` output. The publish-path floor gate, the npm publish (staged or direct), the GitHub release, the docs dispatch, the post-publish install gate | the same PR token, **plus `id-token: write`**, which npm trusted publishing exchanges for a short-lived publish token; no npm token exists |
+| `finalize` | **none** | `needs: version`, only when the pending version is **already live on npm** with no GitHub release. The tag, the GitHub release and the docs dispatch for a staged version promoted after its own run stopped waiting, or a direct publish whose release step never finished (see "When a maintainer promotes it", below) | `GITHUB_TOKEN` at `contents: write` and `DOCS_REPO_DISPATCH_TOKEN`; **no `id-token: write`, nothing that can publish** |
 
 **Merging the Version PR is the release decision; the environment approval is that same decision
 confirmed on the runner about to make it permanent.** One approval per release, on the irreversible
@@ -609,8 +612,9 @@ stored that way reads **empty** in the job that needs it and this workflow falls
 PR" below. It degrades rather than breaking, and it announces itself: the "Version PR will land with
 zero checks" warning fires exactly as it would for a caller that never set the token, so the log is
 the diagnosis. The fix is caller-side and takes no change to this file: **store `RELEASE_PR_TOKEN`
-as a repository or organization secret**. `NPM_TOKEN` and `DOCS_REPO_DISPATCH_TOKEN` are unaffected
-from either placement, because both are consumed in `release`, which does reference the environment.
+as a repository or organization secret**. npm takes no secret at all, from either placement, because
+the publish authenticates by OIDC; `DOCS_REPO_DISPATCH_TOKEN` is covered under "When a maintainer
+promotes it", below.
 
 The failure that hides in is quiet in the worst way: a `release` environment carrying **no protection
 rules** produces a run that looks identical to a genuinely gated one. Same environment badge on the
@@ -679,8 +683,9 @@ a caller, and it is unchanged by the split: no caller grants anything new.
 **Each job then narrows it, and a job block replaces the workflow one rather than adding to it**, so
 each names every key it needs. `version` is `contents: write` + `pull-requests: write` +
 `actions: read`; `release` is those three plus `id-token: write`. **`id-token` is deliberately absent
-from `version`**: it is npm provenance, provenance is a publish-time concern, and that job cannot
-publish, so the token that signs a publish has no business existing on a runner nobody approved.
+from `version`**: it is the npm credential now, exchanged by trusted publishing for a publish token,
+as well as what signs provenance; both are publish-time concerns, that job cannot publish, and a
+token that can mint a publish has no business existing on a runner nobody approved.
 `test/environment-gate.test.mjs` pins **both** sets whole, in both directions.
 
 The default branch itself is in **neither** environment payload, though four of the refusal wordings
@@ -696,7 +701,8 @@ fails as unreadable rather than refusing a compliant caller and blaming its bran
   this org there is no second-party review to have, and this does not pretend there is.
 - **That a caller stays compliant.** It reads the configuration of the run in front of it. A rule
   removed after a passing run is caught by the next run and not before.
-- **Anything about how the publish authenticates** once the gate is proven. That is a separate change.
+- **Anything about how the publish authenticates** once the gate is proven. That is trusted
+  publishing, under [How a release authenticates to npm](#how-a-release-authenticates-to-npm).
 
 ## What a skipped required context does to a merge
 
@@ -935,7 +941,8 @@ Measured rather than assumed, because an earlier draft of this section
 claimed the PAT arrived "after all third-party code has run" and that is **false**. From the
 `changesets/action` step onward, **and until the removal step described below, which since 2026-08-05
 is the very next step**, the token is on disk in `~/.netrc` (written unconditionally, before
-the arm switch) **and the raw `NPM_TOKEN` is in `~/.npmrc` in plaintext** on the publish arm, and it is
+the arm switch; until 2026-10-19 the raw npm token sat beside it in `~/.npmrc`, which the action writes
+only when handed one, and nothing hands it one now), and it is
 injected as `GITHUB_TOKEN` into the environment of `pnpm run version` and
 `pnpm run release`. Neither caller *script* reads it, but the process subtree does not stop there:
 `release` is `changeset publish`, which spawns `pnpm publish` (every caller declares
@@ -991,22 +998,22 @@ that half was closed on **2026-08-05**, in two independent pieces:
   the negative control: the scrub has to hold for a variable no list in this repo has ever seen.
 
   **Which variable was actually reachable is worth stating exactly, because the first draft of this
-  bullet named three that were not.** `NODE_AUTH_TOKEN`, `NPM_TOKEN` and `RELEASE_PR_TOKEN` are set on
-  the `changesets/action` **step**, `release.yml` declares no job-level or workflow-level `env`, and
-  step `env` does not persist, so none of the three was ever in the probe child's inherited
-  environment. What **is** in every step is `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and its URL, present
-  because the workflow requests `id-token: write` for npm provenance, and those exchange for a signed
-  OIDC token naming the repo. The other two reasons this is a guard rather than hygiene are each one
-  line of YAML away: the `setup-node` comment in `release.yml` tells a future maintainer to set
-  `NODE_AUTH_TOKEN` at **job** level if a `scope:` input is ever added, and a caller's secret becomes
-  job-wide the moment someone hoists an `env:` block to share it between two steps.
+  bullet named three that were not.** `NODE_AUTH_TOKEN`, `NPM_TOKEN` and `RELEASE_PR_TOKEN` were set
+  on the `changesets/action` **step** (only the last of them still is), `release.yml` declares no
+  job-level or workflow-level `env`, and step `env` does not persist, so none of the three was ever in
+  the probe child's inherited environment. What **is** in every step is
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and its URL, present because the job requests `id-token: write` for
+  npm trusted publishing and provenance, and those exchange for a signed OIDC token naming the repo,
+  which npm exchanges in turn for a token that can publish the package (see the end of this section).
+  The other reason this is a guard rather than hygiene is one line of YAML away: a caller's secret
+  becomes job-wide the moment someone hoists an `env:` block to share it between two steps.
 - **Both credential files are deleted from disk** by the `Drop the release credentials from disk`
   step, placed immediately after `changesets/action` rather than at the end of the job: `~/.netrc`,
-  and `~/.npmrc`, which the action writes with the **raw `NPM_TOKEN` in plaintext** on the publish
-  arm, which is the same arm that sets `published == 'true'` and therefore the only arm on which the
-  entry probe runs at all. Neither has a consumer past that step: the netrc's only reader is the
-  action's own `git push`, and the publish authenticated through the `RUNNER_TEMP` npmrc `setup-node`
-  points `NPM_CONFIG_USERCONFIG` at, which outranks `~/.npmrc`. It **warns rather than fails** if a
+  and `~/.npmrc`, which the action writes with a **raw npm token in plaintext** on the publish arm
+  only when it is handed one. Nothing hands it one since the publish moved to trusted publishing, so
+  the npmrc is expected to be absent and is swept anyway. Neither has a consumer past that step: the
+  netrc's only reader is the action's own `git push`, and the publish authenticated through an OIDC
+  exchange held in that process's memory. It **warns rather than fails** if a
   removal does not take, on the same axis the docs dispatch turns on: npm has published permanently by
   then, and a red run neither removes the credential nor makes the artifact less correct.
 
@@ -1022,9 +1029,35 @@ reads the passwd entry and ignores `HOME`, and the caller's checkout is still on
 file at a known absolute path is deleting it, which is why the removal step is the other half of this
 rather than a duplicate of it. **What neither covers**, and it is the one credential that is genuinely
 in the probe's job environment: `ACTIONS_ID_TOKEN_REQUEST_TOKEN` is still reachable by every other
-step in the job, because `id-token: write` is what npm provenance needs. And the removal step is a
+step in the job, because `id-token: write` is how the publish authenticates. And the removal step is a
 best effort with a `::warning` branch, so "everything past it runs with these gone" is the expected
 case, not a guarantee the log will not contradict.
+
+**▶ Since 2026-10-19 that request token is a publish credential, and it is the widest residual in the
+`release` job.** Trusted publishing replaced the npm token with an OIDC exchange, and npm accepts the
+exchange from any step that can request the job's OIDC token, not only from the publish step. So the
+caller's `pnpm install --frozen-lockfile` (lifecycle scripts from its lockfile-pinned tree), its
+`Verify` ladder, the verify ladder `prepublishOnly` re-runs inside `changesets/action`, and the
+caller's `pack:docs` can each mint a token that publishes or stages that one package, for as long as
+the job runs. The npm token used to be handed to the publish step alone, and to `~/.npmrc` from that
+step until the removal step; the request token is in every step from the first. What bounds it:
+
+- the minted token is scoped to the one package and short-lived, and nothing can mint one outside
+  this job, after it, or from any other repository or workflow file than the entry names;
+- the job starts only after the caller's `release` environment approval, and the version job, which
+  no human approves, holds no `id-token: write`;
+- a stage-only entry, the default for entries made after 2026-09-03, means a minted token can only
+  stage, and a staged version still needs a maintainer's 2FA to go live. The default direct arm needs
+  the entry to allow publishing, which gives that up; `publish-mode: staged` keeps it;
+- each publish carries provenance naming this workflow run.
+
+**Not done, and recorded for whoever takes it:** a step-level `env:` that blanks
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` and its URL on the steps that need neither (`pnpm install`,
+`Verify`, the release and install-gate steps) would narrow this to the publish step. The comment in
+`scripts/install-check.mjs` says a step-level entry overrides the runner's value; that was not
+measured on a run here, and an unmeasured narrowing reported as a control is the failure this
+section exists to prevent. The other shape, packing in a job without the permission and publishing
+the tarball from one with it, changes how `changeset publish` runs and is a larger change.
 
 **The cost is named rather than waved off, and it cuts both ways.** A real consumer's install *does*
 run lifecycle scripts, so (1) the probe **cannot catch** a package whose `postinstall` fails for a
@@ -1064,7 +1097,8 @@ reading of the pending changesets, not from the job it is in, so a changeset lan
 the two jobs puts the publish job on the version arm. A publish job without the token would then open
 a Version PR authored by `GITHUB_TOKEN`, which is the exact trap this credential exists to close. The
 exposure is accepted and written down rather than traded for that risk. **What the split did remove
-is the other credential**: `NPM_TOKEN` is handed to the environment-held job and to nothing else.
+is the other credential**: the npm one, which is now an OIDC exchange that only the environment-held
+job holds `id-token: write` to make.
 
 **If the netrc fallback does not apply**, the push fails loudly and the run goes red with npm
 untouched, because the publish arm does not push at all (`createGithubReleases: false` means the
@@ -1265,44 +1299,85 @@ that passes nothing gets `direct`:
 
 On the direct arm, [`scripts/publish-floor.mjs`](scripts/publish-floor.mjs) still identifies the tool
 that will publish and reads its version, and refuses if it cannot. It owes no staging floor and does
-not ask the registry anything, because neither would change the arm.
+not ask the registry anything, because neither would change the arm. It does owe the
+trusted-publishing floor below, on both arms, because that is how every publish authenticates.
 
-### What a direct release needs from `NPM_TOKEN`
+### How a release authenticates to npm
 
-npm judges the token at the moment of publish, so this is the one requirement of the direct arm that
-no gate here can check in advance. All of it read on 2026-10-08:
+**Through npm trusted publishing (OIDC), on both arms, with no npm token anywhere.** The `release`
+job holds `id-token: write`. The tool that talks to the registry asks GitHub for the job's OIDC token,
+exchanges it at npm for a short-lived token that can publish or stage that one package, and keeps it
+in memory. Nothing in `release.yml` declares, reads or hands on an npm secret, and the publish step
+gets no `~/.npmrc`: `changesets/action` writes one only when it is handed a token. Read on 2026-10-19
+at [Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers) unless another
+source is named:
 
-- **A granular access token, "Read and write (publish and stage)" on the packages, with "Bypass 2FA"
-  set.** npm: "When the Bypass 2FA option is set to true, this setting takes precedence over
-  account-level and package-level 2FA settings for package and automation actions such as
-  publishing", and the option "is set to false by default at token creation"
-  ([About access tokens](https://docs.npmjs.com/about-access-tokens), last edited 2026-09-10).
-  Without it, npm answers a publish from CI with **E403** or **EOTP**: it wants a one-time password
-  no run can give. A new token is a step for the owner, on npmjs.com, with 2FA.
-- **A stage-only token cannot publish directly.** "Read and write (stage only): the token cannot
-  publish new package versions directly" (same page). With one of those, set `publish-mode: staged`.
-- **Write tokens expire.** "All npm existing granular tokens with write permissions are now capped at
-  90-day maximum lifetime"
-  ([GitHub changelog, 2025-11-05](https://github.blog/changelog/2025-11-05-npm-security-update-classic-token-creation-disabled-and-granular-token-changes/)).
-  An expired token fails the publish step, not the floor gate.
-- **Provenance needs nothing new.** The publish step sets `NPM_CONFIG_PROVENANCE` for a public caller
-  and the job holds `id-token: write`, which is how npm documents enabling it
-  ([Generating provenance statements](https://docs.npmjs.com/generating-provenance-statements), last
-  edited 2026-05-04). `@cosyte/hl7@0.0.10`, which this workflow published directly on 2026-08-07,
-  carries a provenance attestation.
+- **The tool has to be able to make the exchange.** "Trusted publishing requires npm CLI version
+  11.5.1 or later and Node version 22.14.0 or higher." The floor gate checks the tool that will make
+  it, on both arms, before anything is packed, and prints that tool and its version:
 
-### Direct publishing with a token has an end date
+  | The caller's publish tool | Who makes the exchange | Floor that binds |
+  |---|---|---|
+  | pnpm 11 and later | pnpm, natively | **pnpm 11.0.0** |
+  | pnpm 10 and earlier | the npm CLI, by delegation | **npm 11.5.1 and Node 22.14.0** |
+  | npm | the npm CLI | **npm 11.5.1 and Node 22.14.0** |
+
+  Every caller pins pnpm 10.0.0 or 10.34.5 today. Neither has OIDC code of its own, and neither needs
+  any: `pnpm publish` packs the tarball and then runs `npm publish --ignore-scripts <tarball>` with its
+  whole environment ([`publish.ts` at v10.34.5](https://github.com/pnpm/pnpm/blob/v10.34.5/releasing/plugin-commands-publishing/src/publish.ts#L278),
+  [at v10.0.0](https://github.com/pnpm/pnpm/blob/v10.0.0/releasing/plugin-commands-publishing/src/publish.ts#L246)),
+  and npm 11.5.1 makes the exchange for a tarball as for a directory
+  ([`publish.js` at v11.5.1](https://github.com/npm/cli/blob/v11.5.1/lib/commands/publish.js#L141)).
+  The `release` job runs Node 24, whose bundled npm (11.16.0 and later from Node 24.18.0) clears that
+  floor. `npm stage publish` makes the same call
+  ([at v11.15.0](https://github.com/npm/cli/blob/v11.15.0/lib/commands/publish.js#L145)), and so do
+  pnpm 11's native publish and `pnpm stage publish`
+  ([v11.0.0](https://github.com/pnpm/pnpm/blob/v11.0.0/releasing/commands/src/publish/publishPackedPkg.ts#L115),
+  [v11.3.0](https://github.com/pnpm/pnpm/blob/v11.3.0/releasing/commands/src/publish/publishPackedPkg.ts#L195)).
+  Those sources were read on 2026-10-19 too.
+- **npm checks the calling workflow, so the entry names the caller.** For a reusable workflow,
+  "validation checks the calling workflow's name instead of the workflow that actually contains the
+  publish command", and "The `id-token: write` permission must also be given to both parent and child
+  workflows". Every caller's calling job already grants it. **Each package's trusted-publisher entry
+  names the package's own repository and `release.yml`, never `cosyte/.github`.**
+- **Provenance is automatic.** npm generates it "by default" after an exchange from a public
+  repository. The publish step's `NPM_CONFIG_PROVENANCE` says the same out loud, and says false for a
+  private caller.
+- **GitHub-hosted runners only.** "Trusted publishing currently supports only cloud-hosted runners."
+  Every job here runs on `ubuntu-latest`.
+
+**The owner's one-time steps, on npmjs.com, with 2FA.** Nothing here can do them, and nothing here
+should:
+
+1. For each package, add a GitHub Actions trusted publisher in its settings: organization `cosyte`,
+   the package's own repository (`hl7` for `@cosyte/hl7`), workflow filename `release.yml`. The
+   environment name is optional; `release` is the environment of the job that publishes, if npm
+   should check that too.
+2. **Allow direct publishing on the entry** while the caller takes the default direct arm. An entry
+   created after 2026-09-03 is "automatically set to allow `npm stage publish`", and only that. A
+   caller with `publish-mode: staged` does not need the switch.
+3. **Release within 48 hours of creating the entry.** An unused entry will "expire 48 hours after
+   creation and can no longer authorize publishing", and its first successful publish validates it
+   for good ([GitHub changelog, 2026-10-02](https://github.blog/changelog/2026-10-02-unvalidated-npm-trusted-publishing-configurations-now-expire/)).
+   Recreating one starts a new window.
+4. Delete the caller's old `NPM_TOKEN` secret, and revoke the token on npmjs.com, once that package
+   has published through its entry. `release.yml` no longer reads it.
+
+A release of a package with no entry, an expired entry, or a stage-only entry on the direct arm fails
+at the publish step with npm's own refusal, after the floor gate and the verify ladder, and nothing is
+published.
+
+### Why there is no token any more
 
 npm: "The ability to publish new package versions directly with a granular access token will be
-removed in January 2027" ([About access tokens](https://docs.npmjs.com/about-access-tokens)). The
-announcements say the same and name what is left: "You should move automated publishing to trusted
-publishing (OIDC) or staged publishing"
-([GitHub changelog, 2026-07-31](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/));
-the stage-only token "doesn't change existing tokens or their direct-publish capabilities" until then
-([GitHub changelog, 2026-09-18](https://github.blog/changelog/2026-09-18-stage-only-npm-tokens-for-safer-automation/)).
-When that removal lands, npm refuses a direct release made with `NPM_TOKEN`, and a release that has to
-go live without a person needs trusted publishing, which this workflow does not do yet. Until then the
-default stays direct, and `publish-mode: staged` is the way back to a person promoting each version.
+removed in January 2027" ([About access tokens](https://docs.npmjs.com/about-access-tokens)), and
+"You should move automated publishing to trusted publishing (OIDC) or staged publishing"
+([GitHub changelog, 2026-07-31](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/)).
+Until 2026-10-19 this workflow published with an `NPM_TOKEN` secret: a granular token with "Bypass
+2FA" set and a 90-day cap, written to `~/.npmrc` in plaintext by the publish step. Trusted publishing
+removes that long-lived credential. **What it moves rather than removes is under
+[What it does not narrow](#what-it-does-not-narrow)**: the job's OIDC request token can mint a publish
+token from any step of the `release` job.
 
 ### Staging, on request
 
@@ -1374,8 +1449,9 @@ npm floor, so that implementation would red every pnpm-11 release in this org fo
 not on their publish path. `test/publish-floor.test.mjs` carries that defect as a named test.
 
 **If a staged release run fails with "the publish path is below its staged-publishing floor", the fix
-is in your repository, not this one.** The direct arm owes no such floor. The refusal names the
-version it found and the floor it needs.
+is in your repository, not this one.** The direct arm owes no staging floor; it owes the lower
+trusted-publishing floor under [How a release authenticates to npm](#how-a-release-authenticates-to-npm).
+The refusal names the version it found and the floor it needs.
 The `release` job itself runs on Node 24, whose bundled npm (11.16.0 and later from Node 24.18.0) clears
 the npm floor, so a pnpm-10 caller normally meets it without a change.
 Either raise your `packageManager` pin to pnpm 11.3.0 or later, which is a one-line change and needs
@@ -1486,16 +1562,19 @@ node scripts/install-check.mjs --package @cosyte/cli --version 0.0.1 --expect-un
 The probe directory sits under `RUNNER_TEMP`, which is not a parent of the workspace, so npm's upward
 walk finds no sibling `node_modules`. It gets its own `package.json` so the walk stops there, its own
 cache so nothing is served warm, and **empty user and global npmrc files** so the install is exactly
-what an anonymous outsider gets. That last one is not cosmetic: `setup-node` writes an `_authToken`
-into the job's npmrc, and installing with it would mask a package accidentally published private.
+what an anonymous outsider gets. That last one is not cosmetic: `setup-node` wrote an `_authToken`
+into the job's npmrc while the publish used a token, any npmrc can carry one, and installing with it
+would mask a package accidentally published private.
 
 **The whole `npm_config_*` namespace is stripped from the inherited environment, in both cases.** An
 earlier version set only the lowercase `npm_config_userconfig`, and `actions/setup-node` exports the
 **uppercase** `NPM_CONFIG_USERCONFIG` job-wide, which **wins in both insertion orders** (measured on
 npm 10.9.8). So the probe was loading the job's authenticated npmrc while claiming to be anonymous. It
-was benign only by accident of a second line blanking `NODE_AUTH_TOKEN`, and that accident is one edit
-away from arming: the `setup-node` comment in `release.yml` already tells a future maintainer to set
-`NODE_AUTH_TOKEN` at job level if a `scope:` input is ever added. Stripping the namespace rather than
+was benign only by accident of a second line blanking `NODE_AUTH_TOKEN`, and that accident was one
+edit away from arming: the `setup-node` comment in `release.yml` then told a future maintainer to set
+`NODE_AUTH_TOKEN` at job level if a `scope:` input was ever added. The publish has since moved to
+trusted publishing and that step writes no npmrc, but the next job npmrc is one input away. Stripping
+the namespace rather than
 overriding the two names known to matter is the difference between defending against a list and
 defending against the mechanism.
 
