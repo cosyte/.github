@@ -670,7 +670,7 @@ jobs:
       # the public registry anonymously, and `registry=https://registry.npmjs.org` is a restatement of
       # pnpm's and npm's own default. No job in this file sets it now: the publish job below
       # authenticates by OIDC, which needs no credential file.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: pnpm
@@ -1093,7 +1093,7 @@ jobs:
       # which clears neither. Node 24.18.0 and later bundle npm 11.16.0 or newer
       # (nodejs.org/dist/index.json). publish-floor.mjs still reads the real npm at runtime and refuses
       # below the floor its arm owes, so a Node 24 that regressed would fail closed, not publish.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: pnpm
@@ -1709,7 +1709,7 @@ jobs:
       # tree. NO `registry-url`: nothing in this job authenticates to a registry, so no registry
       # credential file is written for anything to read.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: pnpm
