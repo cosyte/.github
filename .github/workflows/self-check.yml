@@ -11,6 +11,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # The nightly run, 05:45 UTC: off the hour, since GitHub delays scheduled runs at each hour's start.
+    - cron: "45 5 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +27,12 @@ jobs:
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1
         with:
           fail_on_error: true
+          # Outside a pull request the findings go to the log as annotations. A check-run reporter
+          # takes the owner and repo from the event payload, a schedule payload carries neither, and
+          # the nightly run would fail on a clean tree with `POST repos///check-runs: 404`
+          # (reviewdog/reviewdog#832, #1263). Under this workflow's read-only token the check-run
+          # reporter falls back to the same annotations anyway.
+          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-check' || 'github-annotations' }}
 
   scripts:
     runs-on: ubuntu-latest
