@@ -105,6 +105,9 @@ export const REUSABLE_WORKFLOWS = Object.freeze([
   'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  // The title rule, written once for every repository. Unlike the gates above it runs no command a
+  // caller supplies, and a caller adopts it with a `uses:` line and no input.
+  'pr-title.yml',
   'release.yml',
   'scorecard.yml',
 ]);
@@ -845,7 +848,7 @@ export function composeNote(facts) {
     body.push('## What moved in the state a caller resolves');
     body.push('');
     body.push(
-      'That state is the six reusable workflows plus everything under `scripts/`, which those workflows fetch and run at the commit a caller resolved.',
+      'That state is the reusable workflows plus everything under `scripts/`, which those workflows fetch and run at the commit a caller resolved.',
     );
     body.push('');
     if (!previous) {
@@ -982,7 +985,7 @@ export function decide(facts, options = {}) {
       title: 'No new reference was needed',
       message: [
         `Nothing a caller resolves has changed since \`${previous.reference}\` (commit \`${previous.commit}\`).`,
-        'The six reusable workflows and every file under `scripts/` are byte identical at this commit, so a second reference would name the same state under a different name.',
+        'The reusable workflows and every file under `scripts/` are byte identical at this commit, so a second reference would name the same state under a different name.',
         `Callers stay on \`${previous.reference}\`.`,
       ].join('\n'),
       outputs: { action: 'none', reference: '', commit: current.commit },

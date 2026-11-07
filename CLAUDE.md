@@ -3,7 +3,9 @@
 The org's shared GitHub surface: the reusable workflows every `@cosyte/*` library calls (`ci.yml`,
 `release.yml` and the `gate-*` workflows in `.github/workflows/`), the `scripts/` they run, the
 community health files GitHub serves to every repo without its own, and the org profile in
-`profile/`. It ships no package: no `package.json`, no changeset, no `CHANGELOG.md`.
+`profile/`. It ships no package: no `package.json` and no changeset. `CHANGELOG.md` records what each
+`workflows-*` reference changed for a caller: a change to a reusable or to `scripts/` adds its lines
+under "Unreleased", and the next change to the file moves them under the reference its merge minted.
 
 ## Gate
 
@@ -54,3 +56,6 @@ org's public profile: a PR that touches it is gated as public-facing.
   drop the release environment gate with every suite green (#59).
 - Keep `release.yml`'s `release` job on Node 24 or later: on Node 22, npm is below staged
   publishing's floor, and every release of an already-published package refused (#67).
+- Title every pull request in Conventional Commits form: `self-pr-title.yml` checks it here, and
+  `test/pr-title.test.mjs` holds the titles `release.yml` and Dependabot write to the same rule, since
+  the changesets default, `Version Packages`, fails it.

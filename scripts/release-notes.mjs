@@ -8,11 +8,11 @@
 // are recovered from that commit's diff. That is why the release workflow checks out with
 // `fetch-depth: 0`.
 //
-// WHY BOTH TRANSLATE AND REFUSE. `documentation/conventions.md` puts it as "a translation at the
-// boundary, not a deletion": phase and item identifiers belong in the changeset, CHANGELOG.md, the
-// commit, and the roadmap, and must never reach a release body. So the renderer translates, and the
-// gate then proves the translation worked and FAILS the run if anything banned survived. Stripping
-// is never silent: every rewrite and every dropped change is printed.
+// WHY BOTH TRANSLATE AND REFUSE. The rule is "a translation at the boundary, not a deletion": phase
+// and item identifiers belong in the changeset, CHANGELOG.md, the commit, and the plans, and must
+// never reach a release body. So the renderer translates, and the gate then proves the translation
+// worked and FAILS the run if anything banned survived. Stripping is never silent: every rewrite and
+// every dropped change is printed.
 //
 // THE TRANSLATOR ONLY EVER CUTS WHERE THE CUT IS SAFE, and refuses otherwise. Removing a phrase
 // from the middle of a clause leaves prose that does not parse: "no longer carries phase language,
@@ -532,8 +532,8 @@ export function leadingClause(text) {
  *
  * NOT DONE: CUTTING THE INTERNAL CLAUSE OUT and publishing the rest. That is the mid-sentence cut
  * this file exists to refuse, and the measured headline joins its clauses with a bare "and", which
- * isSafeCut correctly declines. The remedy for a mixed changeset is still the standing one in
- * `documentation/conventions.md`: reword the changeset, do not grow the gate.
+ * isSafeCut correctly declines. The remedy for a mixed changeset is still the standing one: reword
+ * the changeset, do not grow the gate.
  */
 export function isConsumerFacing(headline) {
   const whole = String(headline);

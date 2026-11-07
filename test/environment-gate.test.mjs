@@ -1390,6 +1390,8 @@ const CONVERGED_ON_THE_SHARED_READER = [
   'actionlint-config.test.mjs',
   'environment-gate.test.mjs',
   'install-check.test.mjs',
+  // Reads the two changesets steps' `title:` and `commit:` through the shared reader.
+  'pr-title.test.mjs',
   'promotion.test.mjs',
   'release-notes.test.mjs',
   'trusted-publishing.test.mjs',

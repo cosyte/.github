@@ -13,11 +13,12 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → verify → derive the release notes → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a staged version that was **promoted after its own run stopped waiting**, at the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
-| [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | the meta-repo (umbrella) |
+| [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | no repository calls it today |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
 | [`gate-no-emdash-install.yml`](.github/workflows/gate-no-emdash-install.yml) | `gate-no-emdash.yml` with one step added to each job: the caller's dependencies, installed from the caller's committed lockfile, before the scan runs. Same `tracked-files` and `messages` job ids, same two inputs, same defaults, so the check-run contexts and the ruleset entries naming them do not move | a repo whose em-dash scanner resolves an installed package. **No caller is measured needing it yet**, and nothing here moves one onto it |
 | [`gate-no-internal-refs-install.yml`](.github/workflows/gate-no-internal-refs-install.yml) | `gate-no-internal-refs.yml` with the same one step added: install from the committed lockfile, then scan. Same `public-surface` job id, same input, same default | `hl7`, whose public-surface scan resolves `@cosyte/script-utils` and fails closed without an install |
+| [`pr-title.yml`](.github/workflows/pr-title.yml) | **one job**, `conventional-commits`: the pull request title must follow Conventional Commits, `<type>(<scope>)!: <description>` with the scope and `!` optional. Unlike the gates above, **the rule lives here**, because a title rule is the same in every repository; it takes no input, checks nothing out and runs no action. See [The pull request title check](#the-pull-request-title-check) | this repository, through `self-pr-title.yml`; callers adopt it from a published reference |
 
 ## Calling them
 
@@ -123,6 +124,29 @@ jobs:
 
 Its one context is `no-internal-refs / public-surface`.
 
+```yaml
+# <repo>/.github/workflows/pr-title.yml
+name: PR title
+on:
+  pull_request:
+    branches: [main]
+    # `edited` is load-bearing: a title changed after the last push is the title that lands.
+    types: [opened, synchronize, reopened, edited]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pr-title:
+    permissions:
+      contents: read
+    # Copy a real one from the releases page; this placeholder resolves to nothing.
+    uses: cosyte/.github/.github/workflows/pr-title.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+Its one context is `pr-title / conventional-commits`, and it is safe to require. Trigger it on
+`pull_request` only: on an event with no pull request it fails, by design, rather than passing over
+nothing.
+
 ### When the caller's scan command resolves an installed package
 
 Both gates above hand the caller's command a checked-out tree with pnpm and Node prepared and **no
@@ -205,7 +229,7 @@ and there is deliberately **no `v1`-style major alias**: a moved reference is wo
 because it looks immutable. The release body is the note, and it says what a caller adopting this
 reference has to act on.
 
-**What "a change a caller must act on" means, exactly.** For any of the six reusables: a
+**What "a change a caller must act on" means, exactly.** For any of the reusables: a
 `workflow_call` input added without a default or made required, an input removed, a default changed,
 any change to the set of `secrets`, any change to the permissions the caller must grant (at the
 workflow level or on any job), or any job added, removed or renamed, because a job id is the
@@ -214,11 +238,12 @@ demanded of nobody: an input added **with** a default breaks no caller, which is
 `check-docs-content` reached thirteen repositories without touching one of them.
 
 **What moves the reference is wider than what the note demands.** The state a caller resolves is the
-six workflow files **plus everything under `scripts/`**, because `ci.yml` fetches
-`docs-content-check.mjs` and `prepublish-check.mjs` at `job.workflow_sha` and `release.yml`
-runs five more: a caller pinned to a reference runs those scripts as of that commit. So a script fix
-mints a reference (otherwise no caller could ever adopt it) whose note truthfully says there is
-nothing to act on. A README edit or a test change mints nothing.
+reusable workflow files (`REUSABLE_WORKFLOWS` in `scripts/reference-publish.mjs`) **plus everything
+under `scripts/`**, because `ci.yml` fetches `docs-content-check.mjs` and `prepublish-check.mjs` at
+`job.workflow_sha` and `release.yml` runs five more: a caller pinned to a reference runs those
+scripts as of that commit. So a script fix mints a reference (otherwise no caller could ever adopt
+it) whose note truthfully says there is nothing to act on. A README edit or a test change mints
+nothing.
 
 ### It refuses rather than publishing something it cannot stand behind
 
@@ -394,9 +419,9 @@ repository sees. Thirteen callers live in thirteen other repositories and this o
 them. What it proves is that the property resolves to a real commit for a job defined by a reusable
 workflow of this repository, which is the fact that was assumed and wrong.
 
-**It is a `workflow_call` workflow and it is not one of the six.** The trigger is there because that
-is the only kind of file a `uses:` line resolves; it takes no input, is handed no secret, checks
-nothing out and asks for `contents: read`. The published reference tracks the six reusables a caller
+**It is a `workflow_call` workflow and it is not one a caller names.** The trigger is there because
+that is the only kind of file a `uses:` line resolves; it takes no input, is handed no secret, checks
+nothing out and asks for `contents: read`. The published reference tracks the reusables a caller
 names plus everything under `scripts/`, and this file is in neither set, so changing it mints
 nothing and demands nothing of anybody. `test/workflow-sha-probe.test.mjs` asserts that wiring
 offline and runs the probe's own script against every answer a runner could give it.
@@ -512,15 +537,15 @@ quoted list item that holds it, whichever comes first - rather than swallowing t
 ### One correction, because an org-side artifact gets it backwards
 
 **This repository is PUBLIC, and until 2026-09-03 it carried no `LICENSE` file.** Both halves were
-true at once, and `cards/github-profile.md` in the umbrella infers from the second that this repo
-should be treated as "private/internal". That inference is wrong, and adding the licence does not
-make it right, it only removes the input: a repository can be public and unlicensed, and
+true at once, and an org-side card about this repository, since deleted with the generator that
+wrote it, inferred from the second that this repo should be treated as "private/internal". That
+inference is wrong, and adding the license does not make it right, it only removes the input: a
+repository can be public and unlicensed, and
 `gh repo view cosyte/.github --json visibility,isPrivate,licenseInfo` returned
 `{"isPrivate":false,"licenseInfo":null,"visibility":"PUBLIC"}` on 2026-08-22. It matters here
 because the delivery step fetches this file from `raw.githubusercontent.com` with **no credential**,
-which only works because the repository is public. That card is generated, so the rule stays wrong
-for the next repository it is applied to until its generator stops inferring visibility from a
-missing licence; this paragraph is the record. The licence itself is
+which only works because the repository is public. Visibility is read from GitHub, never inferred
+from a missing license; this paragraph is the record. The license itself is
 ["What the account inherits, and the two things it cannot"](#what-the-account-inherits-and-the-two-things-it-cannot)
 below.
 
@@ -2651,6 +2676,43 @@ sit beside the assertion, inside the same clause, to cover it. Correct prose tha
 words the wrong side of that line reads as a claim and reds this repository's own run, which is the
 cheap direction to be wrong in: one edit here, against a promise nobody out there can see is false.
 
+## The pull request title check
+
+[`pr-title.yml`](.github/workflows/pr-title.yml) holds a pull request's title to Conventional
+Commits, because a squash merge makes the title the commit that lands:
+
+```text
+<type>(<scope>)!: <description>
+```
+
+- **Type:** `feat`, `fix`, `docs`, `chore`, `ci`, `build`, `refactor`, `test`, `perf`, `revert`, or
+  `style`, in lower case.
+- **Scope:** optional. Lower-case letters, digits, `.`, `_`, `/` and `-`, starting with a letter or a
+  digit.
+- **`!`:** optional, after the scope, for a breaking change.
+- **Description:** one space after the colon, then anything that does not start with a space.
+
+So `fix(parser): keep the escape sequence in OBX-5` passes, and `Version Packages`,
+`Revert "feat: x"` and `Feat: x` do not. [`test/pr-title.test.mjs`](test/pr-title.test.mjs) runs the
+workflow's own step against those titles and more.
+
+**The rule lives in the workflow, not in the caller.** The em-dash and public-surface gates run a
+command the caller names, because what they scan is the caller's own tree. A title rule is the same
+in every repository, so it is one bash step here, with no input, no checkout and no action.
+
+**The titles our own automation writes pass it.** `release.yml` titles the "Version Packages" pull
+request and its commit `chore(release): version packages`, since the changesets default,
+`Version Packages`, would fail. This repository's Dependabot config sets the `chore` prefix with
+`include: scope`, so its titles read `chore(deps): bump ...`. A caller whose Dependabot config sets
+no prefix gets whatever Dependabot infers from the repository's history, which is a guess and not a
+rule, so it sets the same two lines before it requires the check.
+
+**It fails on an event with no pull request, rather than passing.** A job skipped by a condition
+satisfies a required context
+([What a skipped required context does to a merge](#what-a-skipped-required-context-does-to-a-merge)),
+so the job carries none, and a `push` or `merge_group` run reds with a message saying to call it
+from `pull_request`.
+
 ## The em-dash gate
 
 Founder directive 2026-07-24: Cosyte never uses the em dash. Not in a file, not in a commit message,
@@ -2752,4 +2814,6 @@ review. That is the stopping point, and the reason not to add a fourth rung chas
 - This repository has no `documentation/agent-notes.md`, so the agent-instruction contract gate some
   siblings run has nothing to check here. That is a stated absence, not a missing file to create.
 
-See the meta-repo `documentation/conventions.md` for the engineering standard these enforce.
+The standard these enforce is ST8 in the umbrella's `plans/standards.md`, which replaced the deleted
+`documentation/conventions.md`: no em dash and no en dash anywhere, and a sentence that seems to need
+one is rewritten.

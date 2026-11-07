@@ -1,0 +1,23 @@
+name: Self PR title
+
+# Runs `pr-title.yml` on this repository's own pull requests. The check every caller is offered is
+# then one this repository's own titles pass, and a change to it runs on the pull request that makes
+# the change, before any caller can adopt it.
+on:
+  pull_request:
+    branches: [main]
+    # `edited`: a title changed after the last push is the title that lands, so it is checked again.
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pr-title.yml
