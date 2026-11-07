@@ -155,7 +155,7 @@ this guide nor any file in `cosyte/.github` supplies them for it. Say so on an
 issue if you find one; it is a defect in that repo.
 
 For `cosyte/.github` itself, the terms are the MIT License at
-[LICENSE](https://github.com/cosyte/.github/blob/main/LICENSE), copyright Cosyte.
+[LICENSE](https://github.com/cosyte/.github/blob/main/LICENSE), copyright Cosyte LLC.
 
 ---
 
