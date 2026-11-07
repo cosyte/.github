@@ -6,10 +6,10 @@
 # workflow calling them, and the two can never drift. `workflow-sha-probe.yml` measures it on a real
 # runner and fails if it is not a 40 character SHA, so the property is proved rather than assumed.
 #
-# actionlint 1.7.12, which is what `reviewdog/action-actionlint` runs in `self-check.yml`, does not
-# carry `workflow_sha` in its `job` context property list, so it reports a false positive on every
-# one of those reads. Each ignore below is scoped to one message under one workflow file, so every
-# other expression error in those files still fails the build.
+# actionlint 1.7.12, the release binary `self-check.yml` and `ci.yml` pin by version and SHA-256,
+# does not carry `workflow_sha` in its `job` context property list, so it reports a false positive
+# on every one of those reads. Each ignore below is scoped to one message under one workflow file,
+# so every other expression error in those files still fails the build.
 #
 # THE OBJECT TYPE IS PART OF THE PATTERN ON PURPOSE. actionlint prints the type it looked the
 # property up in, and `property "workflow_sha" is not defined` is also what it emits for something
