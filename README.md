@@ -2660,6 +2660,11 @@ enforces it, [`.github/workflows/no-emdash.yml`](.github/workflows/no-emdash.yml
 locally with `node scripts/check-no-emdash.mjs`; there is no `pnpm` script because this repository
 has no `package.json`, which is also why the gate is Node builtins only.
 
+**It refuses the en dash too** (owner decision, 2026-11-07), in the same seven spellings as the em
+dash. Write a range with "to". One en dash is exempt, by its exact place: the frozen hl7 v0.0.2
+changeset fixture quotes a spec section range, and the gate refuses a run that does not find it
+there, so the exemption cannot outlive its subject.
+
 **It landed with its sweep, in one commit.** 98 literal occurrences across 19 of the 45 tracked
 files, plus 5 JavaScript escapes, rewritten in the same change. A gate landing before its sweep reds
 `main` on arrival; a sweep landing before its gate grows the character back on the next session.

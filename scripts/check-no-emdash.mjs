@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * scripts/check-no-emdash.mjs: the em-dash gate, over every tracked file.
+ * scripts/check-no-emdash.mjs: the em-dash gate, over every tracked file. It refuses the en dash
+ * as well, under the same name.
  *
  * Run: `node scripts/check-no-emdash.mjs`, or `node scripts/check-no-emdash.mjs --stdin <label>`
  * to hold a piece of text that is not a file (a PR title, a PR body, a commit message) to the
@@ -8,10 +9,11 @@
  * package and installs nothing, which is also why the gate is Node builtins only.
  *
  * THE RULE. Founder directive 2026-07-24, stated canonically in the knowledgebase brand voice
- * document: Cosyte never uses the em dash. Not in a file, not in a commit message, not in a PR
- * title or body. Rewrite the sentence with a period, a colon, a comma, or parentheses. NEVER
- * re-encode the character: the HTML entities, the percent-encoding and the JavaScript escapes are
- * banned on the same footing as the literal, and each has its own arm below.
+ * document: we never use the em dash. Not in a file, not in a commit message, not in a PR title or
+ * body. The en dash (U+2013) is banned with it (owner decision, 2026-11-07), and every arm below
+ * exists once for each dash. Write a range with "to"; rewrite a pause with a period, a colon, a
+ * comma, or parentheses. NEVER re-encode the character: the HTML entities, the percent-encoding and
+ * the JavaScript escapes are banned on the same footing as the literal, and each has its own arm.
  *
  * THIS GATE DID NOT ARRIVE ON A CLEAN TREE, AND THAT ORDERING IS THE POINT. The same change swept
  * 98 literal occurrences out of 19 of the 45 tracked files, plus 5 JavaScript escapes. A gate
@@ -48,7 +50,7 @@
  * assumed. There is no pipeline here whose status can be lost.
  *
  * ---------------------------------------------------------------------------
- * NOTHING IS EXCLUDED FROM THE SCAN. THERE IS NO EXEMPTION AND NO SKIP PATH.
+ * NOTHING IS EXCLUDED FROM THE SCAN. THERE IS NO SKIP PATH, AND EXACTLY ONE EXEMPT OCCURRENCE.
  * ---------------------------------------------------------------------------
  *
  * A sibling gate partitions the tree into "scanned" and "declared binary in `.gitattributes`",
@@ -56,6 +58,15 @@
  * coincidence with no edit able to remove them. THIS REPOSITORY TRACKS NO BINARY AT ALL, and it has
  * no `CHANGELOG.md` and so no frozen archive either. So there is no partition here: every tracked
  * path is read, in full, and `scanned.length` always equals `files.length`.
+ *
+ * THE ONE EXEMPTION IS AN OCCURRENCE, NOT A PATH. `test/fixtures/hl7-v0.0.2/changeset/` holds the
+ * real changesets a release-notes test derives a live release body from, byte for byte, and one of
+ * them quotes a spec section range with an en dash. It is frozen input, so it keeps the character.
+ * `EXEMPT` below names that occurrence by path, line, column and arm. The file is still read in
+ * full and scanned like every other: any other occurrence in it reds. And the exemption is REQUIRED
+ * to match: if the scan does not find exactly that occurrence, the run refuses, because an exemption
+ * that has outlived its subject is a hole and a scan that cannot see a known en dash is blind. That
+ * makes the fixture this gate's on-disk canary for the en dash arms.
  *
  * THAT IS A DELIBERATE STRENGTHENING, NOT A SIMPLIFICATION. A refuter defeated the sibling's
  * partition twice with a one-line path exclusion: first by accounting the skipped paths into the
@@ -68,10 +79,10 @@
  * A scanner that spells the forms it bans would also have to exclude itself, and a self-exclusion is
  * a demonstrated false green elsewhere in this org: an em dash appended to the gate script scanned
  * OK, because the gate was the one file nobody checked. There is no hole here, because there is
- * nothing to exclude. EVERY spelling below is ASSEMBLED at runtime from the codepoint `0x2014`, and
- * the prose names the forms rather than writing them out, so this file contains none of them as
- * text. It is scanned exactly like every other tracked file. If you add an arm, assemble it; do not
- * paste a literal in, and do not answer a red here by adding an exclusion.
+ * nothing to exclude. EVERY spelling below is ASSEMBLED at runtime from the codepoints `0x2014` and
+ * `0x2013`, and the prose names the forms rather than writing them out, so this file contains none
+ * of them as text. It is scanned exactly like every other tracked file. If you add an arm, assemble
+ * it; do not paste a literal in, and do not answer a red here by adding an exclusion.
  *
  * The same discipline is why `scripts/release-notes.mjs` and `scripts/release-diff.mjs` build their
  * dash constants with `String.fromCodePoint` rather than a JavaScript escape. Those constants are
@@ -83,12 +94,12 @@
  * KNOWN LIMITS, named rather than discovered later
  * ---------------------------------------------------------------------------
  *
- *  (i)   It matches U+2014 as UTF-8 and as the textual encodings listed below. It does NOT match an
- *        em dash in some other charset (a CP1252 `0x97` fixture, a UTF-16 document). Such a file
- *        scans clean and this gate stays green. There is none today; every tracked file decodes as
- *        UTF-8.
- *  (ii)  The PCRE source spelling of the codepoint (a backslash, an `x`, and the hex in braces) is
- *        NOT banned as literal ASCII text. It is how a PCRE-based scanner names this codepoint, and
+ *  (i)   It matches U+2014 and U+2013 as UTF-8 and as the textual encodings listed below. It does
+ *        NOT match either dash in some other charset (a CP1252 `0x97` or `0x96` fixture, a UTF-16
+ *        document). Such a file scans clean and this gate stays green. There is none today; every
+ *        tracked file decodes as UTF-8.
+ *  (ii)  The PCRE source spelling of either codepoint (a backslash, an `x`, and the hex in braces)
+ *        is NOT banned as literal ASCII text. It is how a PCRE-based scanner names a codepoint, and
  *        `test/fixtures/hl7-v0.0.2/changeset/emdash-ci-gate.md` legitimately carries one: that
  *        fixture is a real captured changeset describing an earlier shell port of this gate, and its
  *        bytes are the input a release-notes test asserts on. It renders as nothing; banning it
@@ -124,24 +135,38 @@ import process from "node:process";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-/** U+2014, built from the codepoint so this file never spells the character. */
-const EM = String.fromCodePoint(0x2014);
-const EM_BYTES = Buffer.from(EM, "utf8");
-
-const HEX = (0x2014).toString(16); // the four hex digits
-const DEC = String(0x2014); // the four decimal digits
-
-// The remaining spellings, assembled rather than written out, so that this file contains none of
-// them as text and needs no exclusion from its own scan.
-const PCT = [...EM_BYTES].map((b) => `%${b.toString(16).toUpperCase()}`).join("");
 const AMP = "&";
-const NAMED = `${AMP}mdash`;
 const NUM = `${AMP}#`;
 const BS = "\\";
 
 /**
+ * The two banned codepoints. Each character is built from its number so this file never spells it,
+ * and `utf8` is the ground truth the probe checks the built bytes against: E2 80 94 and E2 80 93 are
+ * not facts this repository gets to define. The named HTML entity is written without its leading
+ * ampersand, so it is a plain word here.
+ */
+const DASHES = [
+  { name: "em dash", codepoint: 0x2014, entity: "mdash", utf8: [0xe2, 0x80, 0x94] },
+  { name: "en dash", codepoint: 0x2013, entity: "ndash", utf8: [0xe2, 0x80, 0x93] },
+].map((d) => {
+  const char = String.fromCodePoint(d.codepoint);
+  const bytes = Buffer.from(char, "utf8");
+  return {
+    ...d,
+    char,
+    bytes,
+    hex: d.codepoint.toString(16), // the four hex digits
+    dec: String(d.codepoint), // the four decimal digits
+    // The remaining spellings, assembled rather than written out, so that this file contains none
+    // of them as text and needs no exclusion from its own scan.
+    pct: [...bytes].map((b) => `%${b.toString(16).toUpperCase()}`).join(""),
+    named: `${AMP}${d.entity}`,
+  };
+});
+
+/**
  * Every banned spelling, as [label, RegExp], each paired index-for-index with a specimen built to
- * contain exactly that spelling.
+ * contain exactly that spelling. Seven arms per dash, labelled with the dash they belong to.
  *
  * THE ENCODED ARMS ARE NOT DECORATION. A sibling sweep found its gate caught what the hand sweep
  * missed, precisely because a manifest held the named HTML entity rather than the literal character.
@@ -160,24 +185,46 @@ const BS = "\\";
  * ordinary Windows path that happens to contain a user directory of that name. Measured as a live
  * false positive in a sibling before it was split out.
  */
-const PATTERNS = [
-  ["the literal character", new RegExp(EM, "g")],
-  ["the percent-encoding", new RegExp(PCT, "gi")],
-  ["the named HTML entity", new RegExp(`${NAMED}(?:;|(?![A-Za-z0-9]))`, "gi")],
-  ["the decimal character reference", new RegExp(`${NUM}0*${DEC}(?:;|(?![0-9]))`, "gi")],
-  ["the hex character reference", new RegExp(`${NUM}[xX]0*${HEX}(?:;|(?![0-9A-Fa-f]))`, "g")],
-  ["the JavaScript escape", new RegExp(`${BS}${BS}u${HEX}`, "g")],
-  ["the braced JavaScript escape", new RegExp(`${BS}${BS}u${BS}{0*${HEX}${BS}}`, "g")],
-];
+const PATTERNS = DASHES.flatMap(({ name, char, pct, named, dec, hex }) => [
+  [`${name}, the literal character`, new RegExp(char, "g")],
+  [`${name}, the percent-encoding`, new RegExp(pct, "gi")],
+  [`${name}, the named HTML entity`, new RegExp(`${named}(?:;|(?![A-Za-z0-9]))`, "gi")],
+  [`${name}, the decimal character reference`, new RegExp(`${NUM}0*${dec}(?:;|(?![0-9]))`, "gi")],
+  [`${name}, the hex character reference`, new RegExp(`${NUM}[xX]0*${hex}(?:;|(?![0-9A-Fa-f]))`, "g")],
+  [`${name}, the JavaScript escape`, new RegExp(`${BS}${BS}u${hex}`, "g")],
+  [`${name}, the braced JavaScript escape`, new RegExp(`${BS}${BS}u${BS}{0*${hex}${BS}}`, "g")],
+]);
 
-const SPECIMENS = [
-  `a${EM}b`,
-  `a${PCT}b`,
-  `a${NAMED};b`,
-  `a${NUM}${DEC};b`,
-  `a${NUM}x${HEX};b`,
-  `a${BS}u${HEX}b`,
-  `a${BS}u{${HEX}}b`,
+const SPECIMENS = DASHES.flatMap(({ char, pct, named, dec, hex }) => [
+  `a${char}b`,
+  `a${pct}b`,
+  `a${named};b`,
+  `a${NUM}${dec};b`,
+  `a${NUM}x${hex};b`,
+  `a${BS}u${hex}b`,
+  `a${BS}u{${hex}}b`,
+]);
+
+/**
+ * What the rule allows, and what no arm may match: hyphens, a range written with "to", and the
+ * minus sign (U+2212, built from its number). An arm that matched it would red every tree, so its
+ * findings could not be told from noise.
+ */
+const CLEAN_SPECIMEN = `a-b, pages 2 to 3, ${String.fromCodePoint(0x2212)}1`;
+
+/**
+ * THE ONE EXEMPT OCCURRENCE, named by its exact place. See "NOTHING IS EXCLUDED" in the header: the
+ * file is read and scanned in full, only this one hit is set aside, and the run refuses unless the
+ * scan finds it. `test/release-notes.test.mjs` derives the live hl7 v0.0.2 release body from this
+ * frozen changeset byte for byte, so the fixture keeps the spec's section range as written.
+ */
+const EXEMPT = [
+  {
+    path: "test/fixtures/hl7-v0.0.2/changeset/philips-vue-pacs-profile.md",
+    line: 14,
+    column: 90,
+    label: "en dash, the literal character",
+  },
 ];
 
 /**
@@ -281,10 +328,13 @@ function fail(what, hits) {
     `\n[no-emdash] ${hits.length} occurrence(s) in ${what}, across ` +
       `${new Set(hits.map((h) => h.where)).size} location(s).`,
   );
-  console.error("[no-emdash] Cosyte never uses em dashes (founder directive, 2026-07-24).");
   console.error(
-    "[no-emdash] Rewrite with a period, a colon, a comma, or parentheses. " +
-      "Never re-encode the character.",
+    "[no-emdash] We never use em or en dashes (founder directive, 2026-07-24; the en dash since " +
+      "2026-11-07).",
+  );
+  console.error(
+    '[no-emdash] Write a range with "to"; rewrite a pause with a period, a colon, a comma, or ' +
+      "parentheses. Never re-encode the character.",
   );
   console.error(
     "[no-emdash] In a workflow, rewrite the COMMENT or the human-readable string. Never a key, a " +
@@ -299,15 +349,18 @@ function fail(what, hits) {
  * Each assertion closes a way this gate could return "no findings" having examined nothing. A probe
  * that only proved the patterns compile would miss every one of them after the second.
  */
-function probe({ files, scanned, declared, bytesRead, sizeTotal }) {
-  // 1. GROUND TRUTH. Everything above is derived from one codepoint constant, so the patterns and
-  //    the specimens would agree with each other even if that constant were wrong. Anchor it on the
-  //    bytes: U+2014 is E2 80 94 in UTF-8, and that is not a fact this repository gets to define.
-  if (!EM_BYTES.equals(Buffer.from([0xe2, 0x80, 0x94]))) {
-    refuse(
-      "the character being scanned for is not U+2014",
-      `built bytes ${[...EM_BYTES].map((b) => b.toString(16)).join(" ")}, expected e2 80 94.`,
-    );
+function probe({ files, scanned, declared, bytesRead, sizeTotal, exemptFound }) {
+  // 1. GROUND TRUTH. Everything above is derived from two codepoint constants, so the patterns and
+  //    the specimens would agree with each other even if a constant were wrong. Anchor each on the
+  //    bytes: U+2014 is E2 80 94 and U+2013 is E2 80 93 in UTF-8.
+  for (const { name, codepoint, bytes, utf8 } of DASHES) {
+    if (!bytes.equals(Buffer.from(utf8))) {
+      refuse(
+        `the ${name} being scanned for is not U+${codepoint.toString(16).toUpperCase()}`,
+        `built bytes ${[...bytes].map((b) => b.toString(16)).join(" ")}, expected ` +
+          `${utf8.map((b) => b.toString(16)).join(" ")}.`,
+      );
+    }
   }
 
   // 2. Every pattern matches a specimen built to contain exactly its spelling, and the two lists are
@@ -333,8 +386,10 @@ function probe({ files, scanned, declared, bytesRead, sizeTotal }) {
   //    THIS IS THE ONLY CANARY THIS REPOSITORY CAN HAVE, AND THAT IS A CONSEQUENCE OF THE SWEEP
   //    BEING TOTAL. A sibling's stronger canary is an on-disk one: a frozen CHANGELOG archive KNOWN
   //    to hold occurrences, so a scan reporting it clean has gone blind rather than found good news.
-  //    There is no such file here, because there is no exemption here. The read path is instead
-  //    pinned by the byte total below and by the suite's independent recomputation of it.
+  //    The one exempt occurrence (check 8) is that kind of canary for the literal en dash; for every
+  //    other arm the read path is pinned by the byte total below and by the suite's independent
+  //    recomputation of it. The clean specimen is the other direction: a scanner that matched what
+  //    the rule allows would red every tree.
   for (const specimen of SPECIMENS) {
     if (findEmDashes(specimen).length === 0) {
       refuse(
@@ -342,6 +397,12 @@ function probe({ files, scanned, declared, bytesRead, sizeTotal }) {
         "findEmDashes is blind; every clean result in this run would be worthless.",
       );
     }
+  }
+  if (findEmDashes(CLEAN_SPECIMEN).length !== 0) {
+    refuse(
+      "the scanner matched clean text (hyphens, a range written with to, a minus sign)",
+      "an arm is matching what the rule allows, so its findings cannot be told from noise.",
+    );
   }
 
   // 4. Enumeration returned a tree. An empty or tiny `git ls-files` (wrong cwd, a filtered tool)
@@ -392,6 +453,19 @@ function probe({ files, scanned, declared, bytesRead, sizeTotal }) {
       );
     }
   }
+
+  // 8. EVERY EXEMPT OCCURRENCE WAS FOUND, AT ITS EXACT PLACE. An exemption the scan did not use is
+  //    either stale (the fixture changed, and the entry now covers nothing anyone looked at) or a
+  //    sign the scan cannot see a dash it is known to hold. Both refuse.
+  EXEMPT.forEach((e, i) => {
+    if (exemptFound[i] !== 1) {
+      refuse(
+        `the exempt occurrence ${e.path}:${e.line}:${e.column} (${e.label}) was not found`,
+        "the fixture changed, or the scan cannot see it. Restore the fixture, or delete the entry " +
+          "from EXEMPT if the occurrence is gone for good.",
+      );
+    }
+  });
 }
 
 function scanStdin(label) {
@@ -404,8 +478,11 @@ function scanStdin(label) {
       refuse("the scanner found nothing in a buffer built to be dirty", "findEmDashes is blind.");
     }
   }
+  if (findEmDashes(CLEAN_SPECIMEN).length !== 0) {
+    refuse("the scanner matched clean text", "an arm is matching what the rule allows.");
+  }
   if (hits.length) fail(label, hits);
-  console.log(`[no-emdash] OK: no em dashes in ${label} (${text.length} bytes read).`);
+  console.log(`[no-emdash] OK: no em or en dashes in ${label} (${text.length} bytes read).`);
 }
 
 function scanTree() {
@@ -421,6 +498,7 @@ function scanTree() {
 
   const scanned = [];
   const hits = [];
+  const exemptFound = EXEMPT.map(() => 0);
   let bytesRead = 0;
   let sizeTotal = 0;
 
@@ -438,20 +516,28 @@ function scanTree() {
     }
     scanned.push(rel);
     bytesRead += buf.length;
-    for (const h of findEmDashes(buf.toString("utf8"))) hits.push({ ...h, where: rel });
+    for (const h of findEmDashes(buf.toString("utf8"))) {
+      // Only an exact match on path, line, column and arm is set aside; anything else is a hit.
+      const e = EXEMPT.findIndex(
+        (x) => x.path === rel && x.line === h.line && x.column === h.column && x.label === h.label,
+      );
+      if (e === -1) hits.push({ ...h, where: rel });
+      else exemptFound[e] += 1;
+    }
   }
 
-  probe({ files, scanned, declared, bytesRead, sizeTotal });
+  probe({ files, scanned, declared, bytesRead, sizeTotal, exemptFound });
 
   if (hits.length) fail("the tracked files listed above", hits);
 
   console.log(
     `[no-emdash] OK: ${scanned.length} tracked file(s) scanned (${bytesRead} bytes), ` +
-      `${files.length} filename(s) checked, 0 exempt.`,
+      `${files.length} filename(s) checked, ${EXEMPT.length} exempt occurrence(s).`,
   );
   console.log(
-    "[no-emdash]     Nothing in this repository is exempt from the content scan: it tracks no " +
-      "binary, keeps no changelog archive, and honours no 'binary' attribute.",
+    "[no-emdash]     Every tracked file is read in full: this repository tracks no binary, keeps " +
+      "no changelog archive, and honours no 'binary' attribute. The exempt occurrence is the en " +
+      "dash in the frozen hl7 v0.0.2 changeset fixture, found where it is declared.",
   );
 }
 

@@ -886,9 +886,9 @@ test('AC8: the README states the limit beside the finding', () => {
 // ---------------------------------------------------------------------------
 
 test('neither dash appears in the documents this work added or edited', () => {
-  // `scripts/check-no-emdash.mjs` is the gate for U+2014 across the whole tree and it is the one that
-  // reds a run. U+2013 is banned by the same directive and is not in that gate's patterns, so it is
-  // asserted here, over the files this work owns. Both codepoints are ASSEMBLED rather than escaped:
+  // `scripts/check-no-emdash.mjs` is the gate for U+2014 and U+2013 across the whole tree and it is
+  // the one that reds a run. U+2013 was asserted here first, over the files this work owns, before
+  // that gate refused it too. Both codepoints are ASSEMBLED rather than escaped:
   // the gate bans the JavaScript escape spelling of U+2014 as a literal, including in this file.
   const dashes = [String.fromCodePoint(0x2014), String.fromCodePoint(0x2013)];
   const owned = [GOVERNANCE_PATH, LICENSE_PATH, CONTRIBUTING_PATH, README_PATH, 'test/governance-surface.test.mjs'];

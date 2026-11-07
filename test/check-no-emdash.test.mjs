@@ -41,25 +41,40 @@ const SCRIPT = resolve(REPO, 'scripts/check-no-emdash.mjs');
 
 // The spellings under test, built rather than written. `BS` is one backslash.
 const EM = String.fromCodePoint(0x2014);
-const HEX = (0x2014).toString(16);
-const DEC = String(0x2014);
+const EN = String.fromCodePoint(0x2013);
+const MINUS = String.fromCodePoint(0x2212);
 const BS = '\\';
 const AMP = '&';
-const PCT = [...Buffer.from(EM, 'utf8')].map((b) => `%${b.toString(16).toUpperCase()}`).join('');
+
+/** The seven spellings of one dash, each paired with the label the gate reports for it. */
+function spellings(name, codepoint, entity) {
+  const char = String.fromCodePoint(codepoint);
+  const hex = codepoint.toString(16);
+  const dec = String(codepoint);
+  const pct = [...Buffer.from(char, 'utf8')].map((b) => `%${b.toString(16).toUpperCase()}`).join('');
+  return [
+    [char, `${name}, the literal character`],
+    [pct, `${name}, the percent-encoding`],
+    [`${AMP}${entity};`, `${name}, the named HTML entity`],
+    [`${AMP}#${dec};`, `${name}, the decimal character reference`],
+    [`${AMP}#x${hex};`, `${name}, the hex character reference`],
+    [`${BS}u${hex}`, `${name}, the JavaScript escape`],
+    [`${BS}u{${hex}}`, `${name}, the braced JavaScript escape`],
+  ];
+}
 
 /** Every spelling the gate bans, paired with the label it reports. Index aligned with the script. */
-const BANNED = [
-  [EM, 'the literal character'],
-  [PCT, 'the percent-encoding'],
-  [`${AMP}mdash;`, 'the named HTML entity'],
-  [`${AMP}#${DEC};`, 'the decimal character reference'],
-  [`${AMP}#x${HEX};`, 'the hex character reference'],
-  [`${BS}u${HEX}`, 'the JavaScript escape'],
-  [`${BS}u{${HEX}}`, 'the braced JavaScript escape'],
-];
+const BANNED = [...spellings('em dash', 0x2014, 'mdash'), ...spellings('en dash', 0x2013, 'ndash')];
 
-/** The one spelling the gate deliberately does NOT ban: the PCRE source form. Known limit (ii). */
-const PCRE = `${BS}x{${HEX}}`;
+/** The spellings the gate deliberately does NOT ban: the PCRE source forms. Known limit (ii). */
+const PCRE = [`${BS}x{${(0x2014).toString(16)}}`, `${BS}x{${(0x2013).toString(16)}}`];
+
+/**
+ * The gate's one exempt occurrence: the en dash in this frozen fixture, at line 14, column 90. The
+ * gate refuses a tree in which it does not find it, so every synthetic tree carries a copy.
+ */
+const FIXTURE = 'test/fixtures/hl7-v0.0.2/changeset/philips-vue-pacs-profile.md';
+const FIXTURE_BODY = execFileSync('cat', [join(REPO, FIXTURE)], { encoding: 'utf8' });
 
 /** Run a command and return `{ code, output }` rather than throwing, so a failure is assertable. */
 function run(cmd, args, opts = {}) {
@@ -75,12 +90,13 @@ const gate = (cwd, args = [], opts = {}) => run(process.execPath, [join(cwd, 'sc
  * `import.meta.dirname/..`, so copying the script into `<dir>/scripts/` is what makes `<dir>` the
  * tree under test.
  *
- * The four files named in the gate's `KNOWN_TEXT` list are created by default, and the filler
- * clears its `MIN_TRACKED` floor: both are claims about the real repository, so a synthetic tree has
- * to satisfy them to exercise anything past them. `skipKnown` and `fillers` exist so the two cases
- * that drive those refusals can withhold exactly one thing.
+ * The four files named in the gate's `KNOWN_TEXT` list are created by default, the filler clears
+ * its `MIN_TRACKED` floor, and the exempt fixture is copied in at its real path: all three are
+ * claims about the real repository, so a synthetic tree has to satisfy them to exercise anything
+ * past them. `skipKnown`, `fillers` and `skipFixture` exist so the cases that drive those refusals
+ * can withhold exactly one thing; `files` can also overwrite the fixture.
  */
-function makeRepo({ files = {}, fillers = 32, skipKnown = [], script = null } = {}) {
+function makeRepo({ files = {}, fillers = 32, skipKnown = [], skipFixture = false, script = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'no-emdash-'));
   const write = (rel, body) => {
     mkdirSync(join(dir, dirname(rel)), { recursive: true });
@@ -93,6 +109,7 @@ function makeRepo({ files = {}, fillers = 32, skipKnown = [], script = null } = 
     if (!skipKnown.includes(rel)) write(rel, `# ${rel}\n\nclean prose, no banned punctuation.\n`);
   }
   for (let i = 0; i < fillers; i++) write(`filler/f${i}.md`, `filler ${i}\n`);
+  if (!skipFixture) write(FIXTURE, FIXTURE_BODY);
   for (const [rel, body] of Object.entries(files)) write(rel, body);
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['add', '-A'], { cwd: dir });
@@ -114,7 +131,7 @@ test('the gate passes on this repository, and says what it scanned', () => {
   const r = gate(REPO);
   assert.equal(r.code, 0, r.output);
   assert.match(r.output, /\[no-emdash\] OK: \d+ tracked file\(s\) scanned/);
-  assert.match(r.output, /0 exempt/);
+  assert.match(r.output, /, 1 exempt occurrence\(s\)\./);
 });
 
 // ▶ THE LOAD-BEARING ASSERTION. See the banner at the top of this file. The total is recomputed
@@ -173,8 +190,8 @@ for (const [spelling, label] of BANNED) {
   });
 }
 
-test('the PCRE source spelling is deliberately NOT banned, which is known limit (ii)', () => {
-  withRepo({ files: { 'docs/scanner.md': `it matches ${PCRE} in the fixture\n` } }, (dir) => {
+test('the PCRE source spellings are deliberately NOT banned, which is known limit (ii)', () => {
+  withRepo({ files: { 'docs/scanner.md': `it matches ${PCRE.join(' and ')} in the fixture\n` } }, (dir) => {
     const r = gate(dir);
     assert.equal(r.code, 0, r.output);
   });
@@ -184,6 +201,57 @@ test('a clean tree passes', () => {
   withRepo({ files: { 'docs/note.md': 'clean prose, rewritten with a colon: like this.\n' } }, (dir) => {
     assert.equal(gate(dir).code, 0);
   });
+});
+
+test('what the rule allows passes: hyphens, a range written with to, the minus sign', () => {
+  const clean = `a-b, pages 2 to 3, ${MINUS}1\n`;
+  withRepo({ files: { 'docs/note.md': clean } }, (dir) => {
+    const r = gate(dir);
+    assert.equal(r.code, 0, r.output);
+  });
+  const r = run(process.execPath, [SCRIPT, '--stdin', 'clean text'], { input: clean });
+  assert.equal(r.code, 0, r.output);
+});
+
+// ── The one exempt occurrence: exact, and required ──────────────────────────────────────────────
+
+test('the exemption covers one occurrence, not its file: a second en dash in the fixture reds', () => {
+  withRepo({ files: { [FIXTURE]: `${FIXTURE_BODY}A later line, pages 1${EN}2.\n` } }, (dir) => {
+    const r = gate(dir);
+    assert.equal(r.code, 1, r.output);
+    assert.ok(r.output.includes(`FAIL  ${FIXTURE}:${FIXTURE_BODY.split('\n').length}:`), r.output);
+    assert.match(r.output, /1 occurrence\(s\)/);
+  });
+});
+
+test('the exemption covers one path: the same fixture text anywhere else reds', () => {
+  withRepo({ files: { 'docs/copy.md': FIXTURE_BODY } }, (dir) => {
+    const r = gate(dir);
+    assert.equal(r.code, 1, r.output);
+    assert.ok(r.output.includes('FAIL  docs/copy.md:14:90  (en dash, the literal character)'), r.output);
+  });
+});
+
+test('the exemption covers one spelling: another form at the exempt place reds', () => {
+  const swapped = FIXTURE_BODY.replace(EN, `${AMP}ndash;`);
+  assert.notEqual(swapped, FIXTURE_BODY, 'the fixture no longer holds its en dash');
+  withRepo({ files: { [FIXTURE]: swapped } }, (dir) => {
+    const r = gate(dir);
+    assert.equal(r.code, 1, r.output);
+    assert.match(r.output, /REFUSED: the exempt occurrence .* was not found/);
+  });
+});
+
+test('a stale exemption is REFUSED: the fixture rewritten, or gone, is not a clean tree', () => {
+  const rewritten = FIXTURE_BODY.replace(EN, ' to ');
+  assert.notEqual(rewritten, FIXTURE_BODY, 'the fixture no longer holds its en dash');
+  for (const opts of [{ files: { [FIXTURE]: rewritten } }, { skipFixture: true }]) {
+    withRepo(opts, (dir) => {
+      const r = gate(dir);
+      assert.equal(r.code, 1, r.output);
+      assert.match(r.output, /REFUSED: the exempt occurrence test\/fixtures\/.*:14:90 \(en dash, the literal character\) was not found/);
+    });
+  }
 });
 
 test('a tracked FILENAME carrying the character reds, which scanning contents never sees', () => {
@@ -267,7 +335,7 @@ test('a mutant that reads a file short is caught by the byte total', () => {
 test('--stdin passes clean text and names what it read', () => {
   const r = run(process.execPath, [SCRIPT, '--stdin', 'the PR title'], { input: 'a clean title\n' });
   assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /no em dashes in the PR title/);
+  assert.match(r.output, /no em or en dashes in the PR title/);
 });
 
 for (const [spelling, label] of BANNED) {
