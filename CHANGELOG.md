@@ -19,13 +19,26 @@ so the next change to this file moves those lines under a heading with that name
 
 Nothing yet.
 
+## workflows-2026-11-07-5c8c01fe48d2
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-6c358640421d`.
+
+**This is the reference every caller moves to**, all at once. It carries everything in the two
+references below it as well, so a caller moving here from an earlier reference, or from `@main`,
+takes in `workflows-2026-11-07-32f9f01541de`'s change to act on too.
+
+- `ci.yml`'s `actionlint` job runs rhysd/actionlint's own release binary, version 1.7.12, checked
+  against a pinned SHA-256 before it is unpacked, in place of reviewdog/action-actionlint. From
+  v1.75.0 that action installs actionlint by piping a download script from a fork into bash. The
+  job id and the `run-actionlint` input are unchanged. The job now fails on actionlint's own exit
+  status over every tracked workflow file, where the action reported only findings on lines a pull
+  request changed, and it needs shellcheck on the runner, which the hosted runner has (#93).
+
 ## workflows-2026-11-07-6c358640421d
 
 2026-11-07. Act on: nothing, against `workflows-2026-11-07-32f9f01541de`.
 
-**This is the reference every caller moves to**, all at once. It carries everything in
-`workflows-2026-11-07-32f9f01541de` below as well, so a caller moving here from an earlier reference,
-or from `@main`, takes in that reference's change to act on too.
+It carries everything in `workflows-2026-11-07-32f9f01541de` below as well.
 
 - A re-run of a release job is safe against an immutable release. `scripts/github-release.mjs` no
   longer replaces an asset with `--clobber`, which GitHub refuses for a published immutable release.
