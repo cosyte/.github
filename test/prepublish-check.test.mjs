@@ -841,6 +841,15 @@ test("ci.yml wires both layers the way the script expects", async () => {
   // that whole story and asserts both call sites resolve the same way.
   assert.match(yml, /ref: \$\{\{ job\.workflow_sha \}\}/);
 
+  // The prepublish job installs on the caller's lowest tested Node line, never a fixed one: a fixed
+  // "22" failed the install for a caller whose engines.node starts at 24. Read from the `prepublish:`
+  // job's own block, and exactly one setup-node there, so a second or a missing one is a red.
+  const prepublishJob = yml.slice(yml.search(/^  prepublish:$/m), yml.search(/^  actionlint:$/m));
+  assert.ok(prepublishJob.startsWith("  prepublish:"), "ci.yml has a prepublish job before actionlint");
+  assert.deepEqual(prepublishJob.match(/^\s+node-version:.*$/gm)?.map((line) => line.trim()), [
+    "node-version: ${{ fromJSON(inputs.node-versions)[0] }}",
+  ]);
+
   // The allowance must actually REACH both invocations.
   assert.equal(yml.match(/--expect-unpublished-deps "\$EXPECT_UNPUBLISHED_DEPS"/g)?.length, 2);
   assert.equal(
