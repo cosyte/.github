@@ -772,7 +772,8 @@ test('AC5: the tree scan is reaching units rather than skipping them, and this p
 test('AC6: the licence is in the file GitHub reads a repository licence from', () => {
   assert.ok(TRACKED.includes(LICENSE_PATH), 'LICENSE is not tracked, so GitHub reads no licence here');
   assert.match(LICENSE, /^MIT License$/m);
-  assert.match(LICENSE, /^Copyright \(c\) 2026 Cosyte$/m);
+  // The legal name, as every copyright line carries it.
+  assert.match(LICENSE, /^Copyright \(c\) 2026 Cosyte LLC$/m);
   assert.match(LICENSE, /Permission is hereby granted, free of charge/);
   assert.match(LICENSE, /THE SOFTWARE IS PROVIDED "AS IS"/);
 });
