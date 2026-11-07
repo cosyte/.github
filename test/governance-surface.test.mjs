@@ -472,9 +472,10 @@ test('AC9: the enumeration is held to a floor and to known members, so a filtere
 
 test('AC2: the governance document names who decides', () => {
   assert.match(GOVERNANCE, /^## Who decides$/m);
-  assert.match(GOVERNANCE, /One maintainer holds the final call: `noah`/);
-  assert.match(GOVERNANCE, /account owner of record/);
-  assert.match(GOVERNANCE, /no committee, no vote, and no tie to break/i, 'the absence of a committee is stated too');
+  // Named as the organization, in the first person and with no count of people: the decider is
+  // Cosyte, the owner of the `cosyte` organization, and the wording says nothing about team size.
+  assert.match(GOVERNANCE, /We hold the final call: Cosyte, which owns the `cosyte` organization/);
+  assert.match(GOVERNANCE, /no committee and no vote/i, 'the absence of a committee is stated too');
 });
 
 test('AC2: the governance document says how a decision is reached', () => {
@@ -517,8 +518,8 @@ const CONTRIBUTING_GOVERNANCE_WITHOUT_LINK = units(CONTRIBUTING_GOVERNANCE)
   .join(' ');
 
 test('AC1: the contributing guide answers who decides, inline', () => {
-  assert.match(CONTRIBUTING_GOVERNANCE_WITHOUT_LINK, /One maintainer holds the final call: `noah`/);
-  assert.match(CONTRIBUTING_GOVERNANCE_WITHOUT_LINK, /account owner\s+of record/);
+  assert.match(CONTRIBUTING_GOVERNANCE_WITHOUT_LINK, /We hold the final call: Cosyte, which owns the `cosyte`\s+organization/);
+  assert.match(CONTRIBUTING_GOVERNANCE_WITHOUT_LINK, /No committee, no vote/);
 });
 
 test('AC1: the contributing guide answers how a decision is reached, inline', () => {

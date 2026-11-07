@@ -1,11 +1,12 @@
 <!-- Keep it short. The "why" matters more than the "what". -->
 
-## What & why
+## What and why
 
 <!-- What does this change, and why? Link the issue if there is one. -->
 
 ## Checklist
 
+- [ ] The title follows Conventional Commits, such as `fix(parser): keep the escape sequence in OBX-5`.
 - [ ] The full pipeline passes locally (`pnpm typecheck && pnpm lint && pnpm test && pnpm build`).
 - [ ] Tests cover the change.
 - [ ] The change is recorded the way **this** repo records changes. Look for
