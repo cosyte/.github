@@ -18,3 +18,9 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    ignore:
+      # From v1.75.0 this action installs actionlint by piping a download script from a fork
+      # (kjanat/actionlint) into bash. No workflow here uses it any more: `ci.yml` and
+      # `self-check.yml` run rhysd/actionlint's release binary at a pinned SHA-256. This keeps an
+      # update from proposing it again.
+      - dependency-name: "reviewdog/action-actionlint"
