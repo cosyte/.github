@@ -1,7 +1,9 @@
 # Security policy
 
-This policy covers the open-source `@cosyte/*` packages: the HL7, MLLP, DICOM,
-X12, C-CDA, and NCPDP parsers and their shared build/lint/test tooling.
+This policy covers the fourteen open-source `@cosyte/*` libraries (`@cosyte/hl7`, `@cosyte/fhir`,
+`@cosyte/x12`, `@cosyte/dicom`, `@cosyte/mllp`, `@cosyte/ncpdp`, `@cosyte/astm`, `@cosyte/ccda`,
+`@cosyte/terminology`, `@cosyte/transform`, `@cosyte/cli`, `@cosyte/deid`, `@cosyte/synth` and
+`@cosyte/dates`) and their shared build, lint and test tooling.
 
 ## Reporting a vulnerability
 
@@ -10,15 +12,14 @@ not include real patient data in a report.
 
 - Preferred: open a private report through **GitHub Security Advisories** on the
   affected repository, under *Security → Report a vulnerability*.
-- Or email **security@cosyte.com** with `SECURITY` in the subject line.
+- Or email **hello@cosyte.com** with `SECURITY` in the subject line.
 
 Tell us the package and version, what you found, and the smallest input that
 reproduces it. Use **synthetic data only**, never real PHI (see below).
 
 We aim to acknowledge a report within **5 business days** and will keep you
-posted as we confirm, fix, and release. Cosyte is a small, solo-maintained
-project, so we appreciate your patience, and we'll credit you in the advisory
-unless you'd rather stay anonymous.
+posted as we confirm, fix, and release. We credit you in the advisory unless
+you would rather stay anonymous.
 
 ## What's in scope
 
@@ -27,15 +28,17 @@ healthcare-format input and return typed data. The risk surface we care about
 most:
 
 - Inputs that cause a crash, hang, unbounded memory use, or pathological
-  back-tracking. A malformed message should produce a typed error, never take
+  backtracking. A malformed message should produce a typed error, never take
   down the process.
 - Parser output that misrepresents the input in a way that could cause a
   downstream system to mishandle a record.
 - Any path that writes received data somewhere it shouldn't, or leaks it into an
   error message or log.
 
-Most packages ship with zero runtime dependencies, so the third-party surface is
-small by design.
+Ten of the fourteen packages have no runtime dependencies. Of the rest,
+`@cosyte/ncpdp`, `@cosyte/ccda` and `@cosyte/dates` each depend on one
+third-party package, and `@cosyte/cli` depends only on other `@cosyte`
+packages, so the third-party surface is small by design.
 
 ## A note on PHI
 
@@ -48,7 +51,7 @@ an issue, a pull request, or an email.
 
 ## A note on compliance
 
-The `@cosyte/*` packages are building blocks, not a compliance product. They are
-**HIPAA-capable** (they can be used inside a compliant system), but using them
-does not by itself make a system HIPAA-compliant. That responsibility stays with
-the system you build.
+The `@cosyte/*` packages are building blocks. We make no compliance claim about
+them: whether a system that uses them meets its legal obligations depends on how
+that system is built, configured and run, and that responsibility stays with the
+system's owner.
