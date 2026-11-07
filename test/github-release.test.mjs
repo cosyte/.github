@@ -10,19 +10,36 @@
 //
 // Each case drives `main` with a recording `run`, so the assertions are about the sequence of
 // commands the script actually issues, not about its source.
+//
+// AND A RE-RUN IS SAFE AGAINST AN IMMUTABLE RELEASE. GitHub refuses to modify an asset of a published
+// immutable release, so a release that already exists has its assets compared with the ones this run
+// built rather than replaced: the same content is left alone, different content fails the run, and
+// only an asset it does not carry yet is uploaded. The comparison reads real `tar -czf` output here,
+// packed twice at different times, because that is what makes the bytes differ on a real re-run.
 // One case runs the real entry point as a child process, with a fake `gh` on PATH and the real
 // `release-notes.mjs assert`, so the spawn site and the assert's argv are measured too.
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { createArgs, dispatchArgs, main, releaseTag, uploadArgs } from '../scripts/github-release.mjs';
+import {
+  assetNamesArgs,
+  compareAssets,
+  createArgs,
+  dispatchArgs,
+  downloadArgs,
+  main,
+  releaseTag,
+  tarEntries,
+  uploadArgs,
+} from '../scripts/github-release.mjs';
 
 const execFileAsync = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,19 +71,43 @@ function recorder(answers = {}) {
     if (Array.isArray(answer)) return { code: answer.length ? answer.shift() : 0 };
     return { code: answer ?? 0 };
   };
-  return { run, calls, keys: () => calls.map((c) => c.key) };
+  // The listing of the assets a release already carries is the one call whose output is read. Its
+  // answer is the text gh prints, or `{ code, stdout }`; by default the release carries none.
+  const capture = (cmd, args, options = {}) => {
+    calls.push({ key: 'release assets', cmd, args, token: options.env?.GH_TOKEN, quiet: false });
+    const answer = queues['release assets'];
+    if (typeof answer === 'string') return { code: 0, stdout: answer };
+    return { code: answer?.code ?? 0, stdout: answer?.stdout ?? '' };
+  };
+  return { run, capture, calls, keys: () => calls.map((c) => c.key) };
 }
 
-/** Drive `main` with captured output and every effect injected. */
-async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl } = {}) {
+const CARRIES_BOTH = 'docs-content.tar.gz\nsource.tar.gz\n';
+
+/**
+ * Drive `main` with captured output and every effect injected. `bytes` answers a read of an asset,
+ * the one this run built (`dist-artifacts/<name>`) or the one downloaded from the release
+ * (`<temp dir>/<name>`); by default both read the same, so an attached asset is the same content.
+ */
+async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl, bytes = () => Buffer.from('tarball') } = {}) {
   const rec = recorder(answers);
   let stdout = '';
   let stderr = '';
   const summary = [];
+  const made = [];
+  const removed = [];
   const code = await main(argv, {
     env: { GH_TOKEN: 'ghs_test_release_token', DISPATCH_TOKEN: 'ghp_test_dispatch_token', GITHUB_STEP_SUMMARY: 'summary', ...env },
     run: rec.run,
+    capture: rec.capture,
     exists,
+    readBytes: bytes,
+    makeTempDir: () => {
+      const dir = `/tmp/asset-${made.length}`;
+      made.push(dir);
+      return dir;
+    },
+    removeDir: (dir) => removed.push(dir),
     readFile: () => 'body',
     appendFile: (_file, text) => summary.push(text),
     fetchImpl,
@@ -79,7 +120,7 @@ async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl }
     },
     toolingDir: '/tooling/scripts',
   });
-  return { code, stdout, stderr, summary: summary.join(''), ...rec };
+  return { code, stdout, stderr, summary: summary.join(''), made, removed, ...rec };
 }
 
 const ARGV = ['--package', PKG, '--version', VERSION, '--target', SHA, '--notes', NOTES, '--dispatch-docs', 'true'];
@@ -96,7 +137,13 @@ test('the tag is v<version>, the create carries --target and its assets, and the
   assert.deepEqual(createArgs({ tag: 'v0.1.1', assets: ASSETS, target: SHA, notes: NOTES }), [
     'release', 'create', 'v0.1.1', ...ASSETS, '--target', SHA, '--title', 'v0.1.1', '--notes-file', NOTES,
   ]);
-  assert.deepEqual(uploadArgs({ tag: 'v0.1.1', assets: ASSETS }), ['release', 'upload', 'v0.1.1', ...ASSETS, '--clobber']);
+  // No `--clobber`: an immutable release refuses to replace an asset, so an attached one is compared
+  // instead, and only an asset the release does not carry yet is ever handed to the upload.
+  assert.deepEqual(uploadArgs({ tag: 'v0.1.1', assets: ASSETS }), ['release', 'upload', 'v0.1.1', ...ASSETS]);
+  assert.deepEqual(assetNamesArgs({ tag: 'v0.1.1' }), ['release', 'view', 'v0.1.1', '--json', 'assets', '--jq', '.assets[].name']);
+  assert.deepEqual(downloadArgs({ tag: 'v0.1.1', name: 'source.tar.gz', dir: '/tmp/d' }), [
+    'release', 'download', 'v0.1.1', '--pattern', 'source.tar.gz', '--dir', '/tmp/d',
+  ]);
   const dispatch = dispatchArgs({ packageName: '@cosyte/synth', version: '0.0.2' });
   assert.deepEqual(dispatch, [
     'api', 'repos/cosyte/docs/dispatches',
@@ -129,15 +176,174 @@ test('a new release: assert, look, create at the target with the assets, then di
 
 test('an existing release is brought up to date, never duplicated, and assets are only uploaded if built', async () => {
   const withAssets = await drive(ARGV);
-  assert.deepEqual(withAssets.keys(), ['assert', 'release view', 'release edit', 'release upload', 'dispatch']);
+  assert.deepEqual(withAssets.keys(), ['assert', 'release view', 'release edit', 'release assets', 'release upload', 'dispatch']);
   const none = await drive(ARGV, { exists: () => false });
   assert.deepEqual(none.keys(), ['assert', 'release view', 'release edit', 'dispatch']);
+});
+
+// -- A re-run against a release that already carries its assets --------------------------------------
+
+test('a re-run against a release carrying the same assets compares them, uploads nothing, and passes', async () => {
+  const run = await drive(ARGV, { answers: { 'release assets': CARRIES_BOTH } });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release edit', 'release assets', 'release download', 'release download', 'dispatch']);
+  const downloads = run.calls.filter((call) => call.key === 'release download');
+  assert.deepEqual(downloads.map((call) => call.args), [
+    downloadArgs({ tag: 'v0.0.2', name: 'docs-content.tar.gz', dir: '/tmp/asset-0' }),
+    downloadArgs({ tag: 'v0.0.2', name: 'source.tar.gz', dir: '/tmp/asset-1' }),
+  ]);
+  assert.match(run.stdout, /v0\.0\.2 already carries docs-content\.tar\.gz with the same content \(byte for byte\); leaving it as it is/);
+  assert.deepEqual(run.removed, run.made, 'every directory an asset was downloaded into is removed');
+  for (const call of run.calls) assert.ok(!call.args.includes('--clobber'), `${call.key} asks gh to replace an asset`);
+});
+
+test('an attached asset with different content fails the run with what differs, and nothing follows', async () => {
+  const run = await drive(ARGV, {
+    answers: { 'release assets': CARRIES_BOTH },
+    bytes: (file) => Buffer.from(file.startsWith('/tmp/asset-') ? 'what the release carries' : 'what this run built'),
+  });
+  assert.equal(run.code, 1);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release edit', 'release assets', 'release download']);
+  assert.match(
+    run.stderr,
+    /^::error title=Release asset differs::v0\.0\.2 already carries docs-content\.tar\.gz, and the docs-content\.tar\.gz this run built for @cosyte\/hl7@0\.0\.2 has different content: the bytes differ, and the two cannot both be read as gzipped tars/m,
+  );
+  assert.match(run.stderr, /A published release's assets cannot be replaced, so the attached one is left as it is/);
+  assert.deepEqual(run.removed, run.made, 'the download directory is removed on the failing path too');
+});
+
+test('only an asset the release does not carry yet is uploaded', async () => {
+  const run = await drive(ARGV, { answers: { 'release assets': 'docs-content.tar.gz\n' } });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(run.keys(), ['assert', 'release view', 'release edit', 'release assets', 'release download', 'release upload', 'dispatch']);
+  const upload = run.calls.find((call) => call.key === 'release upload');
+  assert.deepEqual(upload.args, uploadArgs({ tag: 'v0.0.2', assets: ['dist-artifacts/source.tar.gz'] }));
+});
+
+test('an upload the release refuses fails the run and says an immutable release takes no new asset', async () => {
+  const run = await drive(ARGV, { answers: { 'release upload': 1 } });
+  assert.equal(run.code, 1);
+  assert.ok(!run.keys().includes('dispatch'), 'nothing is dispatched after a failed release');
+  assert.match(run.stderr, /::error title=GitHub release asset not attached::gh could not attach docs-content\.tar\.gz and source\.tar\.gz/);
+  assert.match(run.stderr, /An immutable release takes no new asset once it is published/);
+});
+
+test('a listing, a download or an edit gh cannot do fails the run, naming which', async () => {
+  const listing = await drive(ARGV, { answers: { 'release assets': { code: 1 } } });
+  assert.equal(listing.code, 1);
+  assert.match(listing.stderr, /::error title=GitHub release assets not read::/);
+  assert.ok(!listing.keys().includes('release upload'), 'nothing is uploaded over assets it could not list');
+
+  const download = await drive(ARGV, { answers: { 'release assets': CARRIES_BOTH, 'release download': 1 } });
+  assert.equal(download.code, 1);
+  assert.match(download.stderr, /::error title=GitHub release asset not read::gh could not download docs-content\.tar\.gz/);
+  assert.deepEqual(download.removed, download.made);
+
+  const edit = await drive(ARGV, { answers: { 'release edit': 1 } });
+  assert.equal(edit.code, 1);
+  assert.deepEqual(edit.keys(), ['assert', 'release view', 'release edit']);
+  assert.match(edit.stderr, /::error title=GitHub release not updated::gh could not update the body/);
+});
+
+// -- The comparison, over what `tar -czf` really writes ------------------------------------------------
+
+/** A docs tree with a nested file, a path too long for a tar header's name field, and a link. */
+function docsTree() {
+  const root = mkdtempSync(join(tmpdir(), 'github-release-tree-'));
+  const docs = join(root, 'docs-content');
+  const deep = join(docs, 'guides', 'a-directory-name-long-enough-that-the-whole-path-overflows-the-hundred-byte-name-field');
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(docs, 'intro.md'), '# Intro\n');
+  writeFileSync(join(docs, 'sidebars.json'), '{"docs":["intro"]}\n');
+  writeFileSync(join(deep, 'an-equally-long-file-name-for-the-gnu-long-name-record.md'), 'Deep.\n');
+  symlinkSync('intro.md', join(docs, 'start.md'));
+  return { root, docs };
+}
+
+/** `tar -czf` the tree, as a caller's pack-docs command does, with whatever extra flags are given. */
+function pack(docs, out, ...flags) {
+  const done = spawnSync('tar', [...flags, '-czf', out, '-C', docs, '.'], { encoding: 'utf8' });
+  assert.equal(done.status, 0, `tar failed: ${done.stderr}`);
+  return readFileSync(out);
+}
+
+test('tarEntries reads what tar -czf writes, GNU and POSIX, long names and links included', () => {
+  const { root, docs } = docsTree();
+  try {
+    for (const format of ['gnu', 'posix']) {
+      const entries = tarEntries(pack(docs, join(root, `${format}.tar.gz`), `--format=${format}`));
+      const long = [...entries.keys()].find((key) => key.endsWith('gnu-long-name-record.md'));
+      assert.ok(long && long.length > 100, `${format}: the long path is read whole`);
+      assert.equal(entries.get(long).data.toString(), 'Deep.\n');
+      assert.equal(entries.get('intro.md').data.toString(), '# Intro\n');
+      assert.deepEqual(entries.get('start.md'), { kind: 'symbolic link', target: 'intro.md' });
+      assert.ok(![...entries.keys()].some((key) => key.startsWith('./') || key === ''), `${format}: paths are normalized`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the same files packed at another time are the same content, though every byte may differ', () => {
+  const { root, docs } = docsTree();
+  try {
+    const first = pack(docs, join(root, 'first.tar.gz'));
+    const later = pack(docs, join(root, 'later.tar.gz'), '--mtime=2001-02-03 04:05:06', '--owner=0', '--group=0');
+    assert.ok(!first.equals(later), 'the two archives must differ in their bytes, or this proves nothing');
+    const verdict = compareAssets(first, later);
+    assert.equal(verdict.same, true, verdict.how);
+    // Four: `intro.md`, `sidebars.json`, the deep file and the link. Directories are implied by them.
+    assert.match(verdict.how, /^the same 4 file\(s\) with the same bytes, packed at another time$/);
+    assert.deepEqual(compareAssets(first, first), { same: true, how: 'byte for byte' });
+    assert.equal(compareAssets(first, pack(docs, join(root, 'pax.tar.gz'), '--format=posix')).same, true, 'a format change is not a content change');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a changed, added or removed file is different content, and the verdict names it', () => {
+  const { root, docs } = docsTree();
+  try {
+    const before = pack(docs, join(root, 'before.tar.gz'));
+    writeFileSync(join(docs, 'intro.md'), '# Intro, rewritten\n');
+    const changed = compareAssets(before, pack(docs, join(root, 'changed.tar.gz')));
+    assert.deepEqual(changed, { same: false, how: '`intro.md` has different content' });
+
+    writeFileSync(join(docs, 'intro.md'), '# Intro\n');
+    writeFileSync(join(docs, 'extra.md'), 'Extra.\n');
+    const added = compareAssets(pack(docs, join(root, 'added.tar.gz')), before);
+    assert.deepEqual(added, { same: false, how: "`extra.md` is in this run's and not in the attached one" });
+    const removed = compareAssets(before, pack(docs, join(root, 'removed-from-attached.tar.gz')));
+    assert.deepEqual(removed, { same: false, how: "`extra.md` is in the attached one and not in this run's" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('bytes that are not a gzipped tar are never called the same unless they are identical', () => {
+  const verdict = compareAssets(Buffer.from('one'), Buffer.from('two'));
+  assert.equal(verdict.same, false);
+  assert.match(verdict.how, /^the bytes differ, and the two cannot both be read as gzipped tars/);
+  assert.deepEqual(compareAssets(Buffer.from('one'), Buffer.from('one')), { same: true, how: 'byte for byte' });
+  // A gzip whose tar is cut short is refused rather than read as the entries before the cut.
+  const { root, docs } = docsTree();
+  try {
+    const whole = pack(docs, join(root, 'whole.tar.gz'));
+    const tar = spawnSync('gzip', ['-dc'], { input: whole }).stdout;
+    const cut = spawnSync('gzip', ['-c'], { input: tar.subarray(0, 1024) }).stdout;
+    assert.throws(() => tarEntries(cut), /runs past the end of the archive|ends without its end-of-archive marker/);
+    assert.equal(compareAssets(whole, cut).same, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a create that loses a race to another run updates the release that run made', async () => {
   const run = await drive(ARGV, { answers: { 'release view': [1, 0], 'release create': 1 } });
   assert.equal(run.code, 0);
-  assert.deepEqual(run.keys(), ['assert', 'release view', 'release create', 'release view', 'release edit', 'release upload', 'dispatch']);
+  assert.deepEqual(run.keys(), [
+    'assert', 'release view', 'release create', 'release view', 'release edit', 'release assets', 'release upload', 'dispatch',
+  ]);
   assert.match(run.stdout, /created by another run/);
 });
 
@@ -264,6 +470,70 @@ test('end to end: the real assert passes a real body, and gh is handed exactly t
     ]);
   } finally {
     rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('end to end: a re-run against a release carrying its assets compares them through the real spawn sites', async () => {
+  for (const scenario of ['same files, packed earlier', 'a file changed since']) {
+    const work = mkdtempSync(join(tmpdir(), 'github-release-'));
+    const { root, docs } = docsTree();
+    const bin = join(work, 'bin');
+    const carried = join(work, 'carried');
+    mkdirSync(bin);
+    mkdirSync(carried);
+    mkdirSync(join(work, 'dist-artifacts'));
+    const log = join(work, 'gh.log');
+    // What the first run attached: the same tree, packed at another time.
+    for (const name of ['docs-content.tar.gz', 'source.tar.gz']) pack(docs, join(carried, name), '--mtime=2001-02-03 04:05:06');
+    if (scenario === 'a file changed since') writeFileSync(join(docs, 'intro.md'), '# Intro, rewritten\n');
+    // What this run's pack-docs command leaves behind.
+    for (const name of ['docs-content.tar.gz', 'source.tar.gz']) pack(docs, join(work, 'dist-artifacts', name));
+    // The release exists and carries both assets; a download copies the attached one into --dir.
+    writeFileSync(
+      join(bin, 'gh'),
+      [
+        '#!/usr/bin/env bash',
+        `printf '%s\\n' "$*" >> '${log}'`,
+        `if [ "$1 $2" = "release view" ] && [ "$4" = "--json" ]; then printf 'docs-content.tar.gz\\nsource.tar.gz\\n'; exit 0; fi`,
+        `if [ "$1 $2" = "release download" ]; then cp '${carried}'/"$5" "$7/$5"; exit $?; fi`,
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const notes = join(work, 'release-notes.md');
+    writeFileSync(notes, readFileSync(BODY, 'utf8'));
+    try {
+      const child = await execFileAsync(
+        process.execPath,
+        [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'false'],
+        { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: 'x' } },
+      ).then(
+        (result) => ({ code: 0, ...result }),
+        (error) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }),
+      );
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      assert.ok(!calls.some((call) => call.startsWith('release upload')), `${scenario}: nothing may be uploaded over a carried asset`);
+      if (scenario === 'same files, packed earlier') {
+        assert.equal(child.code, 0, child.stderr);
+        assert.deepEqual(calls, [
+          'release view v0.0.2',
+          `release edit v0.0.2 --title v0.0.2 --notes-file ${notes}`,
+          'release view v0.0.2 --json assets --jq .assets[].name',
+          `release download v0.0.2 --pattern docs-content.tar.gz --dir ${calls[3]?.split(' --dir ')[1]}`,
+          `release download v0.0.2 --pattern source.tar.gz --dir ${calls[4]?.split(' --dir ')[1]}`,
+        ]);
+        assert.match(child.stdout, /already carries docs-content\.tar\.gz with the same content \(the same 4 file\(s\) with the same bytes, packed at another time\)/);
+        for (const call of calls.slice(3)) assert.equal(existsSync(call.split(' --dir ')[1]), false, 'the download directory is removed');
+      } else {
+        assert.equal(child.code, 1);
+        assert.match(child.stderr, /::error title=Release asset differs::v0\.0\.2 already carries docs-content\.tar\.gz/);
+        assert.match(child.stderr, /`intro\.md` has different content/);
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

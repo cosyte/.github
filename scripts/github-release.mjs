@@ -22,7 +22,10 @@
 //      no consumer can install. The direct arm does not ask, because it runs seconds after its own
 //      publish, where registry propagation lag would read as a refusal of a version that did ship.
 //   2. `release-notes.mjs assert` proves the body's bytes against this version and package.
-//   3. `gh release view`, then edit-and-upload or create, in one call with the assets.
+//   3. `gh release view`, then either create the release with its assets in one call, or bring an
+//      existing one up to date: its body is edited, and its assets are compared, never replaced. An
+//      asset already attached with the same content is left as it is, one attached with different
+//      content fails the run, and only an asset the release does not carry yet is uploaded.
 //   4. the docs dispatch, which reports and never fails the run.
 //
 // THE CALLER'S PACK-DOCS COMMAND IS NOT RUN HERE. It is a shell string the calling repository supplies
@@ -38,10 +41,12 @@
 //     --version 0.1.1 --target <sha> --notes notes.md --dispatch-docs false
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 import { withFetchTimeout } from './install-check.mjs';
 import { DEFAULT_REGISTRY, registryListsVersionWithRetry } from './promotion.mjs';
@@ -83,8 +88,179 @@ export function editArgs({ tag, notes }) {
   return ['release', 'edit', tag, '--title', tag, '--notes-file', notes];
 }
 
+/**
+ * NO `--clobber`, AND THAT IS THE IMMUTABLE-RELEASE FIX. With release immutability on, GitHub refuses to
+ * modify or delete an asset of a published release, so `--clobber` turned every re-run of a release
+ * job into a failure at this step, after the release it was re-running had already succeeded. An
+ * asset the release already carries is now compared rather than uploaded (see `compareAssets`), so
+ * this is only ever handed the assets the release does not carry yet.
+ */
 export function uploadArgs({ tag, assets }) {
-  return ['release', 'upload', tag, ...assets, '--clobber'];
+  return ['release', 'upload', tag, ...assets];
+}
+
+/** The names of the assets a release already carries, one per line. */
+export function assetNamesArgs({ tag }) {
+  return ['release', 'view', tag, '--json', 'assets', '--jq', '.assets[].name'];
+}
+
+/** One attached asset, downloaded into a fresh directory so it can be compared with the one built. */
+export function downloadArgs({ tag, name, dir }) {
+  return ['release', 'download', tag, '--pattern', name, '--dir', dir];
+}
+
+// ---------------------------------------------------------------------------
+// Comparing an attached asset with the one this run built
+// ---------------------------------------------------------------------------
+//
+// "THE SAME CONTENT" MEANS THE SAME FILES WITH THE SAME BYTES, NOT THE SAME ARCHIVE BYTES. Most callers
+// pack their docs with `tar -czf`, which records each file's modification time (the checkout's time on
+// a runner, so a different one on every run) and gzip's own timestamp. A re-run from the same commit
+// therefore builds a tarball whose bytes differ from the attached one while every file inside it is
+// identical, and a byte comparison would fail exactly the re-runs this exists to make safe. So when
+// the bytes differ, both are read as gzipped tars and compared entry by entry: the set of paths, and
+// for each one its kind and its bytes (or a link's target). Directories are implied by the files in
+// them, and modes, owners and times are archive metadata, not content. Anything that cannot be read
+// that way is compared by its bytes alone, so an unreadable asset is never called the same.
+
+/** A NUL-terminated header field, as text. */
+function headerText(bytes) {
+  const end = bytes.indexOf(0);
+  return bytes.subarray(0, end === -1 ? bytes.length : end).toString('utf8');
+}
+
+/** A numeric header field: octal text, or base-256 when its first byte has the high bit set. */
+function headerNumber(bytes) {
+  if (bytes[0] & 0x80) {
+    let value = bytes[0] & 0x7f;
+    for (let i = 1; i < bytes.length; i += 1) value = value * 256 + bytes[i];
+    return value;
+  }
+  const text = headerText(bytes).trim();
+  if (!/^[0-7]*$/.test(text)) throw new Error(`a numeric header field reads ${JSON.stringify(text)}, which is not octal`);
+  return text === '' ? 0 : Number.parseInt(text, 8);
+}
+
+/** The header checksum, which tells a tar header from bytes that merely sit where one would. */
+function checksumMatches(header) {
+  let unsigned = 0;
+  let signed = 0;
+  for (let i = 0; i < 512; i += 1) {
+    const byte = i >= 148 && i < 156 ? 0x20 : header[i];
+    unsigned += byte;
+    signed += byte > 127 ? byte - 256 : byte;
+  }
+  const recorded = headerNumber(header.subarray(148, 156));
+  return recorded === unsigned || recorded === signed;
+}
+
+/** A pax extended header's `length key=value` records. */
+function paxRecords(data) {
+  /** @type {Record<string, string>} */
+  const records = {};
+  let at = 0;
+  while (at < data.length) {
+    const space = data.indexOf(0x20, at);
+    if (space === -1) break;
+    const length = Number.parseInt(data.subarray(at, space).toString('ascii'), 10);
+    if (!Number.isInteger(length) || length <= space - at) throw new Error('a pax record has no readable length');
+    const record = data.subarray(space + 1, at + length - 1).toString('utf8');
+    const equals = record.indexOf('=');
+    if (equals !== -1) records[record.slice(0, equals)] = record.slice(equals + 1);
+    at += length;
+  }
+  return records;
+}
+
+/** `./docs/intro.md` and `docs/intro.md` are one path. */
+function entryPath(name) {
+  let at = name;
+  while (at.startsWith('./')) at = at.slice(2);
+  return at.replace(/\/+$/, '');
+}
+
+/**
+ * The entries of a gzipped tar, by path: what `tar -czf` writes in either its GNU or its POSIX form,
+ * long names included. Throws on anything it cannot read, rather than returning what it read so far.
+ *
+ * @param {Buffer} gzipped
+ * @returns {Map<string, {kind: string, data?: Buffer, target?: string}>}
+ */
+export function tarEntries(gzipped) {
+  const tar = gunzipSync(gzipped);
+  /** @type {Map<string, {kind: string, data?: Buffer, target?: string}>} */
+  const entries = new Map();
+  /** @type {string|null} */
+  let longName = null;
+  /** @type {string|null} */
+  let longLink = null;
+  /** @type {Record<string, string>} */
+  let pax = {};
+  let offset = 0;
+  for (;;) {
+    if (offset + 512 > tar.length) throw new Error('the archive ends without its end-of-archive marker');
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) return entries;
+    if (!checksumMatches(header)) throw new Error(`the header at byte ${offset} fails its checksum`);
+    const type = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
+    const meta = type === 'L' || type === 'K' || type === 'x' || type === 'g';
+    const size = !meta && pax.size !== undefined ? Number(pax.size) : headerNumber(header.subarray(124, 136));
+    const start = offset + 512;
+    if (!Number.isSafeInteger(size) || size < 0 || start + size > tar.length) {
+      throw new Error(`the entry at byte ${offset} runs past the end of the archive`);
+    }
+    const data = tar.subarray(start, start + size);
+    offset = start + Math.ceil(size / 512) * 512;
+    if (type === 'L') longName = headerText(data);
+    else if (type === 'K') longLink = headerText(data);
+    else if (type === 'x') pax = paxRecords(data);
+    if (meta) continue;
+    const posix = header.subarray(257, 263).toString('latin1') === 'ustar\0';
+    const prefix = posix ? headerText(header.subarray(345, 500)) : '';
+    const short = headerText(header.subarray(0, 100));
+    const name = longName ?? pax.path ?? (prefix ? `${prefix}/${short}` : short);
+    const link = longLink ?? pax.linkpath ?? headerText(header.subarray(157, 257));
+    longName = null;
+    longLink = null;
+    pax = {};
+    const key = entryPath(name);
+    if (type === '5' || key === '' || key === '.') continue;
+    if (type === '0' || type === '7') entries.set(key, { kind: 'file', data });
+    else if (type === '2') entries.set(key, { kind: 'symbolic link', target: link });
+    else if (type === '1') entries.set(key, { kind: 'hard link', target: entryPath(link) });
+    else entries.set(key, { kind: `type ${type} entry` });
+  }
+}
+
+/**
+ * Is an asset this run built the same content as the one a release already carries?
+ *
+ * @param {Buffer} built
+ * @param {Buffer} attached
+ * @returns {{same: boolean, how: string}}
+ */
+export function compareAssets(built, attached) {
+  if (built.equals(attached)) return { same: true, how: 'byte for byte' };
+  let ours;
+  let theirs;
+  try {
+    ours = tarEntries(built);
+    theirs = tarEntries(attached);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { same: false, how: `the bytes differ, and the two cannot both be read as gzipped tars to compare file by file (${why})` };
+  }
+  const paths = [...new Set([...ours.keys(), ...theirs.keys()])].sort();
+  for (const at of paths) {
+    const mine = ours.get(at);
+    const there = theirs.get(at);
+    if (!mine) return { same: false, how: `\`${at}\` is in the attached one and not in this run's` };
+    if (!there) return { same: false, how: `\`${at}\` is in this run's and not in the attached one` };
+    if (mine.kind !== there.kind) return { same: false, how: `\`${at}\` is a ${mine.kind} in this run's and a ${there.kind} in the attached one` };
+    const differs = mine.kind === 'file' ? !mine.data?.equals(/** @type {Buffer} */ (there.data)) : mine.target !== there.target;
+    if (differs) return { same: false, how: `\`${at}\` has different content` };
+  }
+  return { same: true, how: `the same ${paths.length} file(s) with the same bytes, packed at another time` };
 }
 
 /**
@@ -125,6 +301,21 @@ export function runCommand(cmd, args, { env = process.env, quiet = false } = {})
   return { code: typeof result.status === 'number' ? result.status : 1 };
 }
 
+/**
+ * The one spawn site whose output is read: the list of a release's asset names. Errors still reach
+ * the log.
+ *
+ * @param {string} cmd
+ * @param {string[]} args
+ * @param {{env?: NodeJS.ProcessEnv}} [options]
+ * @returns {{code: number, stdout: string}}
+ */
+export function captureCommand(cmd, args, { env = process.env } = {}) {
+  const result = spawnSync(cmd, args, { stdio: ['ignore', 'pipe', 'inherit'], env, encoding: 'utf8' });
+  if (result.error) return { code: 127, stdout: '' };
+  return { code: typeof result.status === 'number' ? result.status : 1, stdout: result.stdout ?? '' };
+}
+
 const USAGE =
   'usage:\n' +
   '  github-release.mjs --package <name> --version <v> --target <sha> --notes <file>\n' +
@@ -159,8 +350,12 @@ export async function main(argv, io = {}) {
   const {
     env = process.env,
     run = runCommand,
+    capture = captureCommand,
     exists = existsSync,
     readFile = readFileSync,
+    readBytes = (/** @type {string} */ file) => readFileSync(file),
+    makeTempDir = () => mkdtempSync(path.join(tmpdir(), 'github-release-asset-')),
+    removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }),
     appendFile = appendFileSync,
     fetchImpl = globalThis.fetch,
     sleepImpl,
@@ -252,27 +447,78 @@ export async function main(argv, io = {}) {
   //    fails because another run created the same release in the meantime (a later push catching up
   //    while this run's own wait saw the promotion) is that same update, not a failure; a create that
   //    fails for any other reason fails the run.
-  const update = () => {
-    const edited = run('gh', editArgs({ tag, notes }), { env });
-    if (edited.code !== 0) return edited;
-    if (assets.length > 0) return run('gh', uploadArgs({ tag, assets }), { env });
-    return edited;
-  };
-  if (run('gh', ['release', 'view', tag], { env, quiet: true }).code === 0) {
-    out(`${tag} already has a GitHub release; updating its body and assets.\n`);
-    if (update().code !== 0) {
-      err(`::error title=GitHub release not updated::gh could not update the existing ${tag} release for ${coordinate}.\n`);
+  //
+  //    AN EXISTING RELEASE'S ASSETS ARE COMPARED, NEVER REPLACED. A re-run of a release job reaches
+  //    this branch for a release its first run already published, and with release immutability on,
+  //    GitHub refuses to modify an asset of a published release; its title and notes stay editable.
+  //    So each asset this run built is checked against the one the release carries: the same content
+  //    is left alone, different content fails the run with what differs, and only an asset the
+  //    release does not carry yet is uploaded.
+  const attach = () => {
+    if (assets.length === 0) return 0;
+    const listed = capture('gh', assetNamesArgs({ tag }), { env });
+    if (listed.code !== 0) {
+      err(`::error title=GitHub release assets not read::gh could not list the assets ${tag} already carries for ${coordinate}, so none was compared or uploaded.\n`);
       return 1;
     }
+    const carried = new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean));
+    const missing = [];
+    for (const file of assets) {
+      const name = path.basename(file);
+      if (!carried.has(name)) {
+        missing.push(file);
+        continue;
+      }
+      const dir = makeTempDir();
+      try {
+        if (run('gh', downloadArgs({ tag, name, dir }), { env }).code !== 0) {
+          err(`::error title=GitHub release asset not read::gh could not download ${name} from ${tag} to compare it with the one this run built for ${coordinate}.\n`);
+          return 1;
+        }
+        const verdict = compareAssets(readBytes(file), readBytes(path.join(dir, name)));
+        if (!verdict.same) {
+          // A path read out of an archive reaches a workflow command here, so the three characters
+          // that command syntax gives a meaning to are escaped the way the runner unescapes them.
+          const how = verdict.how.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+          err(
+            `::error title=Release asset differs::${tag} already carries ${name}, and the ${name} this run built for ${coordinate} ` +
+              `has different content: ${how}. A published release's assets cannot be replaced, so the attached one ` +
+              `is left as it is. Rebuild ${name} from the commit ${tag} was released from, or release a new version if the attached one is wrong.\n`,
+          );
+          return 1;
+        }
+        out(`${tag} already carries ${name} with the same content (${verdict.how}); leaving it as it is.\n`);
+      } finally {
+        removeDir(dir);
+      }
+    }
+    if (missing.length === 0) return 0;
+    const names = missing.map((file) => path.basename(file)).join(' and ');
+    if (run('gh', uploadArgs({ tag, assets: missing }), { env }).code !== 0) {
+      err(
+        `::error title=GitHub release asset not attached::gh could not attach ${names} to the existing ${tag} release for ${coordinate}. ` +
+          'An immutable release takes no new asset once it is published, so a release created without it stays without it.\n',
+      );
+      return 1;
+    }
+    return 0;
+  };
+  const update = () => {
+    if (run('gh', editArgs({ tag, notes }), { env }).code !== 0) {
+      err(`::error title=GitHub release not updated::gh could not update the body of the existing ${tag} release for ${coordinate}.\n`);
+      return 1;
+    }
+    return attach();
+  };
+  if (run('gh', ['release', 'view', tag], { env, quiet: true }).code === 0) {
+    out(`${tag} already has a GitHub release; updating its body and checking its assets.\n`);
+    if (update() !== 0) return 1;
   } else {
     const created = run('gh', createArgs({ tag, assets, target, notes }), { env });
     if (created.code !== 0) {
       if (run('gh', ['release', 'view', tag], { env, quiet: true }).code === 0) {
         out(`${tag} was created by another run while this one was creating it; updating it instead.\n`);
-        if (update().code !== 0) {
-          err(`::error title=GitHub release not updated::gh could not update the ${tag} release for ${coordinate}.\n`);
-          return 1;
-        }
+        if (update() !== 0) return 1;
       } else {
         err(`::error title=GitHub release not created::gh could not create ${tag} at ${target} for ${coordinate}.\n`);
         return 1;
