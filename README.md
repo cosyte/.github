@@ -1527,6 +1527,22 @@ the registry once more immediately before they write anything, so **no release i
 version the registry does not serve**. Nothing on either path promotes, approves, discards or
 publishes.
 
+**A re-run is safe against an immutable release.** With release immutability on, GitHub refuses to
+modify or delete an asset of a published release, though its title and notes stay editable
+([immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)).
+So when the release already exists, the script edits its body and compares each asset it built with
+the one the release carries, and never passes `--clobber`:
+
+- **the same content is left as it is**, including a tarball packed at another time from the same
+  files, whose bytes differ only in the timestamps `tar -czf` and gzip record;
+- **different content fails the run**, naming the first path that differs, because the attached asset
+  cannot be replaced and a release whose docs differ from its own commit's is a defect to look at;
+- **only an asset the release does not carry yet is uploaded**, and an immutable release refuses that
+  too, with a message that says so.
+
+`test/github-release.test.mjs` packs real tarballs twice to prove the comparison, and runs a re-run
+end to end against a fake `gh` that serves the attached assets.
+
 **Which version, and why only that one.** The candidate is the version the default branch's
 `package.json` declares, when the notes gate already calls it a pending release. That is the one
 version this pipeline would otherwise try to publish from that commit, so it is exactly the version
