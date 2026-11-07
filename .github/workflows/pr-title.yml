@@ -1,0 +1,90 @@
+name: Pull request title (reusable)
+
+# Reusable pull request title check. Squash-merged, a pull request's title is the commit message
+# that lands, so the title is held to Conventional Commits while it can still be changed:
+#
+#   <type>(<scope>)!: <description>
+#
+# The type is one of feat, fix, docs, chore, ci, build, refactor, test, perf, revert, or style, in
+# lower case. The scope and the `!` are optional; a scope is lower-case letters, digits, `.`, `_`,
+# `/` and `-`. One space follows the colon, and the description starts with something other than a
+# space. For example: `fix(parser): keep the escape sequence in OBX-5`.
+#
+# Caller (each repo's .github/workflows/pr-title.yml):
+#   on:
+#     pull_request:
+#       branches: [main]
+#       # `edited` is load-bearing: a title changed after the last push is the title that lands, so
+#       # it has to be checked again. A reusable workflow cannot declare its own triggers.
+#       types: [opened, synchronize, reopened, edited]
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     pr-title:
+#       permissions:
+#         contents: read
+#       uses: cosyte/.github/.github/workflows/pr-title.yml@workflows-YYYY-MM-DD-COMMIT
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
+#
+# ▶ THE RULE LIVES HERE, which is the opposite of the em-dash and public-surface gates. Those run a
+#   command the caller names, because what they scan is the caller's own tree. A title rule is the
+#   same in every repository, so it is written once, and a caller adopts it with a `uses:` line and
+#   no input.
+#
+# ▶ ONE JOB, `conventional-commits`, WITH NO CONDITION ANYWHERE. The check-run context it publishes
+#   is `<caller job id> / conventional-commits`, and it is safe to require: a job skipped by a
+#   condition SATISFIES its required context having checked nothing (README.md, "What a skipped
+#   required context does to a merge"). So it runs on every event the caller triggers on, and on an
+#   event that carries no pull request it FAILS and says why, rather than passing over nothing. Call
+#   it from a `pull_request` trigger and nothing else.
+#
+# ▶ THE TITLE REACHES THE SHELL THROUGH `env:`, never as `${{ }}` inside the `run:` body. Actions
+#   interpolates an expression into the script before the shell sees it, and a title is arbitrary
+#   text. It is printed after a fixed prefix, never at the start of a line, so it cannot be read as a
+#   workflow command.
+#
+# ▶ NO CHECKOUT, NO ACTION, NO SCRIPT FETCHED. The title is in the event payload, so the job runs
+#   one bash step and no third-party code. `LC_ALL=C` makes `[a-z]` mean the 26 ASCII letters rather
+#   than whatever the runner's locale collates between them.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the pull request title
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          case "${EVENT_NAME}" in
+            pull_request | pull_request_target) ;;
+            *)
+              echo "::error title=No pull request title::This check reads the title of a pull request, and a ${EVENT_NAME} event has none. Call it from a pull_request trigger."
+              exit 1
+              ;;
+          esac
+          pattern='^(feat|fix|docs|chore|ci|build|refactor|test|perf|revert|style)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]]'
+          if [[ "${PR_TITLE}" =~ ${pattern} ]]; then
+            echo "The pull request title follows Conventional Commits."
+            exit 0
+          fi
+          echo "::error title=Pull request title::The title does not follow Conventional Commits. Write it as type(scope): description, where the scope is optional and the type is one of feat, fix, docs, chore, ci, build, refactor, test, perf, revert, or style."
+          printf 'The title is: %s\n' "${PR_TITLE}"
+          echo "For example: fix(parser): keep the escape sequence in OBX-5"
+          exit 1

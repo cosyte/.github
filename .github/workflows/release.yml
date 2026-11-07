@@ -896,6 +896,13 @@ jobs:
         with:
           # `pnpm run version`, NOT `pnpm version`, which is pnpm's built-in and shadows the script.
           version: pnpm run version
+          # THE "VERSION PACKAGES" PULL REQUEST'S TITLE AND ITS COMMIT, in Conventional Commits form,
+          # so `pr-title.yml` passes it in a caller that requires that check. The action's default
+          # for both is `Version Packages`, which that check refuses, and the title of a
+          # squash-merged pull request is the commit that lands. Nothing here reads either string:
+          # a release is derived from the changesets the version commit consumed, not its message.
+          title: "chore(release): version packages"
+          commit: "chore(release): version packages"
           # Defaults to TRUE, which cuts a GitHub release from this un-gated job. Nothing here has
           # published anything for a release to describe, and the release job below is the one that
           # creates the single release, at the tag, with the docs artifacts and the derived notes.
@@ -1215,6 +1222,9 @@ jobs:
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
           version: pnpm run version
+          # The same title and commit as the version job's step, for the version arm above.
+          title: "chore(release): version packages"
+          commit: "chore(release): version packages"
           # ▶ THE ARM IS SELECTED ON THIS LINE, AND BY DEFAULT IT IS THE DIRECT ONE. The command that
           #   publishes lives in each caller's `package.json` (`release` is `changeset publish`), but
           #   the STRING handed to the action is composed in THIS repository, which is why the arm

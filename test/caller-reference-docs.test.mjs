@@ -33,6 +33,7 @@ const REUSABLES = [
   'gate-no-emdash.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  'pr-title.yml',
   'release.yml',
   'scorecard.yml',
 ];

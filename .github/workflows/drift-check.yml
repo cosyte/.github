@@ -1,8 +1,9 @@
 name: Drift check
 
-# Reusable drift check, called from the meta-repo (umbrella). Fails when any @cosyte/* parser repo
-# diverges from the canonical baseline encoded in config/drift-manifest.json.
-# Caller (umbrella .github/workflows/drift-check.yml):
+# Reusable drift check. Fails when any @cosyte/* parser repo diverges from the canonical baseline
+# encoded in config/drift-manifest.json. No repository calls it today: its one caller was a workflow
+# in the umbrella, which no longer runs any.
+# Caller (a repository that checks out every library as a top-level submodule):
 #   on: { push: { branches: [main] }, pull_request: { branches: [main] } }
 #   jobs:
 #     drift:

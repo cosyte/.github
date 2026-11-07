@@ -125,8 +125,8 @@ const DOT_GITHUB_ONLY = Object.freeze(['github']);
  * The supported community-health types, from the table in the committed copy of "Creating a default
  * community health file", each with the locations that source reads it from.
  *
- * `GOVERNANCE.md` is deliberately NOT here. A paraphrase of this table in the umbrella's research
- * notes lists it and the live page's table does not, and the committed source is what this check is
+ * `GOVERNANCE.md` is deliberately NOT here. A paraphrase of this table in an earlier research note
+ * listed it and the live page's table does not, and the committed source is what this check is
  * measured against.
  */
 export const SUPPORTED_TYPES = Object.freeze([

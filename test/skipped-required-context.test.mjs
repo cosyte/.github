@@ -537,6 +537,7 @@ const PUBLISHED_REUSABLES = [
   'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  'pr-title.yml',
   'release.yml',
   'scorecard.yml',
 ];
@@ -788,6 +789,9 @@ const PUBLISHED_JOB_IDS = {
   'gate-no-emdash-install.yml': ['tracked-files', 'messages'],
   'gate-no-internal-refs-install.yml': ['public-surface'],
   'nightly-fuzz.yml': ['fuzz'],
+  // ADDED, NOT RENAMED. A new file, so `conventional-commits` is a new context no caller's ruleset
+  // names yet. It carries no condition and no `needs:`, so a caller may require it.
+  'pr-title.yml': ['conventional-commits'],
   // ADDED, NOT RENAMED: `finalize` is a new context no caller's ruleset names, and `version` and
   // `release` are where they were. It is skipped on every run that has no promoted version owed a
   // release, which is nearly all of them, and a skipped context requires nothing of anyone.
@@ -817,6 +821,7 @@ const EVERY_JOB_ID = {
   'publish-reference.yml': ['publish-reference'],
   'self-check.yml': ['actionlint', 'scripts'],
   'self-codeql.yml': ['codeql'],
+  'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],
   'self-workflow-sha-probe.yml': ['workflow-sha'],
 };

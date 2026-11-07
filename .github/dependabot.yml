@@ -1,16 +1,13 @@
 version: 2
 
-# `cosyte/.github` hosts the org-wide REUSABLE workflows (ci.yml, release.yml,
-# nightly-fuzz.yml, drift-check.yml). Every parser is a thin caller, so an
-# action bump here propagates to every consumer the next time the caller
-# pulls @main. Dependabot is configured for `github-actions` only: this
-# repo has no npm/pnpm package and therefore no language ecosystem to track.
+# `cosyte/.github` hosts the org-wide REUSABLE workflows. Every library is a thin caller, so an
+# action bump here reaches a caller once it names a reference that carries the bump (or at once, for
+# a caller still on `@main`). Dependabot is configured for `github-actions` only: this repo has no
+# npm or pnpm package and therefore no language ecosystem to track.
 #
-# Mirrors the per-parser config in `cosyte/{hl7,mllp,dicom,x12,ccda,ncpdp,
-# config}/.github/dependabot.yml` (Maturity Phase 3, 2026-06-26), closing the
-# gap that left the shared pipeline's action pins (actions/checkout,
-# actions/setup-node, pnpm/action-setup, reviewdog/action-actionlint) without
-# Dependabot coverage.
+# The commit message, and so the pull request title, is `chore(deps): bump ...`: Conventional
+# Commits, which `self-pr-title.yml` checks on every pull request here. Without a prefix Dependabot
+# guesses one from the repository's history, and a guess is not a title rule.
 
 updates:
   - package-ecosystem: github-actions
@@ -18,3 +15,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope

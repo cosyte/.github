@@ -159,7 +159,10 @@ test('no existing input is re-defaulted by this change', () => {
     defaults[name] = line ? line.trim() : null;
   }
   assert.deepEqual(defaults, {
-    'node-versions': 'default: \'["22", "24"]\'',
+    // RE-DEFAULTED ON PURPOSE, LATER AND BY ITS OWN CHANGE: Node 26 joined the matrix a caller gets
+    // when it passes no list, and the reference that carried it said so in its "must act on" list.
+    // Every other default below is still the one this change was measured against.
+    'node-versions': 'default: \'["22", "24", "26"]\'',
     os: 'default: \'["ubuntu-latest"]\'',
     'run-phi-scan': 'default: false',
     'run-actionlint': 'default: true',

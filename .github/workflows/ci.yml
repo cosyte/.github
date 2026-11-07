@@ -25,10 +25,14 @@ name: CI
 on:
   workflow_call:
     inputs:
+      # THE NODE LINES A CALLER TESTS WHEN IT PASSES NO LIST OF ITS OWN: 22, 24 and 26, lowest
+      # first, because `prepublish` below installs the packed tarball on the FIRST entry. A caller
+      # whose suite or `engines.node` cannot run on 26 yet passes `'["22", "24"]'` until it can, and
+      # a changed default here is a change every caller that passes nothing must act on.
       node-versions:
         description: "JSON array of Node versions for the matrix."
         type: string
-        default: '["22", "24"]'
+        default: '["22", "24", "26"]'
       os:
         description: "JSON array of runner OSes for the matrix."
         type: string
