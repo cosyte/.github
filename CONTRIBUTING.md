@@ -1,9 +1,14 @@
 # Contributing to Cosyte
 
-Thanks for considering a contribution. The `@cosyte/*` packages (the HL7, MLLP,
-DICOM, X12, C-CDA, and NCPDP parsers) get better when real integration teams
-surface the vendor quirks they hit in production. A bug report with a reproducing
-fixture is one of the most valuable things you can send us.
+Thanks for considering a contribution. This guide covers our 14 libraries, one
+for each of 8 standards (`@cosyte/hl7`, `@cosyte/mllp`, `@cosyte/fhir`,
+`@cosyte/ccda`, `@cosyte/x12`, `@cosyte/ncpdp`, `@cosyte/astm`, and
+`@cosyte/dicom`) and 6 built on them (`@cosyte/terminology`, `@cosyte/transform`,
+`@cosyte/deid`, `@cosyte/synth`, `@cosyte/dates`, and `@cosyte/cli`), and
+[Pathways](https://github.com/cosyte/pathways), our integration engine, in
+development. They get better when real integration teams surface the vendor
+quirks they hit in production, and a bug report with a reproducing fixture is one
+of the most valuable things you can send us.
 
 This is the org-wide guide. Some repos add their own `CONTRIBUTING.md` with
 package-specific detail (for example, `@cosyte/hl7` documents how to add a
@@ -16,18 +21,18 @@ The answer is here rather than behind a link, because this guide is the file you
 are reading in whichever repo you arrived at, and a file that lives only in
 `cosyte/.github` is not.
 
-- **Who decides.** One maintainer holds the final call: `noah`, the account owner
-  of record for `cosyte`. No committee, no vote, no tie to break.
+- **Who decides.** We hold the final call: Cosyte, which owns the `cosyte`
+  organization and maintains these repositories. No committee, no vote.
 - **How a decision is reached.** In the open, on the issue or pull request, in
   writing. Propose it as an issue (for anything larger than a small fix, before
-  you build). The maintainer accepts it, declines it, or says what would change
-  the answer, on that thread. A declined proposal gets a reason. Silence is not
+  you build). We accept it, decline it, or say what would change the answer, on
+  that thread. A declined proposal gets a reason. Silence is not
   consent: an unanswered proposal has not been accepted.
 - **How you escalate.** On the thread first, and in public. Say what you think is
   wrong and what you expected. If the thread has stalled, open an issue naming the
   stall and linking it. If you still disagree once a decision is given, say so on
   the issue and ask for the reason in writing; you are entitled to a reason, and
-  the maintainer's call stands once it is given with one. Two things never use
+  our call stands once it is given with one. Two things never use
   this route: a security vulnerability goes to the
   [security policy](https://github.com/cosyte/.github/security/policy), never a
   public issue, and conduct goes to the route in
@@ -71,12 +76,16 @@ forms will walk you through it.
    pnpm build
    ```
 
-   All of them must exit zero. CI runs the same checks on Node 22 and 24.
+   All of them must exit zero. CI runs the same checks on every Node.js line in
+   the repository's test matrix.
 3. Record the change. **How you do that differs by repo, and the repo tells you which
    kind it is**. See [Recording your change](#recording-your-change) below.
 4. Keep PRs focused: one logical change each. Large refactors start as an issue.
-5. Write a clear commit message. Imperative mood (`fix(parser): …`) is encouraged,
-   not enforced.
+5. Title the pull request in Conventional Commits form: a type (`feat`, `fix`,
+   `docs`, `chore`, `ci`, `build`, `refactor`, `test`, `perf`, `revert`, or
+   `style`), an optional scope in parentheses, a colon, and a short description,
+   such as `fix(parser): keep the escape sequence in OBX-5`. A squash merge makes
+   the title the commit message.
 
 ## Recording your change
 
@@ -135,14 +144,15 @@ enforced by the release pipeline rather than by review:
 
 Every package is TypeScript, built with `tsup` (dual ESM + CJS), tested with
 Vitest, linted with ESLint, and formatted with Prettier, all inherited from the
-shared `@cosyte/*` config packages, not copied per repo. Most parsers ship with
-**zero runtime dependencies**, and we keep it that way unless there's a strong
-reason not to.
+shared `@cosyte/*` config packages, not copied per repo. Most libraries ship
+with **zero runtime dependencies**, and we keep it that way unless there's a
+strong reason not to.
 
 ## Licensing
 
-The parsers are MIT-licensed. By contributing, you agree your contribution is
-licensed under the same terms as the repository you're contributing to.
+The libraries and Pathways are MIT-licensed. By contributing, you agree your
+contribution is licensed under the same terms as the repository you're
+contributing to.
 
 **Those terms are a file, not a phrase, and they are per repository.** Read the
 `LICENSE` file in the repo you are contributing to; that is the one your
@@ -159,5 +169,6 @@ For `cosyte/.github` itself, the terms are the MIT License at
 
 ---
 
-Questions, or want to talk through an integration? Open an issue, or see
-[cosyte.com](https://cosyte.com).
+Questions? Start a discussion in
+[Discussions](https://github.com/cosyte/.github/discussions). Want an integration
+built? See [our integration services](https://cosyte.com/integration-services).

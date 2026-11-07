@@ -2,27 +2,26 @@
 
 ## Documentation
 
-API reference and guides for every `@cosyte/*` package live at
+API reference and guides for every `@cosyte/*` library live at
 **[docs.cosyte.com](https://docs.cosyte.com)**.
 
 ## Questions and bugs
 
-- **Bug or unexpected behavior:** open an issue on the package's repository. Use
-  the bug-report form and include a minimal, **PHI-free** reproduction.
-- **Question or idea:** open a feature-request issue, or start a discussion if the
-  repository has Discussions enabled.
+- **Bug or unexpected behavior:** open an issue on the affected repository. Use the bug-report form
+  and include a minimal, **PHI-free** reproduction.
+- **Question or idea:** start a discussion in
+  [Discussions](https://github.com/cosyte/.github/discussions), which covers every repository. For a
+  change you want in one library or in Pathways, open a feature-request issue on its repository.
 
-We're a small, solo-maintained project, so please be patient, but we do read
-everything.
+We read every issue and every discussion.
 
 ## Security
 
-Don't report security issues in public. See the
+Do not report security issues in public. See the
 [security policy](https://github.com/cosyte/.github/security/policy).
 
 ## Need an integration built?
 
-Cosyte does healthcare-integration consulting: building interfaces, replacing
-Mirth / NextGen Connect channels, and standing up the kind of pipelines these
-parsers plug into. If that's what you're really after, see
-**[cosyte.com](https://cosyte.com)**.
+We build healthcare integrations: interfaces, replacements for Mirth Connect channels, and the
+pipelines these libraries plug into. See
+**[our integration services](https://cosyte.com/integration-services)**.
