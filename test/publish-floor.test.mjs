@@ -278,6 +278,24 @@ async function stubRegistry(handler) {
   };
 }
 
+test('A12: a name with a second slash is asked for as one path segment', async () => {
+  // Every slash is escaped, not only the first. With only the first escaped, the request would go to
+  // `/@cosyte%2fhl7/extra`, an extra path segment rather than the name.
+  const paths = [];
+  const registry = await stubRegistry((req, res) => {
+    paths.push(req.url);
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  try {
+    const answer = await registryExistence(registry.url, '@cosyte/hl7/extra', globalThis.fetch);
+    assert.deepEqual(answer, { status: 'never-published' });
+    assert.deepEqual(paths, ['/@cosyte%2fhl7%2fextra']);
+  } finally {
+    await registry.close();
+  }
+});
+
 test('A12: a packument with versions is "published"', async () => {
   // Recorded rather than asserted inside the handler: an assertion that throws in there never
   // answers the request, and the case hangs instead of failing.

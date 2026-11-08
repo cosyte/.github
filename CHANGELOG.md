@@ -17,7 +17,11 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
-Nothing yet.
+- The release pipeline's registry lookups, in `scripts/install-check.mjs` and
+  `scripts/publish-floor.mjs`, escape every `/` in a package name rather than only the first. A
+  valid npm name has at most one, so no caller's lookup changes. `scripts/org-defaults-coverage.mjs`,
+  which only this repository runs, reads each issue template through one file descriptor. Inputs,
+  secrets, permissions and job ids are unchanged (#102).
 
 ## workflows-2026-11-07-9c75b80bfbf0
 
