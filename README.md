@@ -94,6 +94,9 @@ jobs:
     # with:
     #   files-command: pnpm check:no-emdash
     #   messages-command: pnpm check:no-emdash --stdin
+    # `node-version` defaults to "22". A package whose `engines.node` starts above that, with
+    # `engine-strict`, passes its floor, since pnpm refuses to run on a lower line:
+    #   node-version: "24"
 ```
 
 That caller reports two check-run contexts, `no-emdash / tracked-files` and `no-emdash / messages`,
@@ -120,7 +123,8 @@ jobs:
     # Copy a real one from the releases page; this placeholder resolves to nothing.
     uses: cosyte/.github/.github/workflows/gate-no-internal-refs.yml@workflows-YYYY-MM-DD-COMMIT
     # `command` defaults to `pnpm check:no-internal-refs`, so a caller that names it that way
-    # passes no inputs at all.
+    # passes no inputs at all. `node-version` defaults to "22"; a package that needs a later line
+    # passes it (`node-version: "24"`), as the em-dash gate's caller does.
 ```
 
 Its one context is `no-internal-refs / public-surface`.

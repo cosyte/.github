@@ -72,6 +72,14 @@ on:
         description: "The command that scans the caller's public surface. Its exit status is the job."
         type: string
         default: "pnpm check:no-internal-refs"
+      # THE NODE LINE THE CALLER'S COMMAND RUNS ON. Defaults to 22, the line this gate always ran
+      # on, so a caller passing nothing gets what it got before. A caller whose package.json sets
+      # `engines.node` above 22 with `engine-strict` passes its floor (`node-version: "24"`): pnpm
+      # refuses to run a script or an install on a Node below it, so the gate fails before it scans.
+      node-version:
+        description: "The Node version the gate's commands run on."
+        type: string
+        default: "22"
 
 permissions:
   contents: read
@@ -88,7 +96,8 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          # The caller's choice through an input, never a run body, so this expression is not shell.
+          node-version: ${{ inputs.node-version }}
 
       # The caller's own lockfile, and nothing this file chose. A tree with no `node_modules` is what
       # the non-installing form hands the scanner, which is correct for a scanner that needs none and

@@ -6,6 +6,11 @@
 // status over every tracked workflow file. Neither uses reviewdog/action-actionlint, which from
 // v1.75.0 installs actionlint by piping a download script from a fork into bash.
 //
+// THE RELEASE IS CACHED, AND THE CACHE IS TRUSTED NO FURTHER THAN A DOWNLOAD. GitHub's release
+// downloads answered 504 for hours on 2026-11-08 and failed this job everywhere, so each job restores
+// the tarball with actions/cache, keyed on the version and the SHA-256, downloads only when the cache
+// has no copy that matches, saves on a miss, and checks the SHA-256 of whatever it unpacks.
+//
 // THE STEPS ARE RUN, NOT ONLY READ. A checksum line that reads right and is wired wrong (a `|| true`,
 // a check after the unpack, a hash compared with nothing) would pass every textual assertion, so the
 // install step is executed against a fake `curl` serving a tarball built here: the right hash
@@ -28,7 +33,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 const WORKFLOWS = '.github/workflows';
 const FILES = ['ci.yml', 'self-check.yml'];
+const RESTORE = 'Restore the actionlint release from the cache';
 const INSTALL = 'Install actionlint at the pinned version and checksum';
+const SAVE = 'Save the actionlint release to the cache';
+const CACHE_PATH = '${{ runner.temp }}/actionlint-cache';
 const LINT = 'actionlint over .github/workflows/';
 const RELEASES = 'https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}';
 
@@ -115,14 +123,19 @@ test('both jobs pin the same version and the same SHA-256, and the gate in CLAUD
 test('each job installs from the official release, checks the hash before unpacking, and requires shellcheck', () => {
   for (const name of FILES) {
     const { job, text } = actionlintJob(name);
-    assert.deepEqual(job.steps.map((step) => step.label).slice(1), [INSTALL, LINT], `${name}: the steps after the checkout`);
+    assert.deepEqual(job.steps.map((step) => step.label).slice(1), [RESTORE, INSTALL, SAVE, LINT], `${name}: the steps after the checkout`);
     assert.equal(job.keys['continue-on-error'], undefined, `${name}: the job may not swallow a failure`);
     assert.equal(job.keys['timeout-minutes'], '5');
     const install = runScript(text, INSTALL);
     assert.ok(install.includes(RELEASES), `${name}: the download is not rhysd/actionlint's release`);
-    const check = install.indexOf('sha256sum -c -');
-    const unpack = install.indexOf('tar -xzf');
-    assert.ok(check !== -1 && unpack !== -1 && check < unpack, `${name}: the hash is checked before the unpack`);
+    // The last check stands unconditionally on the line before the unpack, so whichever branch put
+    // the tarball there, cached or downloaded, the bytes unpacked are the bytes just checked.
+    const lines = install.split('\n');
+    const unpack = lines.findIndex((line) => line.startsWith('tar -xzf '));
+    assert.notEqual(unpack, -1, `${name}: nothing is unpacked`);
+    assert.equal(lines[unpack - 1], 'echo "${ACTIONLINT_SHA256}  ${cache_dir}/${tarball}" | sha256sum -c -', `${name}: the hash is checked before the unpack`);
+    assert.equal(lines[unpack], 'tar -xzf "${cache_dir}/${tarball}" -C "${RUNNER_TEMP}" actionlint', `${name}: the unpack reads the checked file`);
+    assert.match(install, /^cache_dir="\$\{RUNNER_TEMP\}\/actionlint-cache"$/m, `${name}: the install reads where the cache restores`);
     assert.match(install, /^shellcheck --version$/m, `${name}: shellcheck must be present, or the shell checks are skipped`);
     for (const script of [install, runScript(text, LINT)]) {
       assert.match(script, /^set -euo pipefail$/m);
@@ -132,6 +145,33 @@ test('each job installs from the official release, checks the hash before unpack
   // The caller-facing half keeps its id and its one condition, so `<caller job> / actionlint` and
   // `run-actionlint: false` both mean what they meant.
   assert.equal(actionlintJob('ci.yml').job.keys.if, '${{ inputs.run-actionlint }}');
+});
+
+test('each job restores the release from the cache, keyed on the version and the SHA-256, and saves it only on a miss', () => {
+  const pins = new Set();
+  for (const name of FILES) {
+    const { job, text } = actionlintJob(name);
+    const [, restore, , save] = job.steps;
+    const restoreUses = /^actions\/cache\/restore@([0-9a-f]{40})$/.exec(restore.fields.uses ?? '');
+    const saveUses = /^actions\/cache\/save@([0-9a-f]{40})$/.exec(save.fields.uses ?? '');
+    assert.ok(restoreUses && saveUses, `${name}: actions/cache restore and save, each pinned to a full commit SHA`);
+    for (const uses of [restore.fields.uses, save.fields.uses]) {
+      const line = text.split('\n').find((candidate) => candidate.trim().startsWith(`uses: ${uses} `)) ?? '';
+      assert.match(line, / # v\d+\.\d+\.\d+$/, `${name}: ${uses} has no version beside it`);
+    }
+    assert.equal(restoreUses[1], saveUses[1], `${name}: restore and save are one actions/cache commit`);
+    pins.add(restoreUses[1]);
+    assert.equal(restore.fields.id, 'actionlint-cache');
+    assert.equal(restore.with.path, CACHE_PATH);
+    assert.equal(restore.with.key, 'actionlint-${{ env.ACTIONLINT_VERSION }}-linux-amd64-${{ env.ACTIONLINT_SHA256 }}');
+    assert.equal(restore.with['restore-keys'], undefined, `${name}: a partial match would restore another version`);
+    assert.equal(restore.fields['continue-on-error'], undefined);
+    // Saved under the key the restore missed on, from the path it restores to, and only on a miss.
+    assert.equal(save.fields.if, "${{ steps.actionlint-cache.outputs.cache-hit != 'true' }}");
+    assert.equal(save.with.path, CACHE_PATH);
+    assert.equal(save.with.key, '${{ steps.actionlint-cache.outputs.cache-primary-key }}');
+  }
+  assert.equal(pins.size, 1, 'ci.yml and self-check.yml pin one actions/cache');
 });
 
 // ---------------------------------------------------------------------------
@@ -150,16 +190,22 @@ function fakeRelease(dir) {
   return { tarball, sha: createHash('sha256').update(readFileSync(tarball)).digest('hex') };
 }
 
-/** A PATH holding only the tools the install step calls, a fake `curl`, and a fake `shellcheck` if asked. */
-function toolbox(dir, { tarball, shellcheck }) {
+/**
+ * A PATH holding only the tools the install step calls, a fake `curl`, and a fake `shellcheck` if
+ * asked. The fake `curl` records the URL and serves the tarball built above, or exits 22, curl's
+ * code for an HTTP error such as a 504, when `curlFails` is set.
+ */
+function toolbox(dir, { tarball, shellcheck, curlFails = false }) {
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  for (const tool of ['tar', 'gzip', 'sha256sum', 'cp']) symlinkSync(which(tool), join(bin, tool));
-  // `curl -fsSL --retry 3 -o <file> <url>`: record the URL and serve the tarball built above.
+  for (const tool of ['tar', 'gzip', 'sha256sum', 'cp', 'mkdir']) symlinkSync(which(tool), join(bin, tool));
+  // `curl ... -o <file> <url>`: the URL is the last bare word. The numbers after `--retry` and the
+  // like are bare words too, and are overwritten by the URL that follows them.
   writeFileSync(
     join(bin, 'curl'),
     `#!${BASH}\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done\n` +
-      `printf '%s\\n' "$url" > '${join(dir, 'curl-url')}'\ncp '${tarball}' "$out"\n`,
+      `printf '%s\\n' "$url" > '${join(dir, 'curl-url')}'\n` +
+      (curlFails ? 'echo "curl: (22) The requested URL returned error: 504" >&2\nexit 22\n' : `cp '${tarball}' "$out"\n`),
   );
   chmodSync(join(bin, 'curl'), 0o755);
   if (shellcheck) {
@@ -169,20 +215,33 @@ function toolbox(dir, { tarball, shellcheck }) {
   return bin;
 }
 
-function install(name, { sha, shellcheck = true } = {}) {
+/**
+ * Run the install step. `cached` puts a file where the cache restores to first: `'release'` the
+ * release tarball itself, `'tampered'` other bytes under its name. `curlFails` makes every download
+ * fail as GitHub's release downloads did on 2026-11-08.
+ */
+function install(name, { sha, shellcheck = true, cached, curlFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'actionlint-pinned-'));
   const release = fakeRelease(dir);
   const temp = join(dir, 'runner-temp');
   mkdirSync(temp);
-  const bin = toolbox(dir, { tarball: release.tarball, shellcheck });
+  if (cached !== undefined) {
+    const cacheDir = join(temp, 'actionlint-cache');
+    mkdirSync(cacheDir);
+    const target = join(cacheDir, 'actionlint_1.7.12_linux_amd64.tar.gz');
+    if (cached === 'release') writeFileSync(target, readFileSync(release.tarball));
+    else writeFileSync(target, 'not the release\n');
+  }
+  const bin = toolbox(dir, { tarball: release.tarball, shellcheck, curlFails });
   const result = spawnSync(BASH, ['--noprofile', '--norc', '-eo', 'pipefail', '-c', runScript(actionlintJob(name).text, INSTALL)], {
     encoding: 'utf8',
     env: { PATH: bin, RUNNER_TEMP: temp, ACTIONLINT_VERSION: '1.7.12', ACTIONLINT_SHA256: sha ?? release.sha },
   });
   const url = existsSync(join(dir, 'curl-url')) ? readFileSync(join(dir, 'curl-url'), 'utf8').trim() : '';
   const installed = existsSync(join(temp, 'actionlint'));
+  const downloaded = url !== '';
   rmSync(dir, { recursive: true, force: true });
-  return { code: result.status, output: `${result.stdout}${result.stderr}`, url, installed };
+  return { code: result.status, output: `${result.stdout}${result.stderr}`, url, installed, downloaded };
 }
 
 for (const name of FILES) {
@@ -204,6 +263,35 @@ for (const name of FILES) {
   test(`${name}: a runner without shellcheck fails the step rather than linting without the shell checks`, () => {
     const run = install(name, { shellcheck: false });
     assert.notEqual(run.code, 0, run.output);
+  });
+
+  test(`${name}: a cached release whose hash matches installs with no download, so a release outage cannot fail it`, () => {
+    const run = install(name, { cached: 'release', curlFails: true });
+    assert.equal(run.code, 0, run.output);
+    assert.equal(run.downloaded, false, 'the release was downloaded although the cache held it');
+    assert.equal(run.installed, true);
+    assert.match(run.output, /the cached release matches the pinned SHA-256/);
+  });
+
+  test(`${name}: a cached file whose hash does not match is downloaded again, and the download is checked`, () => {
+    const run = install(name, { cached: 'tampered' });
+    assert.equal(run.code, 0, run.output);
+    assert.match(run.output, /::warning::the cached actionlint release does not match the pinned SHA-256/);
+    assert.equal(run.url, 'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz');
+    assert.equal(run.installed, true);
+  });
+
+  test(`${name}: a cached release is checked against the pinned hash too, and a mismatch installs nothing`, () => {
+    const run = install(name, { cached: 'release', sha: '0'.repeat(64) });
+    assert.notEqual(run.code, 0, run.output);
+    assert.equal(run.installed, false, 'an unverified binary was unpacked');
+  });
+
+  test(`${name}: with nothing cached, a failed download fails the step and installs nothing`, () => {
+    const run = install(name, { curlFails: true });
+    assert.notEqual(run.code, 0, run.output);
+    assert.equal(run.downloaded, true);
+    assert.equal(run.installed, false);
   });
 }
 

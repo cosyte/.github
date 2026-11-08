@@ -573,6 +573,14 @@ test('AC-12: an unset variable fails, because `set -u` is load-bearing rather th
 const EXPRESSION = /\$\{\{/;
 
 /**
+ * The one expression a gate may hold outside an `env:` block: the caller's Node line, handed to
+ * `actions/setup-node` as an action input under `with:`. An action input is not a shell script, so
+ * nothing interpolated into it is executed. Exactly this line and only under `with:`: the same text in
+ * a `run:` body, or any other expression under `with:`, is still a finding.
+ */
+const NODE_VERSION_INPUT = 'node-version: ${{ inputs.node-version }}';
+
+/**
  * Every expression in this workflow that is not on a child line of an `env:` block.
  *
  * A RAW TEXT SWEEP OVER THE EXECUTABLE LINES, not a read of the parsed steps. A reader can always be
@@ -583,16 +591,21 @@ const EXPRESSION = /\$\{\{/;
 function interpolationFindings(name, text) {
   const findings = [];
   let envIndent = null;
+  let withIndent = null;
   for (const [index, line] of decomment(text).entries()) {
     if (line.trim() === '') continue;
     const indent = indentOf(line);
     if (envIndent !== null && indent <= envIndent) envIndent = null;
+    if (withIndent !== null && indent <= withIndent) withIndent = null;
     const opensEnv = /^\s*(?:-\s+)?env:\s*$/.test(line);
+    const opensWith = /^\s*(?:-\s+)?with:\s*$/.test(line);
     const insideEnv = envIndent !== null && indent > envIndent;
-    if (EXPRESSION.test(line) && !insideEnv) {
+    const nodeVersion = withIndent !== null && indent > withIndent && line.trim() === NODE_VERSION_INPUT;
+    if (EXPRESSION.test(line) && !insideEnv && !nodeVersion) {
       findings.push(`${WORKFLOWS}/${name}:${index + 1}: ${line.trim()} is an expression outside an \`env:\` block`);
     }
     if (opensEnv) envIndent = indent;
+    if (opensWith) withIndent = indent;
   }
   return findings;
 }
@@ -614,6 +627,10 @@ test('AC-13: an inline interpolation is reported, and the mutation refuses to be
     [EMDASH_GATE, '          $FILES_COMMAND\n', '          ${{ inputs.files-command }}\n'],
     [EMDASH_GATE, `            printf '%s\\n' "$PR_TITLE"\n`, "            printf '%s\\n' '${{ github.event.pull_request.title }}'\n"],
     [REFS_GATE, '          $SURFACE_COMMAND\n', '          ${{ inputs.command }}\n'],
+    // The one line allowed under `with:` is still a finding in a `run:` body,
+    [REFS_GATE, '          $SURFACE_COMMAND\n', '          node-version: ${{ inputs.node-version }}\n'],
+    // and `with:` admits that line alone, not any expression.
+    [REFS_GATE, '          node-version: ${{ inputs.node-version }}\n', '          node-version: ${{ github.event.pull_request.title }}\n'],
   ]) {
     const original = read(file);
     const mutated = original.replace(from, () => to);
@@ -666,7 +683,7 @@ function readsTextFindings(name, text) {
 test('AC-14: the public-surface gate exposes exactly one job, running the caller\'s command', () => {
   const read14 = interfaceOf(REFS_GATE);
   assert.deepEqual(Object.keys(read14.jobs), ['public-surface']);
-  assert.deepEqual(Object.keys(read14.inputs), ['command']);
+  assert.deepEqual(Object.keys(read14.inputs), ['command', 'node-version']);
   assert.equal(read14.inputs.command.default.value, 'pnpm check:no-internal-refs');
   assert.deepEqual(read14.secrets, {}, 'a gate that needs a secret is a gate that can leak one');
   assert.equal(stepEnv(REFS_GATE, SURFACE_STEP).SURFACE_COMMAND, '${{ inputs.command }}');
