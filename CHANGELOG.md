@@ -19,13 +19,27 @@ so the next change to this file moves those lines under a heading with that name
 
 Nothing yet.
 
-## workflows-2026-11-07-b3061b0471d4
+## workflows-2026-11-07-498c7c13c886
 
-2026-11-07. Act on: nothing, against `workflows-2026-11-07-d84b6fe790ff`.
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-f1c57f871cba`.
 
 **This is the reference every caller moves to**, all at once. It carries everything in the
 references below it as well, so a caller moving here from an earlier reference, or from `@main`,
 takes in `workflows-2026-11-07-32f9f01541de`'s change to act on too.
+
+- Every `github/codeql-action` pin, `init` and `analyze` in `codeql.yml` and `upload-sarif` in
+  `scorecard.yml`, moves together from v4.37.9 to v4.39.3, in one commit (#97).
+
+## workflows-2026-11-07-f1c57f871cba
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-b3061b0471d4`.
+
+- Every `actions/setup-node` pin moves from 7.0.0 to 7.1.0, the tests that quote the pin with it
+  (#73).
+
+## workflows-2026-11-07-b3061b0471d4
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-d84b6fe790ff`.
 
 - Every `github/codeql-action` pin, `init` and `analyze` in `codeql.yml` and `upload-sarif` in
   `scorecard.yml`, moves together from v4.37.5 to v4.37.9, the last patch on that line, because
