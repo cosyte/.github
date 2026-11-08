@@ -55,9 +55,11 @@ surface we care about most:
   credentials its configuration requires, a way to read messages stored encrypted at rest without
   the key, or PHI in a log, an error, or the health endpoint.
 
-Three of the libraries have a third-party runtime dependency, one each: `@cosyte/ccda` on
-`@xmldom/xmldom`, `@cosyte/ncpdp` on `fast-xml-parser`, and `@cosyte/dates` on `temporal-polyfill`.
-The others depend on nothing outside `@cosyte`, so the third-party surface is small by design.
+Four of the libraries have a third-party runtime dependency, one each. Three require theirs:
+`@cosyte/ccda` on `@xmldom/xmldom`, `@cosyte/ncpdp` on `fast-xml-parser`, and `@cosyte/dates` on
+`temporal-polyfill`. `@cosyte/cli` declares `@modelcontextprotocol/sdk` as an optional dependency
+and loads it only when its MCP server starts. The others depend on nothing outside `@cosyte`, so the
+third-party surface is small by design.
 
 ## A note on PHI
 
