@@ -17,17 +17,56 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
-- `ci.yml`: the `node-versions` default is `["22", "24", "26"]`, adding Node 26 to the matrix of
-  every caller that passes no list. Act on: a caller that passes no `node-versions` now runs its
-  suite on Node 26 too; one that cannot yet passes `'["22", "24"]'`.
+Nothing yet.
+
+## workflows-2026-11-07-5c8c01fe48d2
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-6c358640421d`.
+
+**This is the reference every caller moves to**, all at once. It carries everything in the two
+references below it as well, so a caller moving here from an earlier reference, or from `@main`,
+takes in `workflows-2026-11-07-32f9f01541de`'s change to act on too.
+
+- `ci.yml`'s `actionlint` job runs rhysd/actionlint's own release binary, version 1.7.12, checked
+  against a pinned SHA-256 before it is unpacked, in place of reviewdog/action-actionlint. From
+  v1.75.0 that action installs actionlint by piping a download script from a fork into bash. The
+  job id and the `run-actionlint` input are unchanged. The job now fails on actionlint's own exit
+  status over every tracked workflow file, where the action reported only findings on lines a pull
+  request changed, and it needs shellcheck on the runner, which the hosted runner has (#93).
+
+## workflows-2026-11-07-6c358640421d
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-32f9f01541de`.
+
+It carries everything in `workflows-2026-11-07-32f9f01541de` below as well.
+
+- A re-run of a release job is safe against an immutable release. `scripts/github-release.mjs` no
+  longer replaces an asset with `--clobber`, which GitHub refuses for a published immutable release.
+  For a release that already exists it edits the body and compares each asset it built with the one
+  the release carries: the same content is left as it is, different content fails the run naming the
+  first path that differs, and only an asset the release does not carry yet is uploaded. The same
+  content means the same files with the same bytes, so a tarball packed again from the same commit,
+  whose timestamps differ, still counts as the same (#87).
+
+## workflows-2026-11-07-32f9f01541de
+
+2026-11-07. Act on: `ci.yml`'s `node-versions` default is `["22", "24", "26"]`, so a caller that
+passes no list now runs its suite on Node 26 too. A caller that cannot run there yet passes
+`'["22", "24"]'` until it can.
+
+- `ci.yml` adds Node 26 to the matrix a caller gets when it passes no `node-versions` (#88).
 - `pr-title.yml` is new: one job, `conventional-commits`, that holds a pull request title to
-  Conventional Commits. Nothing to act on until a caller adopts it; its context is
-  `<caller job id> / conventional-commits`.
-- `release.yml`: the "Version Packages" pull request and its commit are titled
-  `chore(release): version packages`, so `pr-title.yml` passes them.
+  Conventional Commits. There is nothing to act on until a caller adopts it, with the example in
+  README.md, "Calling them"; its context is `<caller job id> / conventional-commits`. Before
+  requiring it, a caller sets its Dependabot `commit-message` to `prefix: chore` with
+  `include: scope`, as this repository now does, so that Dependabot's titles read
+  `chore(deps): bump ...` and pass (#88).
+- `release.yml` titles the "Version Packages" pull request and its commit
+  `chore(release): version packages`, which `pr-title.yml` passes; the changesets default,
+  `Version Packages`, does not (#88).
 - The reference note no longer counts the reusable workflows as six, and comments in
   `drift-check.yml`, `scripts/release-notes.mjs`, and `scripts/org-defaults-coverage.mjs` no longer
-  point at deleted documents.
+  point at deleted documents (#88).
 
 ## workflows-2026-11-07-6d0a8217760a
 

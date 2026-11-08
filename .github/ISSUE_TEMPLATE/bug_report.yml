@@ -1,5 +1,5 @@
 name: Bug report
-description: A @cosyte/* package crashes, misparses an input, or behaves incorrectly.
+description: A @cosyte/* library or Pathways crashes, misparses an input, or behaves incorrectly.
 labels: ["bug"]
 body:
   - type: markdown
@@ -15,10 +15,19 @@ body:
       options:
         - "@cosyte/hl7"
         - "@cosyte/mllp"
-        - "@cosyte/dicom"
-        - "@cosyte/x12"
+        - "@cosyte/fhir"
         - "@cosyte/ccda"
+        - "@cosyte/x12"
         - "@cosyte/ncpdp"
+        - "@cosyte/astm"
+        - "@cosyte/dicom"
+        - "@cosyte/terminology"
+        - "@cosyte/transform"
+        - "@cosyte/deid"
+        - "@cosyte/synth"
+        - "@cosyte/dates"
+        - "@cosyte/cli"
+        - "Pathways (in development)"
         - "shared config / tooling (@cosyte/tsconfig, eslint-config, …)"
         - "other / not sure"
     validations:

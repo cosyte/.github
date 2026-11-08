@@ -253,7 +253,7 @@ and every refusal below is a red run on this repository that publishes nothing:
 - **A name that already exists.** Never deleted, never force-updated, never pointed at another
   commit. Someone decides by hand what that existing reference is.
 - **An interface it cannot read.** Node ships no YAML parser and this repository has no
-  `package.json` to add one to, so `reference-publish.mjs` carries a narrow reader that recognises
+  `package.json` to add one to, so `reference-publish.mjs` carries a narrow reader that recognizes
   the shapes these six files use and refuses, naming the workflow and the line, on anything else.
   That asymmetry is the design: a reader that refuses on an unfamiliar shape cannot silently miss a
   caller-affecting change, and a permissive one can. That includes anything indented under a value
@@ -297,7 +297,7 @@ this repository has no way to edit them and no policy that can force them. Until
 
 ## The docs-content gate
 
-**`check-docs-content` is OFF by default, and no caller changes behaviour until it opts in by
+**`check-docs-content` is OFF by default, and no caller changes behavior until it opts in by
 name.** Every caller tracks `@main` and picks up an edit to this workflow on its next run, so a
 default of `false` is the whole of what keeps a new gate from redding thirteen repositories on the
 day it merges.
@@ -391,7 +391,7 @@ reads.
 **Each of the four is announced before it happens.** A step immediately above each checkout prints
 `release tooling: ref <sha>, from cosyte/.github`, and when the property is empty it prints
 `release tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch`
-first. The fallback is not a swallowed failure and not new behaviour: it is exactly what the empty
+first. The fallback is not a swallowed failure and not new behavior: it is exactly what the empty
 value has been producing here all along, said out loud, and the run proceeds on that default branch
 rather than refusing. `job.workflow_sha` is documented as unavailable on GitHub Enterprise Server,
 which is the platform case that line has to stay legible for. `test/workflow-sha.test.mjs` asserts
@@ -487,7 +487,7 @@ read as a paragraph, not as a row of lines, so `[x12 envelope\nreference](./gone
 code span opened on one line and closed on the next is one span. Hard-wrapped prose is the house
 style of every markdown file in this org, so a line-by-line scan would leave a large share of every
 corpus silently outside the gate. Block boundaries are still boundaries: two list items, two
-paragraphs and a heading beside its neighbour are never joined. An unclosed code fence inside a list
+paragraphs and a heading beside its neighbor are never joined. An unclosed code fence inside a list
 item ends with that item rather than running to end of file, so a malformed sample in one bullet
 cannot hide every link after it; an unclosed fence at the top level does run to end of file, which
 is what CommonMark says it is. A BLOCK QUOTE is a container in exactly the same way: an unclosed
@@ -515,7 +515,7 @@ nothing here reads. The red and green controls are fixture trees in
 between backticks, a fenced block under any info string and a four-space indented block are all
 code at the TOP LEVEL, inside a LIST ITEM, inside a BLOCK QUOTE and inside a `:::tip` admonition
 alike, at every nesting depth those containers reach, and nothing inside any of them is ever a
-target. A quote's `>` markers come off the line - one per nesting level, `> >` included - BEFORE the
+target. A quote's `>` markers come off the line (one per nesting level, `> >` included) BEFORE the
 fence and the four-space indent are measured, and the column after them is the column both are
 measured from, so a quoted sample is read exactly as the same sample is at the top level. What that
 buys is an ordinary piece of technical writing:
@@ -531,8 +531,8 @@ buys is an ordinary piece of technical writing:
 which yields no target at all rather than a `B1` for `event` over a page the site renders exactly as
 its author intended. The promise is bounded in the direction that matters: a quote is a container,
 not a hole, so a broken link in quoted PROSE is still a `B1` on the line the link opens on, a
-wrapped one included, and an unclosed fence inside a quote ends where the quote ends - or with the
-quoted list item that holds it, whichever comes first - rather than swallowing the rest of the file.
+wrapped one included, and an unclosed fence inside a quote ends where the quote ends, or with the
+quoted list item that holds it if that comes first, rather than swallowing the rest of the file.
 
 ### One correction, because an org-side artifact gets it backwards
 
@@ -674,7 +674,7 @@ transport fault, a body that does not parse, and a paginated list that cannot be
 absent environment: a permission error that sends a maintainer to inspect a correctly configured
 environment has cost them the actual diagnosis.
 
-**The behaviour does not depend on the caller's visibility.** Required reviewers on a private
+**The behavior does not depend on the caller's visibility.** Required reviewers on a private
 repository need an Enterprise plan, this org is on Enterprise, and so the rule, the outcome and the
 refusal wording are identical for a public and a private caller. There is no exemption clause and no
 second wording, and `test/environment-gate.test.mjs` proves it by flipping one caller between the two
@@ -875,7 +875,7 @@ declares `needs:` and holds no environment, and nothing here relaxes a gate that
 
 ### What deliberately does not follow here
 
-- **`ci.yml`'s behaviour is unchanged.** The settled fact may well argue for taking the input away,
+- **`ci.yml`'s behavior is unchanged.** The settled fact may well argue for taking the input away,
   or for callers requiring something unskippable instead, but thirteen repositories call this
   workflow at `@main` and that is a policy change with an org-wide blast radius. It belongs to its
   own change with its own census, not to the investigation that measured it. The only edit made to
@@ -1143,7 +1143,7 @@ than what is needed here. **Do not reuse `DOCS_REPO_DISPATCH_TOKEN`**, which nee
 `github-actions[bot]` whichever token is in play. Only the PR's author changes, to the token's owner.
 
 **Unset, the workflow warns rather than fails.** The secret is optional and falls back to
-`GITHUB_TOKEN`, which is exactly the old behaviour, trap included. Failing closed would take every
+`GITHUB_TOKEN`, which is exactly the old behavior, trap included. Failing closed would take every
 caller's release pipeline down to protect against a state those repos are already in. The fallback is
 announced in the run log, because a fix that silently is not applied is worse than no fix.
 
@@ -1223,8 +1223,8 @@ words, so an entry carries a kind:
 
 **The two gates strip `=blocked` and only `=blocked`, and that asymmetry is load-bearing.**
 `install-check.mjs` cannot fail closed on a typo (a red there misreports a permanent release), so
-instead an unrecognised or `private` tag stays **attached** to the name, matches no dependency, and
-excuses nothing. The first version stripped every tag, which is behaviour-identical for `blocked` and
+instead an unrecognized or `private` tag stays **attached** to the name, matches no dependency, and
+excuses nothing. The first version stripped every tag, which is behavior-identical for `blocked` and
 quietly taught the **post-publish** gate to excuse `private`: measured against the same facts,
 `@cosyte/assets=private` gave `uninstallable` before and `blocked-peer` after. `install-check.mjs`
 only ever observes packages that published, which is the one place `private` must never excuse
@@ -1624,7 +1624,7 @@ and stricter one, `probeChildEnv`, because with `--ignore-scripts` the install r
 else while the probe runs third-party module-init code. Why that one is an allow-list where this one
 is a namespace deny is in [What it does not narrow](#what-it-does-not-narrow), which owns it.
 
-Two npm behaviours that each cost a measurement, recorded so they are not rediscovered:
+Two npm behaviors that each cost a measurement, recorded so they are not rediscovered:
 
 - Pointing `NPM_CONFIG_USERCONFIG` and `NPM_CONFIG_GLOBALCONFIG` at the **same file** makes npm abort
   with `double-loading config ... as "global", previously loaded as "user"`. They must be two files.
@@ -1863,7 +1863,7 @@ detail. All six live drops in the org separate on that reading, in both directio
   head half, so neither half matches alone and a wholly internal entry would publish. No pending
   changeset in the org hits that today, which is why it is closed here rather than left for the
   release that would have published it.
-- **The direction of error, stated because it is the unfavourable one.** This can only ever turn a
+- **The direction of error, stated because it is the unfavorable one.** This can only ever turn a
   drop into a keep, and that is a **subset** argument rather than a claim about regexes: the old rule
   dropped on any match anywhere, this one drops on any match *starting* before the boundary, and the
   second set of matches is contained in the first. So it holds for any pattern the word list ever
@@ -1916,11 +1916,11 @@ the roadmap, never in a release body) and the gate then proves the translation w
 never silent: every rewrite and every dropped change is printed to the run log.
 
 **What the gate does and does not cover.** It enforces the *known* banned set, and it shares the
-project-prefix list with the translator, so it cannot catch an identifier from a programme prefix
+project-prefix list with the translator, so it cannot catch an identifier from a program prefix
 nobody has added to that list yet. No rule could: the only way to spot one from its shape alone is a
 `WORD-N` pattern, which is exactly what destroys `SCH-11`, `PID-3`, `MSH-2`, `NM1-03`, and `ICD-10`.
 What the gate *does* buy is that a rule cannot be quietly bypassed downstream, because it re-reads
-the finished bytes. **Starting a new programme means adding its prefix to `PROJECT_PREFIXES`**; that
+the finished bytes. **Starting a new program means adding its prefix to `PROJECT_PREFIXES`**; that
 is the maintenance cost of keying on prefixes instead of shapes, and it is the cheaper mistake.
 
 Three traps the implementation handles deliberately, each of which caused a real leak on 2026-07-27:
@@ -1944,7 +1944,7 @@ load-bearing rule.** Removing a phrase from the middle of a clause leaves prose 
 `no longer carries, item identifiers or ADR numbers`, and **nothing downstream could see it**,
 because a mangled sentence carries no banned bytes for a byte-level rule to find. A gate reads
 bytes, not grammar. So a span is removed only when the text on both sides of it is the same kind of
-thing (nothing, a clause separator, or a plain word), and never when it is glued to its neighbour by
+thing (nothing, a clause separator, or a plain word), and never when it is glued to its neighbor by
 a hyphen or a slash (`The MLLP-1-driven reconnect` is one word). A separator on exactly one side
 means the rest of that clause stays behind, and the run **refuses**, naming the changeset. Leaving
 the identifier in place is deliberate: it keeps something in the bytes for the gate to catch.
@@ -2061,7 +2061,7 @@ check its run never got to. Neither actually paid a second recovery round, becau
 running the pipeline locally instead of resubmitting and reading CI one refusal at a time. **That is
 the cost, and it is a cost even when nobody pays it twice:** the tool is only safe to use if you know
 not to trust it to tell you everything that is wrong. Collecting all refusals and reporting them
-together is a real improvement and a behaviour change in its own right, so it is not folded into the
+together is a real improvement and a behavior change in its own right, so it is not folded into the
 cap raise.
 
 ### The over-cap refusal offers no replacement sentence, on purpose
@@ -2073,11 +2073,11 @@ the over-cap sentence being rejected. A reader who adopted it verbatim failed th
 identically. **A wrong suggestion in an error message is worse than no suggestion**, because it is
 confidently misleading at exactly the moment someone is trusting the tool.
 
-**And a correct one cannot be derived here.** Choosing what to leave out of a sentence is a judgement
-about which facts matter, which is precisely the judgement this gate refuses to make on an author's
+**And a correct one cannot be derived here.** Choosing what to leave out of a sentence is a judgment
+about which facts matter, which is precisely the judgment this gate refuses to make on an author's
 behalf, and a mechanical cut is what published `…two different drugs with o.` to a real release. So the
 message now states the constraint (the measured length, the cap, the overage), quotes the sentence
-**labelled as refused**, reports the translated form when translation changed it because that is the
+**labeled as refused**, reports the translated form when translation changed it because that is the
 form measured, and says plainly that no shortened version is offered and why. The refusal itself is
 unchanged: still red, still before npm.
 
@@ -2245,7 +2245,7 @@ for it to advance.
 `transform` was a fourth and is now at `0.0.1`, which is worth stating precisely rather than
 quietly dropping. It escaped hours before this landed, by merging a "Version Packages" PR opened on
 2026-07-22, *before* the notes gate was made fail-closed. That route requires a PR that already
-exists, so it is not a fix and it did not generalise: `cli` and `synth` have no Version PR at all,
+exists, so it is not a fix and it did not generalize: `cli` and `synth` have no Version PR at all,
 and no run of theirs could open one.
 
 **The test is a property of the history and of nothing else:** no commit reachable from `HEAD` has
@@ -2535,7 +2535,7 @@ this account owns that has no issue templates of its own. GitHub's own requireme
 > If an issue template sets a label, that label must be created in your `.github` repository and any
 > repositories where the template will be used.
 
-A repository that never created `bug` renders the form perfectly and files the issue **unlabelled**.
+A repository that never created `bug` renders the form perfectly and files the issue **unlabeled**.
 The run is green, the contributor sees nothing wrong, and nobody learns of it. Before this,
 "the defaults cover every repository" was an assumption with no measurement behind it.
 
@@ -2596,7 +2596,7 @@ run** naming what could not be read, and none is ever reported as coverage:
   transport fault, or a body that does not parse. The repository is classified neither covered nor
   overridden, and the refusal names the repository and the read.
 - **a default template it cannot parse**, or one declaring labels in a form that is not a list of
-  strings. This repository ships no YAML parser, so the reader recognises the shapes an issue form
+  strings. This repository ships no YAML parser, so the reader recognizes the shapes an issue form
   uses and refuses on anything else, naming the file. Reading an unparseable template as "declares no
   labels" would leave a real obligation unmeasured while the run went green. **If you add a shape it
   does not know, widen the reader and pin the new shape as a test; do not loosen it.**
@@ -2653,7 +2653,7 @@ fetched 2026-09-03:
 |---|---|
 | **the supported set, verbatim from its table** | *CODE_OF_CONDUCT.md*, *CONTRIBUTING.md*, discussion category forms, *FUNDING.yml*, issue and pull request templates with their *config.yml*, *SECURITY.md*, *SUPPORT.md* |
 | **a governance file** | absent from that table. The string `governance` occurs zero times on the page |
-| **a licence** | ruled out in the page's own words: "You cannot create a default license file. License files must be added to individual repositories so the file will be included when a project is cloned, packaged, or downloaded." |
+| **a license** | ruled out in the page's own words: "You cannot create a default license file. License files must be added to individual repositories so the file will be included when a project is cloned, packaged, or downloaded." |
 
 **So the answer to "who decides, and how" travels in the contributing guide.**
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is served account-wide, and the governance answer is written
@@ -2663,10 +2663,10 @@ version is reached by a link and is never served: it is not a supported type, so
 repository but this one. Putting the answer only in `GOVERNANCE.md` and linking to it would have
 shipped the reach without the answer, which is the shape of the claim this section exists to refuse.
 
-**And the licence is this repository's own.** [`LICENSE`](LICENSE) is MIT, copyright Cosyte, and it
-covers `cosyte/.github` and nothing else. Every other `@cosyte/*` repository states its terms in its
-own tree or states none; this file cannot supply them, and the contributing guide now says so rather
-than leaving "the same terms as the repository you're contributing to" pointing at nothing.
+**And the license is this repository's own.** [`LICENSE`](LICENSE) is MIT, copyright Cosyte LLC,
+and it covers `cosyte/.github` and nothing else. Every other `@cosyte/*` repository states its terms
+in its own tree or states none; this file cannot supply them, and the contributing guide now says so
+rather than leaving "the same terms as the repository you're contributing to" pointing at nothing.
 
 **The limit, stated rather than papered over: a repository with its own `CONTRIBUTING.md` gets none
 of this.** The override is per type, so its guide replaces this one whole and takes the inline
@@ -2683,7 +2683,7 @@ the pointer is a `url:` field rather than a link.
 
 **That test also holds the rest of this section, and a negation counts where it attaches.** It reads
 every tracked markdown document and fails naming the one that asserts account-wide reach for a
-governance file or for the licence, and it fails if `LICENSE` and the contributing guide's
+governance file or for the license, and it fails if `LICENSE` and the contributing guide's
 `## Licensing` section stop agreeing. The assertion it hunts is ordinarily written with a negative
 in it, because the mechanism it borrows is "a repository with no file of its own gets this
 account's", so a check that skipped every sentence carrying `no` would skip the ordinary spellings
@@ -2796,7 +2796,7 @@ Sibling copies of this gate partition the tree into "scanned" and "declared bina
 track vendored `.tgz` archives where a DEFLATE stream can hold the three bytes by coincidence. This
 repository tracks no binary and keeps no changelog archive, so there is no partition and no skip
 path: every tracked file is read in full, `scanned` always equals `git ls-files`, and a `binary`
-attribute is refused rather than honoured.
+attribute is refused rather than honored.
 
 That matters because a refuter defeated the sibling's partition twice with a one-line path exclusion:
 first by accounting the skipped paths into the declared-binary bucket so the arithmetic balanced,

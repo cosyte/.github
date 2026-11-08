@@ -13,10 +13,10 @@ only the contributing guide carries the answer everywhere.
 
 ## Who decides
 
-**One maintainer holds the final call: `noah`, the account owner of record for `cosyte`.** There is
-no committee, no vote, and no tie to break. That is stated plainly rather than left to be inferred,
-because a contributor who cannot name the decider reads silence as a rejection, and an implied
-committee is a decision route nobody can actually use.
+**We hold the final call: Cosyte, which owns the `cosyte` organization and maintains these
+repositories.** There is no committee and no vote. That is stated plainly rather than left to be
+inferred, because a contributor who cannot name the decider reads silence as a rejection, and an
+implied committee is a decision route nobody can actually use.
 
 Anyone may open an issue or a pull request. Nobody needs permission to propose a change, and nothing
 here is a barrier to contributing: it describes what happens after you propose, not whether you may.
@@ -29,8 +29,8 @@ the reasoning behind a change to how they behave has to outlive the session that
 
 1. **A proposal is an issue or a pull request.** For anything larger than a small fix, open the issue
    first, as `CONTRIBUTING.md` asks. It saves a round trip, and it is where the decision gets made.
-2. **The maintainer responds on the thread**, accepting it, declining it, or naming what would change
-   the answer. A declined proposal gets a reason. "No" with no reason is a defect in this process,
+2. **We respond on the thread**, accepting it, declining it, or naming what would change the
+   answer. A declined proposal gets a reason. "No" with no reason is a defect in this process,
    not an outcome of it.
 3. **Where a rule already answers it, the rule is quoted rather than re-argued.** The standing rules
    live in the repository they bind: this repository's `README.md` holds the pipeline rules, each
@@ -56,13 +56,13 @@ the rule, argued on its own issue, before the change that depends on it.
    decision you are waiting on. An issue is visible to everyone; a re-ping in a comment is visible to
    whoever already muted the thread.
 3. **If you still disagree with the decision, say that on the issue and ask for the reason in
-   writing.** You are entitled to a reason. You are not entitled to a different answer, and the
-   maintainer's call stands once it is given with one.
+   writing.** You are entitled to a reason. You are not entitled to a different answer, and our call
+   stands once it is given with one.
 4. **Two exceptions do not use this route at all.** A security vulnerability goes to
    [the security policy](https://github.com/cosyte/.github/security/policy), never to a public issue.
    Conduct goes to the route in
-   [CODE_OF_CONDUCT.md](https://github.com/cosyte/.github/blob/main/CODE_OF_CONDUCT.md), which is
-   enforced by the same maintainer and is not a technical decision to be argued on a thread.
+   [CODE_OF_CONDUCT.md](https://github.com/cosyte/.github/blob/main/CODE_OF_CONDUCT.md), which we
+   enforce, and which is not a technical decision to be argued on a thread.
 
 ## How this document changes
 

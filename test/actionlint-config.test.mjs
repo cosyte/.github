@@ -394,14 +394,17 @@ test('AC-4: `self-check.yml` still fails the build on a finding, on both jobs', 
   const selfCheck = readRepoFile(SELF_CHECK);
   const executable = decomment(selfCheck).join('\n');
 
+  // The job runs actionlint's own binary, so its exit status is actionlint's: there is no reporter
+  // in between to be told whether to fail. `test/actionlint-pinned.test.mjs` runs that step and
+  // shows a finding failing it.
   assert.match(
     executable,
-    /^\s*fail_on_error:\s*true\s*$/m,
-    `${SELF_CHECK}: the actionlint step must keep \`fail_on_error: true\``,
+    /^\s*"\$\{RUNNER_TEMP\}\/actionlint" -color "\$\{files\[@\]\}"\s*$/m,
+    `${SELF_CHECK}: the actionlint step must run the binary itself, over the tracked workflow files`,
   );
   assert.ok(
-    !/fail_on_error:\s*false/.test(executable),
-    `${SELF_CHECK}: \`fail_on_error: false\` turns the linter into a reporter`,
+    !/fail_on_error/.test(executable),
+    `${SELF_CHECK}: a \`fail_on_error\` input means the linter is behind a reporter again`,
   );
   // A text sweep rather than a parse: a reader that does not model a key reports it absent, and
   // absent is the answer this assertion must never be handed by accident.

@@ -12,9 +12,10 @@ under "Unreleased", and the next change to the file moves them under the referen
 Run these from the repo root, in this order. The tests use `node:test` and `node:assert` only, so
 there is nothing to install.
 
-1. `actionlint`, at 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`): CI's
-   `reviewdog/action-actionlint` runs that version, and an older one reports `job.workflow_sha`
-   false positives that `.github/actionlint.yaml` does not cover.
+1. `actionlint`, at 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`), with shellcheck on
+   `PATH`: CI runs rhysd/actionlint's release binary at that version, checked against a pinned
+   SHA-256, and an older one reports `job.workflow_sha` false positives that
+   `.github/actionlint.yaml` does not cover.
 2. `node --test "test/*.test.mjs"`
 3. `node scripts/check-no-emdash.mjs`
 
@@ -23,9 +24,11 @@ Steps 1 and 2 are `self-check.yml`'s `actionlint` and `scripts` jobs, step 3 is 
 title, body and commit messages. CI alone adds CodeQL, the `job.workflow_sha` probe and the org
 defaults coverage check.
 
-Read actionlint's own output, not the check: the `actionlint` check annotates only lines in the
-diff, which let stale ignores turn `main` red behind a green PR (#61), and #80 measured it exiting 0
-on a finding.
+The `actionlint` jobs run the binary itself, so their exit status is actionlint's own over every
+tracked workflow file. Never move them back to `reviewdog/action-actionlint`: it annotated only
+lines in the diff, which let stale ignores turn `main` red behind a green PR (#61); #80 measured it
+exiting 0 on a finding; and from v1.75.0 it installs actionlint from a fork with `curl | bash`.
+Moving to a new actionlint means changing the version and the SHA-256 together, in both files.
 
 ## Hazard: public at once, and a merge reaches every library
 

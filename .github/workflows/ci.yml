@@ -312,11 +312,51 @@ jobs:
           node .cosyte-ci-tooling/scripts/prepublish-check.mjs pack \
             --repo . --expect-unpublished-deps "$EXPECT_UNPUBLISHED_DEPS"
 
+  # ACTIONLINT IS rhysd/actionlint'S OWN RELEASE BINARY, AT ONE VERSION AND ONE SHA-256, not
+  # reviewdog/action-actionlint. From v1.75.0 that action installs actionlint by piping a download
+  # script from a fork (kjanat/actionlint) into bash, so a bump of its pin would run code from outside
+  # the actionlint project in every caller's CI. Here the official release asset is downloaded at the
+  # version below and checked against the SHA-256 below before it is unpacked, so a changed asset
+  # fails the job. Moving to a new version means changing both values together, here and in
+  # `self-check.yml`; `test/actionlint-pinned.test.mjs` holds the two files to the same pair.
+  #
+  # THE JOB ID, `actionlint`, AND THE `run-actionlint` INPUT ARE UNCHANGED, so a caller's ruleset
+  # entry for `<caller job id> / actionlint` still names this job. What changed is what fails it:
+  # actionlint's own exit status, over every tracked workflow file, where the action reported only
+  # findings on lines a pull request changed. Every caller was measured clean that way before this
+  # landed. shellcheck is preinstalled on the hosted runner, and actionlint silently skips its shell
+  # checks without it, so the install step refuses to continue when it is missing.
   actionlint:
     if: ${{ inputs.run-actionlint }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1
         with:
-          fail_on_error: true
+          persist-credentials: false
+      - name: Install actionlint at the pinned version and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" --version
+          shellcheck --version
+      - name: actionlint over .github/workflows/
+        shell: bash
+        run: |
+          set -euo pipefail
+          listed="$(git ls-files -- '.github/workflows/*.yml' '.github/workflows/*.yaml')"
+          if [ -z "${listed}" ]; then
+            echo "::error::no workflow file found under .github/workflows/"
+            exit 1
+          fi
+          mapfile -t files <<< "${listed}"
+          "${RUNNER_TEMP}/actionlint" -color "${files[@]}"
+          echo "actionlint clean over ${#files[@]} workflow file(s)."

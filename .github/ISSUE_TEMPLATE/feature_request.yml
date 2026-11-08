@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a new capability, a profile, or a change to a @cosyte/* package.
+description: Propose a new capability, a profile, or a change to a @cosyte/* library or Pathways.
 labels: ["enhancement"]
 body:
   - type: markdown
@@ -13,10 +13,19 @@ body:
       options:
         - "@cosyte/hl7"
         - "@cosyte/mllp"
-        - "@cosyte/dicom"
-        - "@cosyte/x12"
+        - "@cosyte/fhir"
         - "@cosyte/ccda"
+        - "@cosyte/x12"
         - "@cosyte/ncpdp"
+        - "@cosyte/astm"
+        - "@cosyte/dicom"
+        - "@cosyte/terminology"
+        - "@cosyte/transform"
+        - "@cosyte/deid"
+        - "@cosyte/synth"
+        - "@cosyte/dates"
+        - "@cosyte/cli"
+        - "Pathways (in development)"
         - "shared config / tooling"
         - "other / not sure"
     validations:

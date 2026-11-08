@@ -20,19 +20,43 @@ permissions:
   contents: read
 
 jobs:
+  # The same pinned release binary as `ci.yml`'s `actionlint` job, at the same version and SHA-256,
+  # for the reason written there: reviewdog/action-actionlint installs actionlint from a fork from
+  # v1.75.0. The job's exit status is actionlint's own, over every tracked workflow file, on a pull
+  # request, a push and the nightly run alike.
   actionlint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1
         with:
-          fail_on_error: true
-          # Outside a pull request the findings go to the log as annotations. A check-run reporter
-          # takes the owner and repo from the event payload, a schedule payload carries neither, and
-          # the nightly run would fail on a clean tree with `POST repos///check-runs: 404`
-          # (reviewdog/reviewdog#832, #1263). Under this workflow's read-only token the check-run
-          # reporter falls back to the same annotations anyway.
-          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-check' || 'github-annotations' }}
+          persist-credentials: false
+      - name: Install actionlint at the pinned version and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" --version
+          shellcheck --version
+      - name: actionlint over .github/workflows/
+        shell: bash
+        run: |
+          set -euo pipefail
+          listed="$(git ls-files -- '.github/workflows/*.yml' '.github/workflows/*.yaml')"
+          if [ -z "${listed}" ]; then
+            echo "::error::no workflow file found under .github/workflows/"
+            exit 1
+          fi
+          mapfile -t files <<< "${listed}"
+          "${RUNNER_TEMP}/actionlint" -color "${files[@]}"
+          echo "actionlint clean over ${#files[@]} workflow file(s)."
 
   scripts:
     runs-on: ubuntu-latest
