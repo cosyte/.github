@@ -402,7 +402,9 @@ export function trustedPublishingRequirement({ tool, version }) {
 
 // -- Does this package already exist on the registry -----------------------------------------------
 
-const encodeName = (name) => name.replace('/', '%2f');
+// Every slash, not just the first. A scoped name has exactly one; a name with more must still reach
+// the registry as one path segment rather than as extra segments of the URL.
+const encodeName = (name) => name.replaceAll('/', '%2f');
 
 /** @param {(url: string, options?: any) => Promise<any>} fetchImpl */
 function withFetchTimeout(fetchImpl, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) {

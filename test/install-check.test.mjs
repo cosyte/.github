@@ -357,6 +357,13 @@ test("a 200 packument means the dependency is present", async () => {
   assert.equal(await dependencyStatus("https://r", "@cosyte/hl7", f), "present");
 });
 
+test("a name with a second slash still reaches the registry as one path segment", async () => {
+  // Every slash is escaped, not only the first. With only the first escaped, this name would be asked
+  // for at `/@cosyte%2fhl7/extra`, which is not routed here, so the answer would be "unknown".
+  const f = fakeFetch({ "GET https://r/@cosyte%2fhl7%2fextra": { status: 404, body: null } });
+  assert.equal(await dependencyStatus("https://r", "@cosyte/hl7/extra", f), "absent");
+});
+
 test("a 5xx, a rate limit or a thrown fetch is UNKNOWN, never present and never absent", async () => {
   // Both booleans are unsafe. "Present" eliminates the explanation for an install failure and the
   // verdict silently becomes the package's own defect, which is a red; "absent" invents an excuse.
@@ -424,7 +431,7 @@ function harness({ servedAfter = 1, installResults = [], routes = {}, manifest =
   let versionCalls = 0;
   const slept = [];
   const installs = [];
-  const ownPackument = `https://r/${manifest.name.replace("/", "%2f")}`;
+  const ownPackument = `https://r/${manifest.name.replaceAll("/", "%2f")}`;
   const reply = (status, body) => ({ status, json: async () => body, headers: new Map() });
   const fetchImpl = async (url, options = {}) => {
     const method = options.method || "GET";

@@ -17,7 +17,7 @@
 // claim can be checked.
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -264,6 +264,28 @@ test('an entry in the template folder that is not a regular file is refused nami
   assert.notEqual(found.failure, null);
   assert.match(found.failure.reason, /not a regular file/);
   assert.match(found.failure.path, /nested$/);
+});
+
+test('a FIFO in the template folder is refused at once, without waiting for a writer', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'org-defaults-'));
+  execFileSync('mkfifo', [join(dir, 'pipe')]);
+  // Read in a child with a deadline. The folder is read through one descriptor per entry, and an
+  // open that waited for a writer would block the whole process, so in this one the case would hang
+  // rather than fail.
+  const script = [
+    `import { readTemplateDirectory } from ${JSON.stringify(new URL('../scripts/org-defaults-coverage.mjs', import.meta.url).href)};`,
+    `process.stdout.write(JSON.stringify(readTemplateDirectory(${JSON.stringify(dir)})));`,
+  ].join('\n');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  assert.equal(child.error, undefined, 'reading the folder did not return within the deadline');
+  assert.equal(child.status, 0, child.stderr);
+  const found = JSON.parse(child.stdout);
+  assert.deepEqual(found.files, []);
+  assert.match(found.failure.reason, /not a regular file/);
+  assert.match(found.failure.path, /pipe$/);
 });
 
 // ---------------------------------------------------------------------------
