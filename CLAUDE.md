@@ -3,26 +3,23 @@
 The org's shared GitHub surface: the reusable workflows every `@cosyte/*` library calls (`ci.yml`,
 `release.yml` and the `gate-*` workflows in `.github/workflows/`), the `scripts/` they run, the
 community health files GitHub serves to every repo without its own, and the org profile in
-`profile/`. It ships no package: no `package.json` and no changeset. `CHANGELOG.md` records what each
+`profile/`. It ships no package (no `package.json`, no changeset). `CHANGELOG.md` records what each
 `workflows-*` reference changed for a caller: a change to a reusable or to `scripts/` adds its lines
 under "Unreleased", and the next change to the file moves them under the reference its merge minted.
 
 ## Gate
 
-Run these from the repo root, in this order. The tests use `node:test` and `node:assert` only, so
-there is nothing to install.
+From the repo root, in this order; the tests use only `node:test` and `node:assert`, so no install.
 
-1. `actionlint`, at 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`), with shellcheck on
-   `PATH`: CI runs rhysd/actionlint's release binary at that version, checked against a pinned
-   SHA-256, and an older one reports `job.workflow_sha` false positives that
-   `.github/actionlint.yaml` does not cover.
+1. `actionlint` 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`) with shellcheck on `PATH`:
+   CI runs rhysd/actionlint's release binary at that version, checked against a pinned SHA-256, and
+   an older one reports `job.workflow_sha` false positives that `.github/actionlint.yaml` misses.
 2. `node --test "test/*.test.mjs"`
 3. `node scripts/check-no-emdash.mjs`
 
 Steps 1 and 2 are `self-check.yml`'s `actionlint` and `scripts` jobs, step 3 is `no-emdash.yml`'s
-`no-emdash` job. Its `no-emdash-messages` job runs the same script with `--stdin` over the PR
-title, body and commit messages. CI alone adds CodeQL, the `job.workflow_sha` probe and the org
-defaults coverage check.
+`no-emdash` job; its `no-emdash-messages` job runs the script with `--stdin` over the PR title, body
+and commits. CI alone adds CodeQL, the `job.workflow_sha` probe and the org defaults coverage check.
 
 The `actionlint` jobs run the binary itself, so their exit status is actionlint's own over every
 tracked workflow file. Never move them back to `reviewdog/action-actionlint`: it annotated only
@@ -32,16 +29,15 @@ Moving to a new actionlint means changing the version and the SHA-256 together, 
 
 ## Hazard: public at once, and a merge reaches every library
 
-This repo is public. A pushed branch, a PR and its text are public as soon as they exist, and a
-merge is live at once: name no private repo and no person, and say "the owner". `ci.yml`,
-`release.yml` and the `gate-*` workflows run in every library's CI and release. A caller on `@main`
-gets a merge on its next run, and a push to `main` that moves a reusable or `scripts/` mints a
-`workflows-*` release the rest adopt. A job id is a check context in the callers' rulesets, so
-renaming one detaches it with no error; a renamed job, a new required input, or a changed default,
-secret or permission is a change every caller must act on. The community health files
-(`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, the issue and PR templates)
-render in repos that do not contain them, so their links are absolute URLs. `profile/` is the
-org's public profile: a PR that touches it is gated as public-facing.
+This repo is public. A pushed branch, a PR and its text are public, and a merge is live, at once:
+name no private repo and no person, and say "the owner". `ci.yml`, `release.yml` and the `gate-*`
+workflows run in every library's CI and release. A caller on `@main` gets a merge on its next run,
+and a push to `main` that moves a reusable or `scripts/` mints a `workflows-*` release the rest
+adopt. A job id is a check context in the callers' rulesets, so renaming one silently detaches it; a
+renamed job, a new required input, or a changed default, secret or permission is a change every
+caller must act on. The community health files (`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`,
+`CODE_OF_CONDUCT.md`, the issue and PR templates) render in repos without their own, so their links
+are absolute URLs. A PR touching `profile/`, the org's public profile, is gated as public-facing.
 
 ## Rules that bind here
 
@@ -60,5 +56,5 @@ org's public profile: a PR that touches it is gated as public-facing.
 - Keep `release.yml`'s `release` job on Node 24 or later: on Node 22, npm is below staged
   publishing's floor, and every release of an already-published package refused (#67).
 - Title every pull request in Conventional Commits form: `self-pr-title.yml` checks it here, and
-  `test/pr-title.test.mjs` holds the titles `release.yml` and Dependabot write to the same rule, since
-  the changesets default, `Version Packages`, fails it.
+  `test/pr-title.test.mjs` holds the titles `release.yml` and Dependabot write to the same rule,
+  since the changesets default, `Version Packages`, fails it.
