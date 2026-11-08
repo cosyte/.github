@@ -34,7 +34,7 @@ so the next change to this file moves those lines under a heading with that name
   and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
   cancelled run in the newer check suite counts as a failing required context and blocks the merge
   until someone re-runs it. A caller that copied the old example should remove its block. Comments
-  only: no job, input, secret, permission or step changes (#PR).
+  only: no job, input, secret, permission or step changes (#109).
 
 ## workflows-2026-11-07-9c75b80bfbf0
 
