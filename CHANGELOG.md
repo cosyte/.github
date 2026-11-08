@@ -17,6 +17,28 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `ci.yml`'s `actionlint` job restores rhysd/actionlint's release tarball from the caller's own
+  Actions cache with `actions/cache/restore` and `actions/cache/save` at v6.1.0, keyed on the
+  actionlint version and its SHA-256, and downloads it only when the cache holds no copy that
+  matches. GitHub's release downloads answered 504 for hours on 2026-11-08 and failed this job in
+  every caller. The SHA-256 is checked on whatever is unpacked, cached or downloaded; a cached copy
+  that does not match is downloaded again with a warning; a download retries up to five times with
+  curl's own backoff; and the tarball is saved on a miss, before the lint, so a pull request whose
+  lint finds something still seeds the cache. A cache that cannot be reached is a miss with a
+  warning. The cache steps use the runner's own cache token, so a caller grants nothing new: inputs,
+  secrets, permissions and job ids are unchanged. A run on the caller's default branch seeds the
+  entry every pull request can read. `self-check.yml`, this repository's own check, does the same.
+- `gate-no-emdash.yml`, `gate-no-emdash-install.yml`, `gate-no-internal-refs.yml` and
+  `gate-no-internal-refs-install.yml` take an optional `node-version` input, defaulting to `"22"`,
+  the line every job in them ran on before. A caller passing nothing runs exactly as it did. A
+  package whose `engines.node` starts above 22 with `engine-strict`, where pnpm refuses to install or
+  run a script on 22, passes its floor with `with: { node-version: "24" }`. Job ids, the other inputs
+  and their defaults, secrets and permissions are unchanged.
+
+## workflows-2026-11-08-ebece960a9ac
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-08-a3be6a780b17`.
+
 - `release.yml` tags the version commit in the `version` job, seconds after the merge and before
   anything is published, with the new `scripts/release-tag.mjs`, and creates every GitHub release
   at that existing tag with `--verify-tag` and no `--target`. GitHub refuses a `GITHUB_TOKEN` any ref
@@ -37,6 +59,18 @@ so the next change to this file moves those lines under a heading with that name
   version commit, and every run asks the GitHub release, and when that is missing the registry, what
   a tagged version is owed. Inputs, secrets, permissions and job ids are unchanged (#110).
 
+## workflows-2026-11-08-a3be6a780b17
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-07-0d5dbc3a9a72`.
+
+- The caller examples in the headers of `pr-title.yml`, `gate-no-emdash.yml` and
+  `gate-no-emdash-install.yml`, and the em-dash and PR title callers in README.md, no longer show a
+  `concurrency:` block. Those callers run on `edited`, so a push and an edit can arrive together,
+  and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
+  cancelled run in the newer check suite counts as a failing required context and blocks the merge
+  until someone re-runs it. A caller that copied the old example should remove its block. Comments
+  only: no job, input, secret, permission or step changes (#109).
+
 ## workflows-2026-11-07-0d5dbc3a9a72
 
 2026-11-07. Act on: nothing, against `workflows-2026-11-07-e3a24dad0713`.
@@ -47,13 +81,6 @@ so the next change to this file moves those lines under a heading with that name
   A job added later without a block of its own runs read-only. The reference note now compares what
   a caller must grant, every job's block together at its strongest, rather than the workflow-level
   block alone, so this move reports no permission change (#103).
-- The caller examples in the headers of `pr-title.yml`, `gate-no-emdash.yml` and
-  `gate-no-emdash-install.yml`, and the em-dash and PR title callers in README.md, no longer show a
-  `concurrency:` block. Those callers run on `edited`, so a push and an edit can arrive together,
-  and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
-  cancelled run in the newer check suite counts as a failing required context and blocks the merge
-  until someone re-runs it. A caller that copied the old example should remove its block. Comments
-  only: no job, input, secret, permission or step changes (#109).
 
 ## workflows-2026-11-07-e3a24dad0713
 
