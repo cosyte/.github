@@ -626,11 +626,18 @@ test('AC-13: an inline interpolation is reported, and the mutation refuses to be
 });
 
 test('AC-13: a comment is still a comment, so the header\'s caller example is not a finding', () => {
-  // Both headers show a caller's `concurrency:` block, which contains two expressions. A sweep that
-  // could not tell prose from configuration would either fail on its own instructions or force them
-  // to be deleted, which is how the reason for a rule gets lost.
+  // A header's caller example can carry expressions: the public-surface gate's shows a caller's
+  // `concurrency:` block. A sweep that could not tell prose from configuration would either fail on
+  // its own instructions or force them to be deleted, which is how the reason for a rule gets lost.
+  assert.match(read(REFS_GATE), /#\s+group: \$\{\{ github\.workflow \}\}/, `${REFS_GATE} no longer shows a caller example with an expression in it`);
+  // The em-dash gate's example shows no `concurrency:` block, because its caller runs on `edited`
+  // and a group's cancelled run can block a merge. So an expression is put into its header here,
+  // to measure the same thing on both gates.
   for (const { file } of GATES) {
-    assert.match(read(file), /#\s+group: \$\{\{ github\.workflow \}\}/, `${file} no longer shows a caller example with an expression in it`);
+    const original = read(file);
+    const mutated = original.replace('\n#   jobs:\n', () => '\n#   concurrency:\n#     group: ${{ github.workflow }}-${{ github.ref }}\n#   jobs:\n');
+    assert.notEqual(mutated, original, `${file}: the mutation is a no-op, so it measures nothing`);
+    assert.deepEqual(interpolationFindings(file, mutated), []);
   }
 });
 

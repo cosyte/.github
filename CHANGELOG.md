@@ -28,6 +28,13 @@ so the next change to this file moves those lines under a heading with that name
   A job added later without a block of its own runs read-only. The reference note now compares what
   a caller must grant, every job's block together at its strongest, rather than the workflow-level
   block alone, so this move reports no permission change (#103).
+- The caller examples in the headers of `pr-title.yml`, `gate-no-emdash.yml` and
+  `gate-no-emdash-install.yml`, and the em-dash and PR title callers in README.md, no longer show a
+  `concurrency:` block. Those callers run on `edited`, so a push and an edit can arrive together,
+  and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
+  cancelled run in the newer check suite counts as a failing required context and blocks the merge
+  until someone re-runs it. A caller that copied the old example should remove its block. Comments
+  only: no job, input, secret, permission or step changes (#PR).
 
 ## workflows-2026-11-07-9c75b80bfbf0
 
