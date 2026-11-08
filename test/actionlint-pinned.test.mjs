@@ -156,7 +156,8 @@ test('each job restores the release from the cache, keyed on the version and the
     const saveUses = /^actions\/cache\/save@([0-9a-f]{40})$/.exec(save.fields.uses ?? '');
     assert.ok(restoreUses && saveUses, `${name}: actions/cache restore and save, each pinned to a full commit SHA`);
     for (const uses of [restore.fields.uses, save.fields.uses]) {
-      assert.match(text, new RegExp(`uses: ${uses.replace(/[./]/g, '\\$&')} # v\\d+\\.\\d+\\.\\d+\n`), `${name}: ${uses} has no version beside it`);
+      const line = text.split('\n').find((candidate) => candidate.trim().startsWith(`uses: ${uses} `)) ?? '';
+      assert.match(line, / # v\d+\.\d+\.\d+$/, `${name}: ${uses} has no version beside it`);
     }
     assert.equal(restoreUses[1], saveUses[1], `${name}: restore and save are one actions/cache commit`);
     pins.add(restoreUses[1]);
