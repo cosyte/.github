@@ -80,9 +80,10 @@ on:
     # `edited` is load-bearing wherever the repo squash-merges: the title and body ARE the commit
     # message that lands. A reusable workflow cannot declare its own triggers, so this is yours.
     types: [opened, synchronize, reopened, edited]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No `concurrency:` block, because of `edited`: a push and an edit can arrive together (Dependabot
+# does both), and a group cancels one of the two runs, even a queued one under
+# `cancel-in-progress: false`. A cancelled run in the newer check suite counts as a failing
+# required context and blocks the merge until someone re-runs it. Each run takes seconds.
 jobs:
   no-emdash:
     permissions:
@@ -132,9 +133,7 @@ on:
     branches: [main]
     # `edited` is load-bearing: a title changed after the last push is the title that lands.
     types: [opened, synchronize, reopened, edited]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No `concurrency:` block, for the reason given in the em-dash caller above.
 jobs:
   pr-title:
     permissions:
