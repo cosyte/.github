@@ -19,13 +19,29 @@ so the next change to this file moves those lines under a heading with that name
 
 Nothing yet.
 
+## workflows-2026-11-07-b3061b0471d4
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-d84b6fe790ff`.
+
+**This is the reference every caller moves to**, all at once. It carries everything in the
+references below it as well, so a caller moving here from an earlier reference, or from `@main`,
+takes in `workflows-2026-11-07-32f9f01541de`'s change to act on too.
+
+- Every `github/codeql-action` pin, `init` and `analyze` in `codeql.yml` and `upload-sarif` in
+  `scorecard.yml`, moves together from v4.37.5 to v4.37.9, the last patch on that line, because
+  `analyze` refuses a config `init` wrote at any other version. A test now fails the build when the
+  pins disagree (#95).
+
+## workflows-2026-11-07-d84b6fe790ff
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-5c8c01fe48d2`.
+
+- `actions/upload-artifact` moves from 7.0.1 to 7.0.2, a patch, in `release.yml` and
+  `scorecard.yml` (#77).
+
 ## workflows-2026-11-07-5c8c01fe48d2
 
 2026-11-07. Act on: nothing, against `workflows-2026-11-07-6c358640421d`.
-
-**This is the reference every caller moves to**, all at once. It carries everything in the two
-references below it as well, so a caller moving here from an earlier reference, or from `@main`,
-takes in `workflows-2026-11-07-32f9f01541de`'s change to act on too.
 
 - `ci.yml`'s `actionlint` job runs rhysd/actionlint's own release binary, version 1.7.12, checked
   against a pinned SHA-256 before it is unpacked, in place of reviewdog/action-actionlint. From
