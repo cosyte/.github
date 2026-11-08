@@ -1192,6 +1192,10 @@ registry-absent dependency **name** either of them carries, and the default allo
 it. That is the whole of what the allowance has to cover for them, which is not the same claim as
 nothing else being wrong with them. See `blocked-peer` below.
 
+**The default allowance is empty since 2026-11-08.** `@cosyte/fhir` is on the registry now, so the
+`@cosyte/fhir=blocked` default went stale as designed and every caller's gate printed a notice
+saying so. The default names nothing, and a caller that does not pass the input needs no change.
+
 A caller that cannot pay the cost (layer 2 is a full install per run and touches the network on
 every pull request) opts **out**:
 
@@ -1211,19 +1215,19 @@ Read what `blocked-peer` does and does not establish before treating those two a
 
 `expect-unpublished-deps` is the same input `release.yml` takes, in the same grammar. A repo names its
 known-unpublished consumer dependencies and the gate asserts **exactly that set**: a named absence is
-the expected state and warns, an absence nobody named still fails. Without it, layer 2 reds
-`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`), which nobody can fix from those repos,
-and a permanently red gate is one people learn to ignore, which is the same failure as a step that
+the expected state and warns, an absence nobody named still fails. Without it, layer 2 red
+`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`) until that package published, which
+nobody could fix from those repos, and a permanently red gate is one people learn to ignore, which is the same failure as a step that
 never runs. With an open-ended one you get a mute, which is worse than no gate because it reads as a
 gate.
 
-**`@cosyte/assets` and `@cosyte/docs` are `E404` on the registry exactly like `@cosyte/fhir` is, and
+**`@cosyte/assets` and `@cosyte/docs` are `E404` on the registry exactly like `@cosyte/fhir` was, and
 they are `private: true` on purpose.** A deliberate absence and an unexplained block must not share
 words, so an entry carries a kind:
 
 | Entry | Meaning | Excuses an install failure? |
 |---|---|---|
-| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear**. `@cosyte/fhir` is the only one today | **yes**, and it is self-clearing |
+| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear**. `@cosyte/fhir` was one until it published; none is named by default now | **yes**, and it is self-clearing |
 | `name=private` | absent **by design**, `private: true`, never going to clear | **no, anywhere.** A published package whose dependency will never exist is a permanent defect wearing the same 404 as a temporary one |
 | `name` | untagged: the spelling `release.yml` shipped with in `#31` | **yes**, read as `blocked`, and reported as untagged in the step summary so it can be tightened |
 
@@ -1674,7 +1678,7 @@ A manifest can be valid locally and meaningless remotely, and this org has shipp
 | Package | What the registry serves | What a consumer gets |
 |---|---|---|
 | `@cosyte/cli` `0.0.1` and `0.0.2` | four `file:vendor/*.tgz` dependencies plus six more in `optionalDependencies` | `ENOENT` on `node_modules/@cosyte/cli/vendor/cosyte-fhir-0.0.0.tgz`. Both versions are permanent and stay broken forever (ADR 0001) |
-| `@cosyte/transform` `0.0.5` | a required peer on `@cosyte/fhir` | `E404`, because `@cosyte/fhir` is not on the registry (`FHIR-NPM-NAME`) |
+| `@cosyte/transform` `0.0.5` | a required peer on `@cosyte/fhir` | `E404`, because `@cosyte/fhir` was not on the registry then (`FHIR-NPM-NAME`) |
 | `@cosyte/synth` `0.0.6` | the same peer, marked **optional** in `peerDependenciesMeta` | `ERESOLVE`. An optional peer whose packument 404s still fails the tree. **Optionality is not protection** |
 
 [`scripts/install-check.mjs`](scripts/install-check.mjs) closes it, unit-tested in
@@ -1871,14 +1875,19 @@ the offline lint always gets one bounded shot.
 
 ### The allowance is a dated exception, not a setting
 
-`expect-unpublished-deps` defaults to `@cosyte/fhir` and exists so that `transform` and `synth` do not
-red on a condition nobody can fix from those repos. A permanently red gate is one people learn to
-ignore, which is the same failure as a step that never runs.
+`expect-unpublished-deps` exists so that a package whose dependency npm refuses, for a reason nobody
+can fix from that repo, does not red on it. A permanently red gate is one people learn to ignore,
+which is the same failure as a step that never runs.
 
 It is an **exact** allowance, not a mute: any absent dependency **not** named in it still fails, so a
-new unpublished dependency is still caught. And it is self-clearing. The moment `@cosyte/fhir`
+new unpublished dependency is still caught. And it is self-clearing. The moment a named package
 publishes, nothing is absent, the installs simply pass, and the gate reports the entry as **stale** in
-the step summary so it gets deleted. **Delete it then; it is not load-bearing.**
+the step summary so it gets deleted.
+
+That is what happened to the only entry it ever had by default. `expect-unpublished-deps` defaulted to
+`@cosyte/fhir` so that `transform` and `synth` did not red while npm refused that package
+(`FHIR-NPM-NAME`). `@cosyte/fhir` is on the registry now, the entry went stale, and the default has
+been empty since 2026-11-08.
 
 ## Release notes
 

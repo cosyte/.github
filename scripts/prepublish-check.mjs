@@ -23,10 +23,10 @@
 //
 //   LAYER 2  pack           `npm pack` the working tree, then install THAT TARBALL into a clean
 //                           anonymous directory and load what it declares. This is the layer with a
-//                           blast radius: `transform` and `synth` are genuinely uninstallable today
-//                           because their peer `@cosyte/fhir` is not on the registry, so it reds
-//                           them for a condition nobody can fix from those repos. That is what the
-//                           declared allowance below is for, and it is why this layer is OPT-IN.
+//                           blast radius: on 2026-08-05 `transform` and `synth` were genuinely
+//                           uninstallable because their peer `@cosyte/fhir` was not on the
+//                           registry yet, so it red them for a condition nobody could fix from
+//                           those repos. That is what the declared allowance below is for.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // THE DECLARED ALLOWANCE, AND WHY IT HAS KINDS
@@ -40,14 +40,15 @@
 // A DELIBERATE ABSENCE AND AN UNEXPLAINED BLOCK MUST NOT SHARE WORDS, so an entry carries a kind:
 //
 //   name=blocked    Absent for a reason outside this repo's control, and EXPECTED TO CLEAR.
-//                   `@cosyte/fhir` is the only one today: a persistent unexplained npm `E403`
-//                   (FHIR-NPM-NAME), staged on `main`, not missing work. This kind EXCUSES an
-//                   install failure, and it is self-clearing: the moment the package publishes,
-//                   nothing is absent, the install simply passes, and the entry is reported stale
-//                   so it gets deleted.
+//                   `@cosyte/fhir` was the one it was built for: a persistent unexplained npm
+//                   `E403` (FHIR-NPM-NAME) until it published, and the shared default named it
+//                   until 2026-11-08. None is named by default now. This kind EXCUSES an install
+//                   failure, and it is self-clearing: the moment the package publishes, nothing
+//                   is absent, the install simply passes, and the entry is reported stale so it
+//                   gets deleted, which is what happened to `@cosyte/fhir`.
 //
 //   name=private    Absent BY DESIGN and never going to clear. `@cosyte/assets` and `@cosyte/docs`
-//                   are both `E404` on the registry exactly like `@cosyte/fhir` is, and they are
+//                   are both `E404` on the registry exactly like `@cosyte/fhir` was, and they are
 //                   `private: true` on purpose. This kind EXCUSES NOTHING, anywhere, and refusing to
 //                   let it is the whole reason the kinds exist: a published package whose consumer
 //                   dependency will never exist is not "the expected state", it is a permanent

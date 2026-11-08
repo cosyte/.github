@@ -168,7 +168,9 @@ test('no existing input is re-defaulted by this change', () => {
     'run-actionlint': 'default: true',
     'run-prepublish-manifest-lint': 'default: true',
     'run-prepublish-install': 'default: true',
-    'expect-unpublished-deps': 'default: "@cosyte/fhir=blocked"',
+    // RE-DEFAULTED ON PURPOSE, LATER AND BY ITS OWN CHANGE: `@cosyte/fhir` reached the registry, so
+    // the `@cosyte/fhir=blocked` allowance went stale and the default became empty.
+    'expect-unpublished-deps': 'default: ""',
   });
 });
 
