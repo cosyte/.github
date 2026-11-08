@@ -1194,9 +1194,10 @@ test('the permissions in force on a job are read whole, or refused naming the jo
 
   // ── AND THE COLUMN-0 BLOCK IS ITS OWN QUESTION, WITH ITS OWN READ. On the workflow above, and on
   //    the delivered one, EVERY job declares a block, so `effectivePermissions` can only ever answer
-  //    about a job and the column-0 block is read by nobody. That block is what the caller's grant is
-  //    compared against and what a job whose own block is deleted inherits, so `workflowPermissions`
-  //    reads it directly - same subset, same refusals, naming the block rather than a job.
+  //    about a job and the column-0 block is read by nobody. That block is what a job whose own block
+  //    is deleted inherits, and the subset rule checks it against the caller grant like every job, so
+  //    `workflowPermissions` reads it directly: the same subset and the same refusals, naming the
+  //    block rather than a job.
   assert.deepEqual(workflowPermissions(own), { contents: 'write', 'id-token': 'write' });
   assert.equal(workflowPermissions(jobs), null, 'a workflow with no column-0 block has none, and says so');
   assert.throws(
@@ -1421,6 +1422,9 @@ const CONVERGED_ON_THE_SHARED_READER = [
 const READS_IT_WITH_ITS_OWN_READER = [
   'changelog-check.test.mjs',
   'publish-floor.test.mjs',
+  // Reads it through `scripts/reference-publish.mjs`'s interface reader, because the question is
+  // what that script's release note would tell a caller about the workflow-level permissions block.
+  'reference-publish.test.mjs',
   'skipped-required-context.test.mjs',
   'staged-publish.test.mjs',
 ];
@@ -2430,22 +2434,38 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
 });
 
 /**
- * Every job permission that asks a caller for more than the workflow-level block, which is the set
- * every caller grants. A called workflow's token can only be narrowed, so each finding is a workflow
- * that fails at startup, before any job runs, on every caller at once.
+ * THE TOKEN EVERY CALLER GRANTS ITS CALLING JOB, as the caller block at the top of release.yml writes
+ * it out and README.md asks of each caller. It is written here rather than read off release.yml's
+ * column-0 block, because that block is `contents: read`: every job declares its own, so the
+ * workflow-level one is the default only for a job that declares none. `install-check.test.mjs`
+ * pins what the jobs ask for together to exactly this set.
  */
-function beyondTheCallerGrant(text) {
-  const granted = workflowPermissions(text) ?? {};
+const CALLER_GRANT = Object.freeze({
+  contents: 'write',
+  'id-token': 'write',
+  'pull-requests': 'write',
+  actions: 'read',
+});
+
+/**
+ * Every permission that asks a caller for more than it grants: on each job's permissions in force,
+ * and on the column-0 block, which is what a job without its own block inherits. A called workflow's
+ * token can only be narrowed, so each finding is a workflow that fails at startup, before any job
+ * runs, on every caller at once.
+ */
+function beyondTheCallerGrant(text, granted = CALLER_GRANT) {
   const strength = { none: 0, read: 1, write: 2 };
   const findings = [];
-  for (const job of parseWorkflow(text).jobs) {
-    for (const [key, value] of Object.entries(effectivePermissions(text, job) ?? {})) {
+  const check = (where, permissions) => {
+    for (const [key, value] of Object.entries(permissions ?? {})) {
       const allowed = granted[key];
       if (allowed === undefined || strength[value] === undefined || strength[value] > strength[allowed]) {
-        findings.push(`job \`${job.id}\` asks for \`${key}: ${value}\` beyond the caller grant \`${key}: ${allowed ?? 'none'}\``);
+        findings.push(`${where} asks for \`${key}: ${value}\` beyond the caller grant \`${key}: ${allowed ?? 'none'}\``);
       }
     }
-  }
+  };
+  check('the column-0 block', workflowPermissions(text));
+  for (const job of parseWorkflow(text).jobs) check(`job \`${job.id}\``, effectivePermissions(text, job));
   return findings;
 }
 
@@ -2460,11 +2480,11 @@ test('AC3 and AC10: every job names `contents`, the gated pair name `actions: re
   // caller, with none of the fail-closed refusal this gate exists to produce. Every job is checked,
   // not just the one with the gate in it.
   //
-  // AND NO JOB MAY ASK FOR MORE THAN THE WORKFLOW-LEVEL BLOCK, which is the set every caller grants.
-  // A called workflow's token can only be narrowed, so a job requesting a key, or a strength, its
+  // AND NO JOB MAY ASK FOR MORE THAN EVERY CALLER GRANTS, and neither may the column-0 block. A
+  // called workflow's token can only be narrowed, so a job requesting a key, or a strength, its
   // caller does not grant is an ELEVATION that GitHub refuses at startup, before any job runs and
-  // for every caller at once. `install-check.test.mjs` pins that block to the four keys the callers
-  // grant; this pins every job inside it.
+  // for every caller at once. `install-check.test.mjs` pins what the jobs ask for together to the
+  // four keys the callers grant; this pins every job inside that set.
   for (const job of workflow.jobs) {
     const permissions = effectivePermissions(text, job);
     assert.ok(permissions, `job \`${job.id}\` must have permissions in force`);
@@ -2482,9 +2502,24 @@ test('AC3 and AC10: every job names `contents`, the gated pair name `actions: re
   );
   assert.notEqual(extraKey, text, 'the mutation must land on the finalize job, or this proves nothing');
   assert.deepEqual(beyondTheCallerGrant(extraKey).map((finding) => finding.split(' asks')[0]), ['job `finalize`']);
-  const stronger = text.replace('\n  actions: read # read the caller', () => '\n  actions: none # read the caller');
-  assert.notEqual(stronger, text, 'the mutation must land on the workflow-level block');
-  assert.ok(beyondTheCallerGrant(stronger).some((finding) => /`actions: read`/.test(finding)));
+  const withoutActions = beyondTheCallerGrant(text, { ...CALLER_GRANT, actions: 'none' });
+  assert.deepEqual(
+    withoutActions.map((finding) => finding.split(' asks')[0]),
+    ['job `version`', 'job `release`'],
+    'a caller that grants `actions: none` must be found short by the two jobs that read the environment',
+  );
+  assert.ok(withoutActions.every((finding) => /`actions: read`/.test(finding)));
+
+  // THE COLUMN-0 BLOCK IS READ-ONLY, PINNED WHOLE. No job reads it, because every job declares its
+  // own; what it governs is a job added later without a block, which then runs with `contents: read`
+  // rather than silently holding every write. A write there is also what OpenSSF Scorecard's
+  // Token-Permissions check scores as the worst case for the whole repository.
+  assert.deepEqual(workflowPermissions(text), { contents: 'read' });
+  // ... and the subset rule reaches it as well, so a widened default is an elevation it names.
+  const widened = text.replace('\npermissions:\n  contents: read\n', () => '\npermissions:\n  contents: read\n  issues: write\n');
+  assert.notEqual(widened, text, 'the mutation must land on the column-0 block');
+  assert.deepEqual(widened.split('\npermissions:\n').length, 2, 'the column-0 block must be the only one at column 0');
+  assert.deepEqual(beyondTheCallerGrant(widened).map((finding) => finding.split(' asks')[0]), ['the column-0 block']);
   // `actions: read` is the gate's read of the caller's environment protection, in `version`, and is
   // kept on `release` so a caller grants one shape for both. `finalize` reads no environment.
   for (const id of ['version', 'release']) {

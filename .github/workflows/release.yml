@@ -416,31 +416,30 @@ on:
       RELEASE_PR_TOKEN:
         required: false
 
-# THIS BLOCK IS ADDITIVE, AND THE WORD IS LOAD-BEARING RATHER THAN DESCRIPTIVE. "If you specify the
-# access for any of these permissions, all of those that are not specified are set to `none`", so a
-# declaration whose only key is `actions: read` would not add a permission, it would STRIP `contents`
-# off the jobs below and 403 the very next checkout, on a fully compliant caller, with none of the
-# fail-closed refusal below. `actions: read` therefore JOINS the three that were already here and
-# displaces none of them. `contents` stays at `write`: the publish job creates tags and a GitHub
-# release, and `write` is what grants the read `actions/checkout` needs as well as those writes.
+# READ-ONLY, BECAUSE EVERY JOB DECLARES ITS OWN. A job block replaces this one rather than adding to
+# it ("If you specify the access for any of these permissions, all of those that are not specified
+# are set to `none`"), so each job below names every key it needs, and none of them reads this
+# block. What it still governs is a job added WITHOUT a block of its own, and that job gets
+# `contents: read` and nothing else: it cannot push, tag, open a pull request or mint an npm
+# credential until someone writes the grant on the job and a reviewer reads it. A write here would
+# hand all of that to such a job silently, which is why OpenSSF Scorecard's Token-Permissions check
+# scores a workflow-level write as the worst case.
 #
-# WHAT THIS BLOCK IS, NOW THAT EVERY JOB DECLARES ITS OWN. It is the workflow-level default and the
-# whole of what this file REQUESTS from a caller, which is the set the elevation rule below is
-# checked against. Each job then narrows it: the version job drops `id-token`, because trusted
-# publishing and provenance are publish-time concerns and that job cannot publish. A job block
-# replaces this one rather than adding to it, so each job names every key it needs.
+# WHAT THIS FILE REQUESTS OF A CALLER IS THEREFORE THE JOBS' BLOCKS TOGETHER, not this one: for each
+# key, the strongest any job asks for. That is `contents: write`, `id-token: write`,
+# `pull-requests: write` and `actions: read`, the four keys in the caller block at the top of this
+# file and the set the elevation rule is checked against (`test/install-check.test.mjs` pins it
+# whole). The version job leaves out `id-token`, because trusted publishing and provenance are
+# publish-time concerns and that job cannot publish.
 #
 # ▶ `actions: read` IS THE ONE THING IN THIS FILE A CALLER HAS TO GRANT FIRST. See "THE CALLER-SIDE
-#   PRECONDITION" at the top of this file. A called workflow's token can only be equal to or more
-#   restrictive than its caller's, so a caller whose calling job pins
-#   contents/id-token/pull-requests and no `actions` is granting `actions: none`, and this request is
-#   then an ELEVATION that GitHub refuses at workflow startup. Nothing below runs in that case, this
-#   gate included. Grant it in the caller first; this file second.
+#   PRECONDITION" at the top of this file. The version and release jobs ask for it. A called
+#   workflow's token can only be equal to or more restrictive than its caller's, so a caller whose
+#   calling job pins contents/id-token/pull-requests and no `actions` is granting `actions: none`,
+#   and those requests are then an ELEVATION that GitHub refuses at workflow startup. Nothing below
+#   runs in that case, the gate included. Grant it in the caller first; this file second.
 permissions:
-  contents: write # create tags / GitHub release
-  id-token: write # npm trusted publishing (OIDC) and provenance
-  pull-requests: write # open the "Version Packages" PR
-  actions: read # read the caller's `release` environment protection (the gate in the version job)
+  contents: read
 
 jobs:
   # THE UN-GATED HALF, AND EVERY WORD OF THAT IS DELIBERATE. This job references NO deployment
@@ -1504,7 +1503,7 @@ jobs:
       # workflow at startup, for all thirteen callers at once. So the menu is {warn, fail}, and a
       # warning on a green run notifies nobody.
       #
-      # THAT MECHANISM IS EXACTLY WHY `actions: read` AT THE TOP OF THIS FILE HAS A CALLER-SIDE
+      # THAT MECHANISM IS EXACTLY WHY `actions: read` IN THE VERSION AND RELEASE JOBS HAS A CALLER-SIDE
       # PRECONDITION, and it is the one permission that is now expected in a caller's `permissions:`
       # block alongside contents/id-token/pull-requests. The difference is that a reviewer decided to
       # pay for it: `actions: read` is a READ that proves the human gate on this publish, and the

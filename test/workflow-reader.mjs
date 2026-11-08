@@ -647,6 +647,30 @@ export function effectivePermissions(text, job) {
 }
 
 /**
+ * What a workflow asks of its caller's token: for each key, the strongest access that the
+ * column-0 block or the permissions in force on any job ask for.
+ *
+ * A called workflow's token can only be narrowed, so this is the least a calling job has to grant
+ * for the workflow to start at all. It is NOT the column-0 block. On a workflow where every job
+ * declares its own, that block can sit at `contents: read` while the jobs together ask for four
+ * writes, and reading the block alone would report a request a caller could satisfy with a grant
+ * that fails every release at startup. The column-0 block is still counted, as the default for a job
+ * that declares none.
+ */
+export function callerRequest(text) {
+  const strength = { none: 0, read: 1, write: 2 };
+  const blocks = [workflowPermissions(text), ...parseWorkflow(text).jobs.map((job) => effectivePermissions(text, job))];
+  /** @type {Record<string, string>} */
+  const request = {};
+  for (const block of blocks) {
+    for (const [key, value] of Object.entries(block ?? {})) {
+      if ((strength[value] ?? 0) > (strength[request[key]] ?? 0)) request[key] = value;
+    }
+  }
+  return request;
+}
+
+/**
  * The WORKFLOW-level `env:` block, above `jobs:`, with the raw text it was read out of.
  *
  * TWO DIFFERENCES FROM THE PERMISSIONS READ, both because this one is used for an ABSENCE claim and

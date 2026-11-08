@@ -696,22 +696,25 @@ is **`actions: read`**, which is what `release.yml` declares.
 > self-explaining and prints the exact block to add, but it can only print it in a run that started.
 > The two failure modes are different and only one of them tells you what to do.
 
-The declaration in `release.yml` is **additive**, and that word is load-bearing rather than
+Each job's declaration in `release.yml` is **complete**, and that word is load-bearing rather than
 descriptive: "if you specify the access for any of these permissions, all of those that are not
 specified are set to `none`", so a block whose only key was `actions: read` would not add a
 permission, it would strip `contents` off the job and 403 the very next checkout, on a **fully
-compliant** caller, with none of the fail-closed refusal above. The workflow-level block therefore
-names all four keys, `contents` stays at `write` because the publish job creates tags and a GitHub
-release, and `test/install-check.test.mjs` pins that set whole. It is what this file **requests** of
-a caller, and it is unchanged by the split: no caller grants anything new.
+compliant** caller, with none of the fail-closed refusal above. A job block replaces the workflow
+one rather than adding to it, so each job names every key it needs. `version` is
+`contents: write` + `pull-requests: write` + `actions: read`; `release` is those three plus
+`id-token: write`; `finalize` is `contents: write` alone. **`id-token` is deliberately absent from
+`version`**: it is the npm credential now, exchanged by trusted publishing for a publish token, as
+well as what signs provenance; both are publish-time concerns, that job cannot publish, and a token
+that can mint a publish has no business existing on a runner nobody approved.
+`test/environment-gate.test.mjs` pins each job's set whole, in both directions.
 
-**Each job then narrows it, and a job block replaces the workflow one rather than adding to it**, so
-each names every key it needs. `version` is `contents: write` + `pull-requests: write` +
-`actions: read`; `release` is those three plus `id-token: write`. **`id-token` is deliberately absent
-from `version`**: it is the npm credential now, exchanged by trusted publishing for a publish token,
-as well as what signs provenance; both are publish-time concerns, that job cannot publish, and a
-token that can mint a publish has no business existing on a runner nobody approved.
-`test/environment-gate.test.mjs` pins **both** sets whole, in both directions.
+What the file **requests** of a caller is those blocks together: for each key, the strongest any job
+asks for, which is the four keys of the caller block above. `test/install-check.test.mjs` pins that
+set whole, and no caller grants anything new. The **workflow-level** block is `contents: read` and
+nothing else. No job reads it, because every job declares its own; what it governs is a job added
+later without a block, which then runs read-only instead of silently holding every write. That is
+also what OpenSSF Scorecard's Token-Permissions check asks of every workflow.
 
 The default branch itself is in **neither** environment payload, though four of the refusal wordings
 name it. It comes from `GET /repos/{owner}/{repo}`, which sits under `Metadata: read`: not a

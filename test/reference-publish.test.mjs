@@ -31,6 +31,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  callerRequest,
   composeNote,
   decide,
   deniedPermission,
@@ -571,6 +572,87 @@ for (const [label, before, after, kind] of FOR_INFORMATION) {
     assert.match(verdict.note, /## Changes a caller does not have to act on/);
   });
 }
+
+test('what a caller must grant is every block together, at its strongest, and `none` asks for nothing', () => {
+  assert.deepEqual(
+    callerRequest({
+      workflow: { contents: 'read', issues: 'none' },
+      jobs: {
+        version: { contents: 'write', 'pull-requests': 'write', actions: 'read' },
+        release: { contents: 'write', 'id-token': 'write', 'pull-requests': 'write', actions: 'read' },
+        verify: null,
+      },
+    }),
+    { actions: 'read', contents: 'write', 'id-token': 'write', 'pull-requests': 'write' },
+  );
+  // The workflow-level block counts as well, as the default for a job that declares none.
+  assert.deepEqual(callerRequest({ workflow: { 'id-token': 'write' }, jobs: { verify: null } }), { 'id-token': 'write' });
+  assert.deepEqual(callerRequest({ workflow: null, jobs: {} }), {});
+});
+
+test('AC2: a workflow-level block narrowed under jobs that each declare their own asks nothing new of a caller', () => {
+  // The shape `release.yml` has: every job names its own block, so the workflow-level one is read by
+  // no job, and narrowing it to `contents: read` leaves what a caller must grant exactly as it was.
+  const shaped = (top) =>
+    [
+      'name: Release',
+      'on:',
+      '  workflow_call:',
+      top,
+      'jobs:',
+      '  version:',
+      '    runs-on: ubuntu-latest',
+      '    permissions:',
+      '      contents: write',
+      '      pull-requests: write',
+      '    steps:',
+      '      - run: echo version',
+      '  release:',
+      '    runs-on: ubuntu-latest',
+      '    permissions:',
+      '      contents: write',
+      '      id-token: write',
+      '    steps:',
+      '      - run: echo release',
+      '',
+    ].join('\n');
+  const before = shaped('permissions:\n  contents: write\n  id-token: write\n  pull-requests: write');
+  const after = shaped('permissions:\n  contents: read');
+  const changes = diffInterfaces(iface(before, 'release.yml'), iface(after, 'release.yml'));
+  assert.deepEqual(changes.filter((change) => change.kind === 'permissions-changed'), []);
+
+  // ... while the same narrowing under a job that declares NO block is a change the caller sees,
+  // because that job really does run with less.
+  const inherited = (top) => `name: CI\non:\n  workflow_call:\n${top}\njobs:\n  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo verify\n`;
+  const narrowed = diffInterfaces(
+    iface(inherited('permissions:\n  contents: read\n  id-token: write'), 'ci.yml'),
+    iface(inherited('permissions:\n  contents: read'), 'ci.yml'),
+  ).filter((change) => change.kind === 'permissions-changed');
+  assert.equal(narrowed.length, 1);
+  assert.equal(narrowed[0].act, true);
+  assert.equal(narrowed[0].from, 'contents: read, id-token: write');
+  assert.equal(narrowed[0].to, 'contents: read');
+});
+
+test("AC2: release.yml's read-only workflow-level block reports no permission change against the four-key one", () => {
+  // The delivered file, against itself with the workflow-level block it carried before: the note a
+  // reference minted for that move must not tell a caller its grant changed.
+  const now = readFileSync(join(REPO, '.github/workflows/release.yml'), 'utf8');
+  const block = '\npermissions:\n  contents: read\n';
+  assert.equal(now.split(block).length, 2, 'the workflow-level block must be findable exactly once');
+  const then = now.replace(
+    block,
+    () => '\npermissions:\n  contents: write\n  id-token: write\n  pull-requests: write\n  actions: read\n',
+  );
+  const changes = diffInterfaces(iface(then, 'release.yml'), iface(now, 'release.yml'));
+  assert.deepEqual(changes, []);
+  assert.deepEqual(callerRequest(iface(now, 'release.yml').permissions), {
+    actions: 'read',
+    contents: 'write',
+    'id-token': 'write',
+    'pull-requests': 'write',
+  });
+});
 
 test('AC2: a comment-only edit changes the state but demands nothing of a caller', () => {
   const before = FULL;
