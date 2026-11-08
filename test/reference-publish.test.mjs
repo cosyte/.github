@@ -1442,7 +1442,7 @@ test('Constraint 2: it adds no third-party action, and reuses the SHAs already p
   const uses = operative.filter((line) => line.includes('uses:')).map((line) => line.trim().replace(/^- /, ''));
   assert.deepEqual(uses, [
     'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
-    'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0',
+    'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',
   ]);
   const selfCheck = execFileSync('cat', [resolve(REPO, '.github/workflows/self-check.yml')], { encoding: 'utf8' });
   for (const line of uses) assert.ok(selfCheck.includes(line.replace('uses: ', '')), `${line} is already pinned here`);

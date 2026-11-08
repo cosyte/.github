@@ -124,7 +124,7 @@ test('each check above refuses a copy of release.yml with that one thing broken'
     assert.throws(() => assertNoNpmToken(once(provenance, `${provenance}          NODE_AUTH_TOKEN: ${spelling}\n`)));
   }
   // A token file asked of setup-node in the publishing job, which names no token at all.
-  const node24 = 'would fail closed, not publish.\n      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0\n        with:\n';
+  const node24 = 'would fail closed, not publish.\n      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n        with:\n';
   assert.throws(
     () => assertNoNpmToken(once(node24, `${node24}          registry-url: "https://registry.npmjs.org"\n`)),
     /asks setup-node for a token file/,
