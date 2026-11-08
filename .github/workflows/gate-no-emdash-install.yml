@@ -98,6 +98,8 @@ jobs:
   # command: this job runs on every event the caller triggers on.
   tracked-files:
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -133,6 +135,8 @@ jobs:
     # place the shape is safe. It is the condition the non-installing form carries, unchanged.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

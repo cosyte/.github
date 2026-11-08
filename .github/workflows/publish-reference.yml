@@ -55,6 +55,7 @@ concurrency:
 jobs:
   publish-reference:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # Creating the tag and its release. This is the one permission this job needs beyond the
       # default, and the one `scripts/reference-publish.mjs` names by hand when a run is denied it.

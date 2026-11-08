@@ -78,6 +78,7 @@ jobs:
   # off a live check run before requiring it, never off this file's `name:`.
   org-defaults-coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # Exactly the two the reads need, and naming any permission sets every unnamed one to `none`,
       # which is the point: this job cannot write anywhere even if the script ever tried to.

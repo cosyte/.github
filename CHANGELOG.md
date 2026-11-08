@@ -17,7 +17,13 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
-Nothing yet.
+- Every job in the reusable workflows carries a `timeout-minutes`. A caller cannot bound a job that
+  calls a reusable workflow, so a hung step could hold its runner for the six-hour default. The
+  bounds sit well above the slowest runs measured on 2026-11-07: 30 minutes for `ci.yml`'s `verify`
+  (4 minutes at most) and `prepublish` (above its install step's own 15), `codeql.yml`'s `analyze`
+  and `release.yml`'s `version`; 15 for `scorecard.yml`'s `analysis`; 10 for the jobs of the four
+  gate workflows and `drift-check.yml`; and 60 for `nightly-fuzz.yml`. Job ids, inputs, secrets and
+  permissions are unchanged (#99).
 
 ## workflows-2026-11-07-498c7c13c886
 

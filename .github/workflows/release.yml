@@ -452,6 +452,8 @@ jobs:
   # It also carries the protection gate, unconditionally, for every path this workflow has.
   version:
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 30
     # NAMED IN FULL, BECAUSE NAMING ONE KEY SETS EVERY OTHER TO `none`. "If you specify the access for
     # any of these permissions, all of those that are not specified are set to `none`", so a block
     # that asked only for what a reader thinks this job needs would strip `contents` and 403 the very

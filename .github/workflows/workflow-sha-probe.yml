@@ -50,6 +50,8 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 5
     permissions:
       # Nothing is checked out, fetched or uploaded. `contents: read` is the floor a caller has to
       # grant for this file to be resolved at all, and it is the whole of what this job asks for.
