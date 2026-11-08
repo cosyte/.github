@@ -9,11 +9,15 @@
 
 Open-source libraries for healthcare's data standards, and the integrations built on them.
 
+<!-- catalog:roster:start: test/package-lists.mjs checks this list against the package catalog. -->
+
 We publish 14 libraries: one for each of 8 standards (HL7 v2, MLLP, FHIR, C-CDA, X12, NCPDP, ASTM,
 and DICOM) and 6 built on them (terminology, transform, deid, synth, dates, and cli). They are
 written in TypeScript and published to npm on the 0.1 line, the first release line whose public API
 we treat as settled. [Pathways](https://github.com/cosyte/pathways) is our integration engine, in
 development, built on these libraries.
+
+<!-- catalog:roster:end -->
 
 ```bash
 npm install @cosyte/hl7
@@ -23,6 +27,8 @@ Each library installs on its own: swap `hl7` for any name in the table. All 14 a
 support Node.js 22 or later, tested on 22 and 24.
 
 ## Libraries
+
+<!-- catalog:table:start: test/package-lists.mjs checks this table against the package catalog. -->
 
 | Package | What it does | Links |
 |---|---|---|
@@ -40,6 +46,8 @@ support Node.js 22 or later, tested on 22 and 24.
 | `@cosyte/synth` | Generate seeded, reproducible synthetic test data in HL7 v2, FHIR R4, C-CDA, X12, NCPDP, and ASTM | [npm](https://www.npmjs.com/package/@cosyte/synth) · [docs](https://docs.cosyte.com/synth/quickstart?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=table-synth) · [repo](https://github.com/cosyte/synth) |
 | `@cosyte/dates` | Validate and convert healthcare dates without adding precision or guessing a timezone | [npm](https://www.npmjs.com/package/@cosyte/dates) · [docs](https://docs.cosyte.com/dates/quickstart?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=table-dates) · [repo](https://github.com/cosyte/dates) |
 | `@cosyte/cli` | The `cosyte` command: parse, validate, convert, and redact healthcare data from the terminal, with an MCP server for agents | [npm](https://www.npmjs.com/package/@cosyte/cli) · [docs](https://docs.cosyte.com/cli/quickstart?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=table-cli) · [repo](https://github.com/cosyte/cli) |
+
+<!-- catalog:table:end -->
 
 ## Start here
 

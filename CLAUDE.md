@@ -1,31 +1,28 @@
 # cosyte/.github
 
-The org's shared GitHub surface: the reusable workflows every `@cosyte/*` library calls (`ci.yml`,
-`release.yml` and the `gate-*` workflows in `.github/workflows/`), the `scripts/` they run, the
-community health files GitHub serves to every repo without its own, and the org profile in
-`profile/`. It ships no package (no `package.json`, no changeset). `CHANGELOG.md` records what each
-`workflows-*` reference changed for a caller: a change to a reusable or to `scripts/` adds its lines
-under "Unreleased", and the next change to the file moves them under the reference its merge minted.
+AGENTS.md, imported here, says what this repo holds and gives the build, the test, the gate and the
+data rule. This card adds what CI does with the gate, the hazard, and the rules that bind here.
+`CHANGELOG.md` records what each `workflows-*` reference changed for a caller: a change to a
+reusable or to `scripts/` adds its lines under "Unreleased", and the next change to the file moves
+them under the reference its merge minted.
+
+@AGENTS.md
 
 ## Gate
 
-From the repo root, in this order; the tests use only `node:test` and `node:assert`, so no install.
+Steps 1, 2 and 4 of the gate in AGENTS.md are `self-check.yml`'s `actionlint`, `scripts` and
+`package-lists` jobs; step 3 is `no-emdash.yml`'s `no-emdash` job, and its `no-emdash-messages` job
+runs the script with `--stdin` over the PR title, body and commits. CI alone adds CodeQL, the
+`job.workflow_sha` probe and the org defaults coverage check.
 
-1. `actionlint` 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`) with shellcheck on `PATH`:
-   CI runs rhysd/actionlint's release binary at that version, checked against a pinned SHA-256, and
-   an older one reports `job.workflow_sha` false positives that `.github/actionlint.yaml` misses.
-2. `node --test "test/*.test.mjs"`
-3. `node scripts/check-no-emdash.mjs`
-
-Steps 1 and 2 are `self-check.yml`'s `actionlint` and `scripts` jobs, step 3 is `no-emdash.yml`'s
-`no-emdash` job; its `no-emdash-messages` job runs the script with `--stdin` over the PR title, body
-and commits. CI alone adds CodeQL, the `job.workflow_sha` probe and the org defaults coverage check.
-
-The `actionlint` jobs run the binary itself, so their exit status is actionlint's own over every
-tracked workflow file. Never move them back to `reviewdog/action-actionlint`: it annotated only
-lines in the diff, which let stale ignores turn `main` red behind a green PR (#61); #80 measured it
-exiting 0 on a finding; and from v1.75.0 it installs actionlint from a fork with `curl | bash`.
-Moving to a new actionlint means changing the version and the SHA-256 together, in both files.
+Run actionlint 1.7.12 (`mise exec actionlint@1.7.12 -- actionlint`): CI runs rhysd/actionlint's
+release binary at that version, checked against a pinned SHA-256, and an older one reports
+`job.workflow_sha` false positives that `.github/actionlint.yaml` misses. The `actionlint` jobs run
+the binary itself, so their exit status is actionlint's own over every tracked workflow file. Never
+move them back to `reviewdog/action-actionlint`: it annotated only lines in the diff, which let
+stale ignores turn `main` red behind a green PR (#61); #80 measured it exiting 0 on a finding; and
+from v1.75.0 it installs actionlint from a fork with `curl | bash`. Moving to a new actionlint means
+changing the version and the SHA-256 together, in both files.
 
 ## Hazard: public at once, and a merge reaches every library
 
@@ -58,3 +55,6 @@ are absolute URLs. A PR touching `profile/`, the org's public profile, is gated 
 - Title every pull request in Conventional Commits form: `self-pr-title.yml` checks it here, and
   `test/pr-title.test.mjs` holds the titles `release.yml` and Dependabot write to the same rule,
   since the changesets default, `Version Packages`, fails it.
+- Keep the package lists in `SECURITY.md`, `CONTRIBUTING.md` and `profile/README.md` between their
+  `catalog:` markers, which `package-lists` reads against the latest catalog: typed by hand with no
+  check, they could disagree with it unseen. When it reds, change the list to match the catalog.

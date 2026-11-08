@@ -17,6 +17,11 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- The release pipeline's registry lookups, in `scripts/install-check.mjs` and
+  `scripts/publish-floor.mjs`, escape every `/` in a package name rather than only the first. A
+  valid npm name has at most one, so no caller's lookup changes. `scripts/org-defaults-coverage.mjs`,
+  which only this repository runs, reads each issue template through one file descriptor. Inputs,
+  secrets, permissions and job ids are unchanged (#102).
 - `release.yml`'s workflow-level `permissions:` block is `contents: read`. Every job already
   declares its own complete block, so no job's token changes and a caller grants exactly what it
   granted before: `actions: read`, `contents: write`, `id-token: write` and `pull-requests: write`.

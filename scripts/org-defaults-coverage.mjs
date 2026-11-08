@@ -69,7 +69,7 @@
 // Exit codes: 0 every declared label is held everywhere it is owed, 1 it is not or something could
 // not be read, 2 bad usage.
 
-import { readFileSync, readdirSync, statSync, appendFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -911,7 +911,7 @@ export async function measure({
   const accountRead = isOrg ? `/orgs/${measurement.account.login}` : `/users/${measurement.account.login}`;
 
   /** @type {{reported: number|null, publicRepos: number|null, privateRepos: number|null, source: string}} */
-  let counts = { reported: null, publicRepos: null, privateRepos: null, source: accountRead };
+  let counts;
   try {
     const answer = await get(`${base}${accountRead}`, fetcher, token);
     if (answer.status !== 200 || !answer.parsed) throw readFailure(accountRead, answer);
@@ -1223,14 +1223,21 @@ export function readTemplateDirectory(dir) {
   const files = [];
   for (const name of names.sort()) {
     const path = join(dir, name);
+    // ONE DESCRIPTOR FOR THE CHECK AND THE READ. Checking the path and then reading the path again
+    // leaves a window in which the entry can be replaced between the two, so the type is read off
+    // the descriptor that is then read from. `O_NONBLOCK` makes opening a FIFO return at once
+    // instead of waiting for a writer; the FIFO is then refused as not a regular file, as before.
+    /** @type {number|undefined} */
+    let fd;
     try {
-      if (!statSync(path).isFile()) {
+      fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+      if (!fstatSync(fd).isFile()) {
         return {
           files: [],
           failure: { path: `${TEMPLATE_DIR}/${name}`, reason: 'is not a regular file, so it is not a template' },
         };
       }
-      files.push({ name, text: readFileSync(path, 'utf8') });
+      files.push({ name, text: readFileSync(fd, 'utf8') });
     } catch (error) {
       return {
         files: [],
@@ -1239,6 +1246,8 @@ export function readTemplateDirectory(dir) {
           reason: `could not be read: ${error instanceof Error ? error.message : error}`,
         },
       };
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
   }
   return { files, failure: null };

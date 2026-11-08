@@ -2830,8 +2830,6 @@ review. That is the stopping point, and the reason not to add a fourth rung chas
   release-notes gate refuses a release body containing an em dash and has to be able to name the
   character. Assembling it keeps the ban total without exempting the one file that enforces it. **Do
   not answer a red here by adding an exclusion; assemble the spelling instead.**
-- This repository has no `documentation/agent-notes.md`, so the agent-instruction contract gate some
-  siblings run has nothing to check here. That is a stated absence, not a missing file to create.
 
 The standard these enforce is ST8 in the umbrella's `plans/standards.md`, which replaced the deleted
 `documentation/conventions.md`: no em dash and no en dash anywhere, and a sentence that seems to need

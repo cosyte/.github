@@ -474,7 +474,9 @@ export function staleAllowanceEntries(declaredAllowance, presentNames) {
 
 // ── Registry oracles ────────────────────────────────────────────────────────────────────────────
 
-const encodeName = (name) => name.replace("/", "%2f");
+// Every slash, not just the first. A scoped name has exactly one; a name with more must still reach
+// the registry as one path segment rather than as extra segments of the URL.
+const encodeName = (name) => name.replaceAll("/", "%2f");
 
 /** @returns {Promise<{status: number, body: any}>} */
 async function getJson(url, fetchImpl) {

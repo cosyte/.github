@@ -1,5 +1,7 @@
 # Security policy
 
+<!-- catalog:roster:start: test/package-lists.mjs checks this list against the package catalog. -->
+
 This policy covers our 14 open-source libraries and Pathways:
 
 - one library for each of 8 standards: `@cosyte/hl7`, `@cosyte/mllp`, `@cosyte/fhir`,
@@ -10,6 +12,8 @@ This policy covers our 14 open-source libraries and Pathways:
 - the shared build, lint, and test tooling they use, in
   [cosyte/config](https://github.com/cosyte/config) and
   [cosyte/.github](https://github.com/cosyte/.github).
+
+<!-- catalog:roster:end -->
 
 ## Reporting a vulnerability
 
@@ -53,7 +57,7 @@ surface we care about most:
 
 Three of the libraries have a third-party runtime dependency, one each: `@cosyte/ccda` on
 `@xmldom/xmldom`, `@cosyte/ncpdp` on `fast-xml-parser`, and `@cosyte/dates` on `temporal-polyfill`.
-The other 11 depend on nothing outside `@cosyte`, so the third-party surface is small by design.
+The others depend on nothing outside `@cosyte`, so the third-party surface is small by design.
 
 ## A note on PHI
 
