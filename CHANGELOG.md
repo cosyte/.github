@@ -17,17 +17,45 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
-- The release pipeline's registry lookups, in `scripts/install-check.mjs` and
-  `scripts/publish-floor.mjs`, escape every `/` in a package name rather than only the first. A
-  valid npm name has at most one, so no caller's lookup changes. `scripts/org-defaults-coverage.mjs`,
-  which only this repository runs, reads each issue template through one file descriptor. Inputs,
-  secrets, permissions and job ids are unchanged (#102).
+- `release.yml` tags the version commit in the `version` job, seconds after the merge and before
+  anything is published, with the new `scripts/release-tag.mjs`, and creates every GitHub release
+  at that existing tag with `--verify-tag` and no `--target`. GitHub refuses a `GITHUB_TOKEN` any ref
+  at a commit whose `.github/workflows/` differ from the default branch's, and the release step used
+  to make the tag minutes later, after the publish, through `gh release create --target`. So a pull
+  request that changed workflow files and merged mid-release stranded `@cosyte/transform@0.1.4` on
+  npm with no tag or release, twice on 2026-11-08, and no later run could tag it either. The rule was
+  measured that day and is reproduced in `test/release-tag.test.mjs`. The tag is made with the
+  automatic token at the `contents: write` the `version` job already holds, and `is-release` and
+  `finalize` are withheld unless it is on the version commit.
+- If GitHub refuses that tag, nothing is published and the `version` job ends red, after the Version
+  PR step, with the one command that makes the tag with a maintainer's own credentials and the
+  re-run that finishes the release. A release the old pipeline stranded is finished the same way.
+- Only the version commit's own run publishes it. A later commit's run no longer publishes, from its
+  own tree, a version whose own run stopped short: it finalizes one that is published, or reports
+  the run to re-run. The tag no longer proves a publish, so the notes gate looks past it on the tagged
+  version commit, and every run asks the GitHub release, and when that is missing the registry, what
+  a tagged version is owed. Inputs, secrets, permissions and job ids are unchanged.
+
+## workflows-2026-11-07-0d5dbc3a9a72
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-e3a24dad0713`.
+
 - `release.yml`'s workflow-level `permissions:` block is `contents: read`. Every job already
   declares its own complete block, so no job's token changes and a caller grants exactly what it
   granted before: `actions: read`, `contents: write`, `id-token: write` and `pull-requests: write`.
   A job added later without a block of its own runs read-only. The reference note now compares what
   a caller must grant, every job's block together at its strongest, rather than the workflow-level
   block alone, so this move reports no permission change (#103).
+
+## workflows-2026-11-07-e3a24dad0713
+
+2026-11-07. Act on: nothing, against `workflows-2026-11-07-9c75b80bfbf0`.
+
+- The release pipeline's registry lookups, in `scripts/install-check.mjs` and
+  `scripts/publish-floor.mjs`, escape every `/` in a package name rather than only the first. A
+  valid npm name has at most one, so no caller's lookup changes. `scripts/org-defaults-coverage.mjs`,
+  which only this repository runs, reads each issue template through one file descriptor. Inputs,
+  secrets, permissions and job ids are unchanged (#102).
 
 ## workflows-2026-11-07-9c75b80bfbf0
 
