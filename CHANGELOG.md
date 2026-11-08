@@ -17,6 +17,20 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `ci.yml`'s and `release.yml`'s `expect-unpublished-deps` default to empty instead of
+  `@cosyte/fhir=blocked`. That entry dates from before `@cosyte/fhir` was on npm; it is published
+  now, so the entry was stale and every caller's install gates printed a notice saying the
+  allowance "is on the registry now". A caller needs to do nothing: a package the registry serves
+  is never absent, so the entry already excused nothing, no verdict changes, and only the notice
+  stops. The reference note lists the changed default under "must act on", because it lists every
+  changed default there. The input stays, in the same grammar, for a caller that has to name a
+  blocked dependency, and a caller that passes it, empty or not, is unaffected. Job ids, the other
+  inputs and their defaults, secrets and permissions are unchanged.
+
+## workflows-2026-11-08-c0db8d8e5927
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-08-ebece960a9ac`.
+
 - `ci.yml`'s `actionlint` job restores rhysd/actionlint's release tarball from the caller's own
   Actions cache with `actions/cache/restore` and `actions/cache/save` at v6.1.0, keyed on the
   actionlint version and its SHA-256, and downloads it only when the cache holds no copy that
@@ -27,13 +41,14 @@ so the next change to this file moves those lines under a heading with that name
   lint finds something still seeds the cache. A cache that cannot be reached is a miss with a
   warning. The cache steps use the runner's own cache token, so a caller grants nothing new: inputs,
   secrets, permissions and job ids are unchanged. A run on the caller's default branch seeds the
-  entry every pull request can read. `self-check.yml`, this repository's own check, does the same.
+  entry every pull request can read. `self-check.yml`, this repository's own check, does the same
+  (#111).
 - `gate-no-emdash.yml`, `gate-no-emdash-install.yml`, `gate-no-internal-refs.yml` and
   `gate-no-internal-refs-install.yml` take an optional `node-version` input, defaulting to `"22"`,
   the line every job in them ran on before. A caller passing nothing runs exactly as it did. A
   package whose `engines.node` starts above 22 with `engine-strict`, where pnpm refuses to install or
   run a script on 22, passes its floor with `with: { node-version: "24" }`. Job ids, the other inputs
-  and their defaults, secrets and permissions are unchanged.
+  and their defaults, secrets and permissions are unchanged (#111).
 
 ## workflows-2026-11-08-ebece960a9ac
 

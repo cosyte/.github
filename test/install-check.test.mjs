@@ -1174,18 +1174,19 @@ test("release.yml wires the gate the way the script expects", () => {
   assert.equal(gate.fields["timeout-minutes"], "15");
 
   // The input is OPTIONAL with a default, which is what keeps the other callers working unchanged.
-  // ONE GRAMMAR, TWO GATES: the default carries `ci.yml`'s `=<kind>` tag, and what this gate must
-  // prove is that the tag changes NOTHING here. Asserted by running the literal from the workflow
-  // through this gate's own parser rather than by restating the expected string, so a future edit to
-  // either the default or the parser has to keep them in step.
+  // The default is empty since 2026-11-08, when `@cosyte/fhir` reached the registry and its
+  // `=blocked` entry went stale, and this gate's own parser must read it as naming nothing. Asserted
+  // by running the literal from the workflow through the parser rather than by restating the expected
+  // list, so a future edit to either the default or the parser has to keep them in step. That a
+  // `=blocked` tag changes nothing here is pinned in `test/prepublish-check.test.mjs`.
   //
   // Read out of the DECOMMENTED text because `on.workflow_call.inputs` sits above `jobs:`, which is
   // the one region the job reader deliberately does not model; `test/environment-gate.test.mjs` owns
   // the call contract itself.
   const preamble = decomment(yml).join("\n");
   const declaredDefault = preamble.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
-  assert.equal(declaredDefault, "@cosyte/fhir=blocked");
-  assert.deepEqual(parseAllowance(declaredDefault), ["@cosyte/fhir"]);
+  assert.equal(declaredDefault, "");
+  assert.deepEqual(parseAllowance(declaredDefault), []);
 
   // The gate must stay AFTER the publish and release steps: it reports on what actually shipped.
   // A STEP INDEX INSIDE ONE JOB, not a byte offset in a two-job file: `String.indexOf` compares

@@ -87,21 +87,27 @@ on:
         default: true
       # THE DECLARED ALLOWANCE, and the same input `release.yml` takes, in the same grammar. A repo
       # names its known-unpublished consumer dependencies and the gate asserts EXACTLY that set: a
-      # named absence is the expected state and warns, an absence nobody named still fails. Without
-      # it layer 2 reds `transform` and `synth` for `@cosyte/fhir` (FHIR-NPM-NAME), which nobody can
-      # fix from those repos, and a permanently red gate is one people learn to ignore: the same
-      # failure as a step that never runs.
+      # named absence is the expected state and warns, an absence nobody named still fails. It exists
+      # so that a dependency npm refuses for a reason no caller can fix does not red that caller's
+      # gate, because a permanently red gate is one people learn to ignore: the same failure as a
+      # step that never runs.
+      #
+      # EMPTY BY DEFAULT SINCE 2026-11-08. It defaulted to `@cosyte/fhir=blocked` while npm refused
+      # `@cosyte/fhir` (FHIR-NPM-NAME), so that `transform` and `synth` did not red on it. That
+      # package is on the registry now, and the entry did what this allowance is built to do: it went
+      # stale, and every caller's gate printed a notice saying so. A caller that names a new blocked
+      # dependency passes it here; a caller that passes nothing names nothing, and any absence fails.
       #
       # THE `=blocked` TAG IS LOAD-BEARING, AND IT IS THE ONLY KIND THAT EXCUSES ANYTHING.
-      # `@cosyte/assets` and `@cosyte/docs` are `E404` exactly like `@cosyte/fhir` is, and they are
+      # `@cosyte/assets` and `@cosyte/docs` are `E404` exactly like `@cosyte/fhir` was, and they are
       # `private: true` by design. A deliberate absence and an unexplained block must not share
       # words, so `=private` names the first and excuses nothing, in either gate: a package that
       # publishes must not depend on one that never will. Untagged is accepted and read as `blocked`,
       # which is the spelling `release.yml` shipped with, and is reported so it can be tightened.
       expect-unpublished-deps:
-        description: "Known-absent consumer deps, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
+        description: "Known-absent consumer deps, comma separated, e.g. \"@scope/a=blocked\". Empty names none."
         type: string
-        default: "@cosyte/fhir=blocked"
+        default: ""
       # THE DOCS-CONTENT GATE. OFF BY DEFAULT, AND THAT DEFAULT IS LOAD-BEARING: every caller tracks
       # `@main` and picks this up the moment it lands, so it must change nothing for any of the
       # thirteen until that caller opts in BY NAME. A repo that publishes `docs-content/` can today

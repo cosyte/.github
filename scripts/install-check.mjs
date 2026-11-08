@@ -18,8 +18,8 @@
 //                                 inside the published tarball. `npm install @cosyte/cli@0.0.1`
 //                                 dies ENOENT on `node_modules/@cosyte/cli/vendor/cosyte-fhir-0.0.0.tgz`.
 //                                 Both versions are permanent and stay broken forever (ADR 0001).
-//   @cosyte/transform 0.0.5       E404. A non-optional peer on `@cosyte/fhir`, which is not on the
-//                                 registry (FHIR-NPM-NAME).
+//   @cosyte/transform 0.0.5       E404. A non-optional peer on `@cosyte/fhir`, which was not on the
+//                                 registry then (FHIR-NPM-NAME; it published later).
 //   @cosyte/synth 0.0.6           ERESOLVE on the same peer, and note that synth marks it OPTIONAL
 //                                 in peerDependenciesMeta. An optional peer whose PACKUMENT 404s
 //                                 still fails the tree. Optionality is not protection.
@@ -261,8 +261,8 @@ export function consumerDependencyNames(manifest) {
 
 // ONE GRAMMAR, TWO GATES, AND ONLY ONE KIND IS STRIPPED. The pre-publish layers in
 // `prepublish-check.mjs` read the SAME `expect-unpublished-deps` string, and they need to tell a
-// package that is absent because npm is refusing it (`@cosyte/fhir`, FHIR-NPM-NAME, expected to
-// clear) from one that is absent BY DESIGN (`@cosyte/assets`, `@cosyte/docs`, both `private: true`,
+// package that is absent because npm is refusing it (expected to clear, as `@cosyte/fhir` did,
+// FHIR-NPM-NAME) from one that is absent BY DESIGN (`@cosyte/assets`, `@cosyte/docs`, both `private: true`,
 // never going to clear). So an entry may carry a `=<kind>` tag.
 //
 // ▶ ONLY `=blocked` IS STRIPPED, AND THE ASYMMETRY IS THE WHOLE POINT. Stripping every tag was

@@ -369,34 +369,39 @@ on:
         default: "pnpm pack:docs"
       # THE DECLARED ALLOWANCE for the post-publish install gate below, and it is a dated exception
       # rather than a setting. A package whose dependency is absent from the registry is genuinely
-      # uninstallable, and today that is TRUE AND EXPECTED for `@cosyte/transform` and `@cosyte/synth`,
-      # both of which depend on `@cosyte/fhir`, which npm refuses with a persistent unexplained E403
-      # (FHIR-NPM-NAME). Without this the gate would red every one of their releases for a condition
-      # nobody can fix from those repos, and a permanently red gate is one people learn to ignore,
-      # which is the same failure as the dispatch step that had never once executed.
+      # uninstallable, and when npm refuses that dependency for a reason nobody can fix from the
+      # caller, the gate would red every one of its releases. A permanently red gate is one people
+      # learn to ignore, which is the same failure as the dispatch step that had never once executed.
       #
       # It is asserted as an EXACT allowance, not a mute: the gate refuses any absent dependency that
-      # is NOT named here, so a new unpublished dependency still fails. And it is self-clearing. The
-      # moment `@cosyte/fhir` publishes, nothing is absent, the installs simply pass, and the gate
-      # reports the entry as stale so it gets deleted. DELETE IT THEN; it is not load-bearing.
+      # is NOT named here, so a new unpublished dependency still fails. And it is self-clearing: the
+      # moment a named package publishes, nothing is absent, the installs simply pass, and the gate
+      # reports the entry as stale so it gets deleted.
+      #
+      # EMPTY BY DEFAULT SINCE 2026-11-08. It defaulted to `@cosyte/fhir=blocked` while npm refused
+      # `@cosyte/fhir` with a persistent unexplained E403 (FHIR-NPM-NAME), so that
+      # `@cosyte/transform` and `@cosyte/synth`, which depend on it, did not red. It is on the
+      # registry now, the entry went stale as designed, and it was deleted. `ci.yml`'s default moved
+      # with it, and must keep moving with it.
       #
       # THE `=blocked` TAG IS `ci.yml`'s PRE-PUBLISH LAYERS SPEAKING, AND ONE GRAMMAR IS THE POINT.
-      # Those layers read this same input and must tell `@cosyte/fhir` (absent for a reason expected
-      # to clear) from `@cosyte/assets` and `@cosyte/docs`, which are `E404` in exactly the same way
-      # and `private: true` BY DESIGN. A deliberate absence and an unexplained block must not share
+      # Those layers read this same input and must tell a package absent for a reason expected to
+      # clear from `@cosyte/assets` and `@cosyte/docs`, which are `E404` in exactly the same way and
+      # `private: true` BY DESIGN. A deliberate absence and an unexplained block must not share
       # words. Two spellings of one allowance across two gates in one repo is the drift this pipeline
       # has already been bitten by.
       #
-      # `parseAllowance` strips `=blocked` AND ONLY `=blocked`, so this default is byte-identical to
-      # the untagged spelling it shipped with. Any other tag stays attached, matches no dependency
-      # name, and therefore excuses nothing here, which is deliberate, not incidental: `=private`
-      # means "absent by design and never going to clear", and THIS gate only ever observes packages
-      # that already published, where such a dependency is a permanent defect rather than an expected
-      # state. A first version stripped every tag and quietly taught this gate to excuse it.
+      # `parseAllowance` strips `=blocked` AND ONLY `=blocked`, so a `=blocked` entry reads the same
+      # here as the untagged spelling this input shipped with. Any other tag stays attached, matches
+      # no dependency name, and therefore excuses nothing here, which is deliberate, not incidental:
+      # `=private` means "absent by design and never going to clear", and THIS gate only ever
+      # observes packages that already published, where such a dependency is a permanent defect
+      # rather than an expected state. A first version stripped every tag and quietly taught this
+      # gate to excuse it.
       expect-unpublished-deps:
-        description: "Known-absent deps, comma separated, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
+        description: "Known-absent deps, comma separated, e.g. \"@scope/a=blocked\". Empty names none."
         type: string
-        default: "@cosyte/fhir=blocked"
+        default: ""
       # HOW LONG A STAGED RELEASE WAITS, IN ITS OWN RUN, FOR A MAINTAINER TO PROMOTE IT. The `release`
       # job polls the public registry for this long after the stage and, if the version goes live,
       # cuts its GitHub release and dispatches the docs rebuild there and then. If it does not, the
