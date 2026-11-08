@@ -241,8 +241,13 @@ test('delivery lands OUTSIDE the workspace, at the workflow SHA, and a failed fe
   assert.match(delivery, /TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}/);
   assert.match(delivery, /raw\.githubusercontent\.com\/cosyte\/\.github\/\$\{ref\}\/scripts\/docs-content-check\.mjs/);
   // The URL is BUILT from the resolved ref. A literal branch in it would pin every caller to
-  // whatever `main` holds mid-run, which is the thing the expression exists to avoid.
-  assert.doesNotMatch(delivery, /githubusercontent\.com\/cosyte\/\.github\/main\//);
+  // whatever `main` holds mid-run, which is the thing the expression exists to avoid. A substring
+  // check, not a regular expression: the URL may sit anywhere in the step, so there is no anchor.
+  assert.equal(
+    delivery.includes('githubusercontent.com/cosyte/.github/main/'),
+    false,
+    'the fetch URL names a literal `main` rather than the resolved ref',
+  );
 
   // A MISSING CHECKER MUST NOT READ AS ZERO FINDINGS.
   assert.match(delivery, /curl --fail/);
