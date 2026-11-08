@@ -65,7 +65,7 @@ jobs:
       # that sets every pin to one version, and close the PRs. 2026-08-03 did that at v4.37.5, and
       # 2026-11-07 at v4.37.9, the last patch on that line: a minor version waits for the owner.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
           queries: ${{ inputs.queries }}
