@@ -24,7 +24,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -197,7 +197,7 @@ function previousAt(map, { reference = 'workflows-2026-08-01-a1b2c3d4e5f6', comm
 
 test('AC7: every one of the six reusable workflows in this repository is readable', () => {
   for (const name of REUSABLE_WORKFLOWS) {
-    const text = execFileSync('cat', [join(REPO, '.github/workflows', name)], { encoding: 'utf8' });
+    const text = readFileSync(join(REPO, '.github/workflows', name), 'utf8');
     const read = readWorkflowInterface(text, name);
     assert.equal(read.ok, true, `${name} must be readable: ${read.ok ? '' : read.reason}`);
     assert.equal(read.interface.workflow, name);
@@ -403,7 +403,7 @@ test('comments and blank lines under a value are still not structure, or every f
   assert.equal(read.interface.inputs['run-phi-scan'].default.value, false);
 
   for (const name of REUSABLE_WORKFLOWS) {
-    const text = execFileSync('cat', [join(REPO, '.github/workflows', name)], { encoding: 'utf8' });
+    const text = readFileSync(join(REPO, '.github/workflows', name), 'utf8');
     assert.equal(readWorkflowInterface(text, name).ok, true, `${name} carries comment blocks under its values and must still read`);
   }
 });
@@ -653,7 +653,7 @@ const GATE_REUSABLES = [
 /** The two forms added beside the two that were already published. */
 const INSTALLING_GATES = ['gate-no-emdash-install.yml', 'gate-no-internal-refs-install.yml'];
 
-const onDisk = (name) => execFileSync('cat', [join(REPO, '.github/workflows', name)], { encoding: 'utf8' });
+const onDisk = (name) => readFileSync(join(REPO, '.github/workflows', name), 'utf8');
 
 test('AC-8: every gate reusable is registered as state a reference carries, and its interface reads', () => {
   for (const name of GATE_REUSABLES) {
@@ -1409,7 +1409,7 @@ test('gatherState reads the state out of the object database, not the working tr
 // ===============================================================================================
 
 const PUBLISH_WORKFLOW_PATH = resolve(REPO, '.github/workflows/publish-reference.yml');
-const PUBLISH_WORKFLOW = execFileSync('cat', [PUBLISH_WORKFLOW_PATH], { encoding: 'utf8' });
+const PUBLISH_WORKFLOW = readFileSync(PUBLISH_WORKFLOW_PATH, 'utf8');
 const PUBLISH_LINES = PUBLISH_WORKFLOW.split('\n');
 const operative = PUBLISH_LINES.filter((line) => line.trim() !== '' && !line.trim().startsWith('#'));
 
@@ -1444,7 +1444,7 @@ test('Constraint 2: it adds no third-party action, and reuses the SHAs already p
     'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
     'uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',
   ]);
-  const selfCheck = execFileSync('cat', [resolve(REPO, '.github/workflows/self-check.yml')], { encoding: 'utf8' });
+  const selfCheck = readFileSync(resolve(REPO, '.github/workflows/self-check.yml'), 'utf8');
   for (const line of uses) assert.ok(selfCheck.includes(line.replace('uses: ', '')), `${line} is already pinned here`);
 });
 

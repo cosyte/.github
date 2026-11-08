@@ -29,7 +29,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -74,7 +74,7 @@ const PCRE = [`${BS}x{${(0x2014).toString(16)}}`, `${BS}x{${(0x2013).toString(16
  * gate refuses a tree in which it does not find it, so every synthetic tree carries a copy.
  */
 const FIXTURE = 'test/fixtures/hl7-v0.0.2/changeset/philips-vue-pacs-profile.md';
-const FIXTURE_BODY = execFileSync('cat', [join(REPO, FIXTURE)], { encoding: 'utf8' });
+const FIXTURE_BODY = readFileSync(join(REPO, FIXTURE), 'utf8');
 
 /** Run a command and return `{ code, output }` rather than throwing, so a failure is assertable. */
 function run(cmd, args, opts = {}) {
@@ -170,7 +170,7 @@ test('nothing in this repository is declared binary, so nothing can be argued ou
 });
 
 test('the gate spells none of the forms it bans, so it needs no exclusion from its own scan', () => {
-  const body = execFileSync('cat', [SCRIPT], { encoding: 'utf8' });
+  const body = readFileSync(SCRIPT, 'utf8');
   for (const [spelling, label] of BANNED) {
     assert.equal(body.includes(spelling), false, `the gate contains ${label} as text`);
   }
@@ -304,7 +304,7 @@ test('a tracked file this gate cannot open is a FAILURE, never a skip', () => {
 //   that adding one back is caught, and caught by the equality rather than by luck. The first is the
 //   34-character edit that defeated the sibling gate twice.
 test('a mutant that excludes a path by name is caught by the file-count equality', () => {
-  const mutant = execFileSync('cat', [SCRIPT], { encoding: 'utf8' }).replace(
+  const mutant = readFileSync(SCRIPT, 'utf8').replace(
     '    const abs = path.join(ROOT, rel);',
     '    if (rel.startsWith("filler/")) continue;\n    const abs = path.join(ROOT, rel);',
   );
@@ -318,7 +318,7 @@ test('a mutant that excludes a path by name is caught by the file-count equality
 });
 
 test('a mutant that reads a file short is caught by the byte total', () => {
-  const mutant = execFileSync('cat', [SCRIPT], { encoding: 'utf8' }).replace(
+  const mutant = readFileSync(SCRIPT, 'utf8').replace(
     '      buf = readFileSync(abs);',
     '      buf = readFileSync(abs).subarray(0, 4);',
   );
