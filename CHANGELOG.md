@@ -26,15 +26,16 @@ so the next change to this file moves those lines under a heading with that name
   npm with no tag or release, twice on 2026-11-08, and no later run could tag it either. The rule was
   measured that day and is reproduced in `test/release-tag.test.mjs`. The tag is made with the
   automatic token at the `contents: write` the `version` job already holds, and `is-release` and
-  `finalize` are withheld unless it is on the version commit.
+  `finalize` are withheld unless it is on the version commit (#110).
 - If GitHub refuses that tag, nothing is published and the `version` job ends red, after the Version
   PR step, with the one command that makes the tag with a maintainer's own credentials and the
-  re-run that finishes the release. A release the old pipeline stranded is finished the same way.
+  re-run that finishes the release. A release the old pipeline stranded is finished the same way
+  (#110).
 - Only the version commit's own run publishes it. A later commit's run no longer publishes, from its
   own tree, a version whose own run stopped short: it finalizes one that is published, or reports
   the run to re-run. The tag no longer proves a publish, so the notes gate looks past it on the tagged
   version commit, and every run asks the GitHub release, and when that is missing the registry, what
-  a tagged version is owed. Inputs, secrets, permissions and job ids are unchanged.
+  a tagged version is owed. Inputs, secrets, permissions and job ids are unchanged (#110).
 
 ## workflows-2026-11-07-0d5dbc3a9a72
 
