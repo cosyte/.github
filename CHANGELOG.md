@@ -17,7 +17,12 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
-Nothing yet.
+- `release.yml`'s workflow-level `permissions:` block is `contents: read`. Every job already
+  declares its own complete block, so no job's token changes and a caller grants exactly what it
+  granted before: `actions: read`, `contents: write`, `id-token: write` and `pull-requests: write`.
+  A job added later without a block of its own runs read-only. The reference note now compares what
+  a caller must grant, every job's block together at its strongest, rather than the workflow-level
+  block alone, so this move reports no permission change (#103).
 
 ## workflows-2026-11-07-9c75b80bfbf0
 
