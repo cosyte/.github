@@ -21,7 +21,7 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { allSteps, effectivePermissions, NPM_SECRET_REF, parseWorkflow, readWorkflow, workflowPermissions } from './workflow-reader.mjs';
+import { allSteps, effectivePermissions, NPM_SECRET_REF, parseWorkflow, readWorkflow } from './workflow-reader.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKFLOW = resolve(HERE, '../.github/workflows/release.yml');
@@ -67,8 +67,10 @@ export function assertTrustedPublishingJobs(text) {
   const workflow = parseWorkflow(text);
   const jobs = publishingJobs(workflow);
   assert.ok(jobs.length > 0, 'no job publishes, so nothing below is checked');
-  // The ceiling a caller grants, which the job's own block can only narrow.
-  assert.equal(workflowPermissions(text)?.['id-token'], 'write', 'release.yml must request id-token: write of its caller');
+  // Each publishing job's OWN block is what is checked here, because that block is what the job runs
+  // with: the column-0 block is `contents: read`, and every job declares its own. What a caller must
+  // grant for those blocks to start, `id-token: write` included, is every job's block together, which
+  // `install-check.test.mjs` pins whole.
   for (const job of jobs) {
     assert.equal(
       effectivePermissions(text, job)['id-token'],

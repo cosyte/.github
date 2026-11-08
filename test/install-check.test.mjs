@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   allSteps,
+  callerRequest,
   conditionsOf,
   decomment,
   effectivePermissions,
@@ -1203,20 +1204,29 @@ test("release.yml wires the gate the way the script expects", () => {
   // reached the un-approved job with all three suites green.
   assert.doesNotMatch(preamble, /issues:\s*write/);
   //
-  // TWO SCOPES, TWO PINS, because they are different sets and neither one covers the other. The
-  // COLUMN-0 block above `jobs:` is what the caller's grant is compared against and what a job that
-  // declares no `permissions:` of its own inherits - deleting a job's block is a one-line edit, and
-  // this repository's own regression evidence already treats it as one. The job's block is what that
-  // job runs with. Asking only for "the permissions in force on the release job" resolves to the
-  // JOB's block on this workflow, because both jobs declare one, so it answers nothing about the
-  // block above: a fifth key could arrive there, and `actions: read` could leave, with every suite
-  // green. A guard that retargets itself reads as coverage, so both scopes are read by name.
-  assert.deepEqual(workflowPermissions(yml), {
+  // THREE PINS, because they are different sets and none of them covers another.
+  //
+  // WHAT THE WORKFLOW ASKS OF A CALLER is every job's block together: for each key, the strongest any
+  // job asks for. That is the four keys above, pinned whole, and it is the set each caller's calling
+  // job grants. Every job declares its own block, so this is NOT the column-0 block.
+  //
+  // THE COLUMN-0 BLOCK above `jobs:` is what a job that declares no `permissions:` of its own
+  // inherits. Deleting a job's block is a one-line edit, and this repository's own regression
+  // evidence already treats it as one, so that block is pinned at `contents: read`: such a job runs
+  // read-only instead of silently holding every write.
+  //
+  // THE RELEASE JOB'S BLOCK is what that job runs with. Asking only for "the permissions in force on
+  // the release job" resolves to the JOB's block on this workflow, because every job declares one, so
+  // it answers nothing about the other two: a fifth key could arrive in another job or at column 0,
+  // and `actions: read` could leave the version job, with that pin green. A guard that retargets
+  // itself reads as coverage, so each scope is read by name.
+  assert.deepEqual(callerRequest(yml), {
     contents: "write",
     "id-token": "write",
     "pull-requests": "write",
     actions: "read",
   });
+  assert.deepEqual(workflowPermissions(yml), { contents: "read" });
   assert.deepEqual(effectivePermissions(yml, release), {
     contents: "write",
     "id-token": "write",

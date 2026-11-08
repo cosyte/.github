@@ -619,6 +619,37 @@ const sameDefault = (a, b) => formatDefault(a) === formatDefault(b);
 const samePermissions = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /**
+ * What a workflow asks of its caller's token: for each scope, the strongest access that the
+ * workflow-level block or any job's own block asks for, with the scopes in a stable order.
+ *
+ * A called workflow's token can only be narrowed, so this is the least a calling job has to grant
+ * for the workflow to start. It is NOT the workflow-level block. A job block replaces that block
+ * rather than adding to it, so on a workflow where every job declares its own, the workflow-level
+ * block can sit at `contents: read` (what OpenSSF Scorecard asks of every workflow) while the jobs
+ * together ask for four writes. The workflow-level block is still counted, as the default for a job
+ * that declares none. A scope at `none` asks for nothing.
+ * @param {{workflow: Record<string, string>|null, jobs: Record<string, Record<string, string>|null>}} permissions
+ * @returns {Record<string, string>}
+ */
+export function callerRequest(permissions) {
+  const strength = { none: 0, read: 1, write: 2 };
+  /** @type {Record<string, string>} */
+  const request = {};
+  for (const block of [permissions.workflow, ...Object.values(permissions.jobs)]) {
+    for (const [scope, access] of Object.entries(block ?? {})) {
+      if (access === 'none') continue;
+      const held = request[scope];
+      if (held === undefined || (strength[access] ?? 0) > (strength[held] ?? 0)) request[scope] = access;
+    }
+  }
+  return Object.fromEntries(
+    Object.keys(request)
+      .sort()
+      .map((scope) => [scope, request[scope]]),
+  );
+}
+
+/**
  * What changed between two readings of one workflow's interface.
  *
  * `act: true` is this spec's definition of a change a caller must act on, and it is deliberately
@@ -670,10 +701,16 @@ export function diffInterfaces(before, after) {
     if (!after.secrets[name]) push('secret-removed', true, name);
   }
 
-  if (!samePermissions(before.permissions.workflow, after.permissions.workflow)) {
+  // WHAT A CALLER MUST GRANT, NOT THE WORKFLOW-LEVEL BLOCK ALONE. Every job of `release.yml`
+  // declares its own block and its workflow-level block is `contents: read`. Compared raw, the move
+  // to that block would have told every caller that the workflow now asks for `contents: read` only,
+  // and a caller that narrowed its grant to match would fail every release at startup.
+  const requestBefore = callerRequest(before.permissions);
+  const requestAfter = callerRequest(after.permissions);
+  if (!samePermissions(requestBefore, requestAfter)) {
     push('permissions-changed', true, 'the workflow', {
-      from: renderGrants(before.permissions.workflow),
-      to: renderGrants(after.permissions.workflow),
+      from: renderGrants(requestBefore),
+      to: renderGrants(requestAfter),
     });
   }
   const jobIds = new Set([...Object.keys(before.permissions.jobs), ...Object.keys(after.permissions.jobs)]);
