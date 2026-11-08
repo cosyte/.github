@@ -383,7 +383,7 @@ class FakeGitHub {
   fetch = async (url, options = {}) => {
     const method = options.method ?? 'GET';
     const api = `${API}/repos/${REPOSITORY}`;
-    if (url === `https://registry.npmjs.org/${PKG.replace('/', '%2f')}`) {
+    if (url === `https://registry.npmjs.org/${PKG.replaceAll('/', '%2f')}`) {
       return respond(200, { versions: Object.fromEntries([...this.npm].map((v) => [v, {}])) });
     }
     if (url === api) return respond(200, { default_branch: 'main' });
