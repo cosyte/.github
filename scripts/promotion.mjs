@@ -4,24 +4,29 @@
 // HAS A STAGED VERSION BEEN PROMOTED, AND IF IT HAS, WHAT IS IT STILL OWED.
 //
 // A staged release ends its publish step with the version in npm's staging area, where no consumer
-// can resolve it, and with no `v<version>` tag, no GitHub release and no docs dispatch. All three
-// are right while the version is unpromoted: announcing a version the registry will not serve is a
-// lie on a public surface. They stop being right the moment a maintainer promotes it, and nothing a
-// maintainer does on npmjs.com reaches back into this pipeline. This script is how the pipeline
-// finds out, from the one place that can say: the public registry, read anonymously.
+// can resolve it, and with its `v<version>` tag (the version job makes that before anything is
+// published) but no GitHub release and no docs dispatch. Both are right while the version is
+// unpromoted: announcing a version the registry will not serve is a lie on a public surface. They
+// stop being right the moment a maintainer promotes it, and nothing a maintainer does on npmjs.com
+// reaches back into this pipeline. This script is how the pipeline finds out, from the one place
+// that can say: the public registry, read anonymously.
 //
 // Two verbs, one per half of the answer:
 //
 //   await    In the `release` job, straight after a stage. Polls the registry until the staged
 //            version is resolvable or a bounded window lapses. A lapse is not a failure: the version
 //            is simply not live yet, the run says so, and `pending` picks it up on a later run.
-//   pending  In the `version` job, on every run that has a release pending. Asks whether that
-//            version is ALREADY live, which is what a promotion after the window looks like from the
-//            next push. A live version has nothing left to publish, so the `release` job must not
-//            start for it (it would ask a human to approve a stage of a version npm already serves,
-//            and the stage would fail). What it is owed is its tag, its GitHub release and its docs
-//            dispatch, and the `finalize` job does those without the release environment and
-//            without any npm credential.
+//   pending  In the `version` job, on every run. Asks what the version `package.json` declares is
+//            still owed. A pending version that is ALREADY live, which is what a promotion after the
+//            window or a direct publish whose release step never finished looks like from the next
+//            push, has nothing left to publish, so the `release` job must not start for it (it would
+//            ask a human to approve a stage of a version npm already serves, and the stage would
+//            fail). What it is owed is its GitHub release and its docs dispatch, at the tag on its
+//            version commit, and the `finalize` job does those without the release environment and
+//            without any npm credential. A TAGGED version is asked too, because the tag now comes
+//            before the publish and so no longer proves one: its GitHub release answers that, in one
+//            request on an ordinary push. And a version this run cannot publish, because this run
+//            is not on its version commit, is reported with what to re-run.
 //
 // IT NEVER PROMOTES, APPROVES, DISCARDS OR PUBLISHES ANYTHING, AND IT HOLDS NOTHING THAT COULD. It
 // sends no npm credential with any request and spawns no package manager. Promotion needs a second
@@ -47,7 +52,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { withFetchTimeout } from './install-check.mjs';
-import { inspectRelease } from './release-notes.mjs';
+import { findVersionCommit, inspectRelease } from './release-notes.mjs';
 
 export const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
 export const DEFAULT_API_URL = 'https://api.github.com';
@@ -169,25 +174,56 @@ export async function githubReleaseStatus({ apiUrl = DEFAULT_API_URL, repository
 /**
  * @typedef {object} PendingDecision
  * @property {boolean} live      the pending version is already served by the registry
- * @property {boolean} finalize  the `finalize` job should tag, release and dispatch it
+ * @property {boolean} finalize  the `finalize` job should release and dispatch it, at its tag
  * @property {string} version
- * @property {string} sha        the commit that released it, where package.json became `version`
+ * @property {string} sha        the version commit, where package.json became `version`
  * @property {'info' | 'notice' | 'warning'} level
+ * @property {string} title      the annotation's title, when there is one
  * @property {string} message
  */
 
 /**
- * Which version is owed a GitHub release, and at which commit. PURE, so every arm is testable
- * without a registry, a repository or a token.
+ * How a later run says which run can still publish a version: the version commit's own run, found
+ * by its commit. `workflowRef` is `GITHUB_WORKFLOW_REF`, which in a reusable workflow names the
+ * CALLER's workflow file, so the command names the file a maintainer would look for.
+ *
+ * @param {{repository?: string, workflowRef?: string, sha: string}} where
+ */
+export function rerunCommand({ repository = '', workflowRef = '', sha }) {
+  const repo = repository || '<owner>/<repo>';
+  const file = /^[^/]+\/[^/]+\/(.+?)@/.exec(workflowRef)?.[1]?.split('/').pop() ?? '';
+  const workflow = file ? ` --workflow ${file}` : '';
+  return `gh run list --repo ${repo}${workflow} --commit ${sha}, then gh run rerun <run id> --failed --repo ${repo}`;
+}
+
+/**
+ * What the version `package.json` declares is still owed, and at which commit. PURE, so every arm is
+ * testable without a registry, a repository or a token.
  *
  * WHICH VERSION, AND WHY ONLY THIS ONE. The candidate is the version the default branch's
- * `package.json` declares, and only when the notes gate classified it as a pending release: untagged,
- * reached by a version commit that consumed changesets. That is the one version this pipeline would
- * otherwise try to publish from this commit, so it is exactly the version whose `release` job must
- * be withheld once npm already serves it. npm's `latest` dist-tag was the alternative and is not
- * used: it can name a version this repository's history never released (a hand publish, a moved
- * dist-tag), it says nothing about which commit to tag, and a release cut from it would not be one
- * the notes gate ever derived.
+ * `package.json` declares. That is the one version this pipeline would publish from its version
+ * commit, so it is exactly the version whose `release` job must be withheld once npm already serves
+ * it. npm's `latest` dist-tag was the alternative and is not used: it can name a version this
+ * repository's history never released (a hand publish, a moved dist-tag), it says nothing about
+ * which commit to tag, and a release cut from it would not be one the notes gate ever derived.
+ *
+ * THREE SHAPES OF `release`, and each asks only what it needs:
+ *
+ *   pending, on its version commit   the run that may publish it. The registry first: `no` is a
+ *                                    release to publish, `yes` with no GitHub release is a release
+ *                                    to finalize. Unchanged from before the tag moved ahead of the
+ *                                    publish, a re-run after that tag included.
+ *   pending, on a later commit       a run that may not publish it (`release-notes.mjs prepare`
+ *                                    withholds that), so `no` is reported with the command that
+ *                                    re-runs the version commit's own run, and `yes` with no
+ *                                    GitHub release is still finalized from here.
+ *   already-released                 tagged, and this run is not on the tagged version commit. The
+ *                                    tag no longer proves a publish, so the GitHub release is asked
+ *                                    first: present is the ordinary push between releases and the
+ *                                    whole cost is that one request. Absent, the tag has to sit on
+ *                                    the version commit (`versionCommit`) before anything else is
+ *                                    asked, and then the registry says whether the release is owed
+ *                                    (finalize) or the publish is (reported, as above).
  *
  * What this costs, stated: a version promoted late AND overtaken by a newer version commit before
  * any run caught up is no longer the version `package.json` declares, so it is not finalized here.
@@ -198,10 +234,17 @@ export async function githubReleaseStatus({ apiUrl = DEFAULT_API_URL, repository
  * @param {any} facts.release                    `inspectRelease`'s answer for HEAD
  * @param {'yes' | 'no' | 'unknown' | null} facts.registry
  * @param {'present' | 'absent' | 'unknown' | null} facts.githubRelease
+ * @param {string | null} [facts.versionCommit]  for an already-released version: the commit that
+ *                                               introduced it, or null when none does
+ * @param {string} [facts.repository]
+ * @param {string} [facts.workflowRef]
  * @returns {PendingDecision}
  */
-export function decidePending({ packageName, release, registry, githubRelease }) {
-  const none = { live: false, finalize: false, version: '', sha: '' };
+export function decidePending({ packageName, release, registry, githubRelease, versionCommit = null, repository = '', workflowRef = '' }) {
+  const none = { live: false, finalize: false, version: '', sha: '', title: 'Promotion check' };
+  if (release?.code === 'already-released' && !release?.isRelease) {
+    return decideTagged({ packageName, release, registry, githubRelease, versionCommit, repository, workflowRef });
+  }
   if (!release?.isRelease) {
     return {
       ...none,
@@ -212,46 +255,52 @@ export function decidePending({ packageName, release, registry, githubRelease })
   const { version, sha } = release;
   const coordinate = `${packageName}@${version}`;
   const tag = `v${version}`;
+  const ours = !release.head || release.head === sha;
+  const owed = { ...none, version, sha };
   if (registry === 'no') {
+    if (ours) {
+      return { ...owed, level: 'info', message: `${coordinate} is not on the registry yet, so this run has a release to publish.` };
+    }
     return {
-      ...none,
-      version,
-      sha,
-      level: 'info',
-      message: `${coordinate} is not on the registry yet, so this run has a release to publish.`,
+      ...owed,
+      level: 'notice',
+      title: 'A version is owed its publish',
+      message:
+        `${coordinate} is not on the registry, and only the run on its version commit ${sha.slice(0, 7)} ` +
+        `publishes it, so this run on ${release.head.slice(0, 7)} does not. If that run did not publish it, ` +
+        `re-run it: ${rerunCommand({ repository, workflowRef, sha })}.`,
     };
   }
   if (registry !== 'yes') {
     return {
-      ...none,
-      version,
-      sha,
+      ...owed,
       level: 'warning',
-      message:
-        `The registry did not say whether ${coordinate} is already live. It is treated as not live, ` +
-        'which leaves this run on the publish path it would have taken anyway, and creates nothing.',
+      message: ours
+        ? `The registry did not say whether ${coordinate} is already live. It is treated as not live, ` +
+          'which leaves this run on the publish path it would have taken anyway, and creates nothing.'
+        : `The registry did not say whether ${coordinate} is already live. This run is not on its ` +
+          `version commit ${sha.slice(0, 7)}, so it publishes nothing either way, and creates nothing.`,
     };
   }
   if (githubRelease === 'absent') {
     return {
+      ...owed,
       live: true,
       finalize: true,
-      version,
-      sha,
       level: 'notice',
+      title: 'A published version is owed its GitHub release',
       message:
         `${coordinate} is live on npm and has no ${tag} GitHub release: it was published without its ` +
-        'release being cut, which is what a staged version promoted after the run that staged it ' +
-        `looks like. Nothing is left to publish, so the release job is withheld, and the finalize job ` +
-        `tags ${sha.slice(0, 7)}, creates the release and dispatches the docs rebuild.`,
+        'release being cut, which is what a staged version promoted after the run that staged it, or a ' +
+        `direct publish whose release step never finished, looks like. Nothing is left to publish, so ` +
+        `the release job is withheld, and the finalize job releases ${tag} on ${sha.slice(0, 7)} ` +
+        '(tagging that commit first if the tag is missing) and dispatches the docs rebuild.',
     };
   }
   if (githubRelease === 'present') {
     return {
+      ...owed,
       live: true,
-      finalize: false,
-      version,
-      sha,
       level: 'info',
       message:
         `${coordinate} is live on npm and ${tag} already has a GitHub release, so there is nothing ` +
@@ -259,14 +308,80 @@ export function decidePending({ packageName, release, registry, githubRelease })
     };
   }
   return {
+    ...owed,
     live: true,
-    finalize: false,
-    version,
-    sha,
     level: 'warning',
     message:
       `${coordinate} is live on npm, so nothing is left to publish, but whether ${tag} already has a ` +
       'GitHub release could not be read. Nothing is created on a guess; the next run asks again.',
+  };
+}
+
+/** The already-released shape of `decidePending`: a tagged version this run is not the version commit of. */
+function decideTagged({ packageName, release, registry, githubRelease, versionCommit, repository, workflowRef }) {
+  const none = { live: false, finalize: false, version: '', sha: '', title: 'Promotion check' };
+  const { version, tagSha } = release;
+  const coordinate = `${packageName}@${version}`;
+  const tag = `v${version}`;
+  if (githubRelease === 'present') {
+    return { ...none, level: 'info', message: `${tag} has its GitHub release, so ${coordinate} shipped and nothing is owed.` };
+  }
+  if (githubRelease !== 'absent') {
+    return {
+      ...none,
+      level: 'warning',
+      message: `Whether ${tag} has a GitHub release could not be read. Nothing is created on a guess; the next run asks again.`,
+    };
+  }
+  const repo = repository || '<owner>/<repo>';
+  if (!versionCommit) {
+    return {
+      ...none,
+      level: 'warning',
+      message: `${tag} is tagged and has no GitHub release, but no commit in this history introduces ${version}, so nothing is created.`,
+    };
+  }
+  if (tagSha !== versionCommit) {
+    return {
+      ...none,
+      level: 'warning',
+      message:
+        `${tag} points at ${String(tagSha).slice(0, 7)}, not at ${versionCommit.slice(0, 7)}, the commit that introduced ` +
+        `${version}, and it has no GitHub release. No release is created at a tag on a commit the version did not ` +
+        `come from. Delete the tag with a maintainer's own credentials (gh api -X DELETE repos/${repo}/git/refs/tags/${tag}) ` +
+        `so the pipeline can make it on ${versionCommit.slice(0, 7)}, or move it there.`,
+    };
+  }
+  const owed = { ...none, version, sha: versionCommit };
+  if (registry === 'yes') {
+    return {
+      ...owed,
+      live: true,
+      finalize: true,
+      level: 'notice',
+      title: 'A published version is owed its GitHub release',
+      message:
+        `${coordinate} is live on npm and ${tag}, on its version commit ${versionCommit.slice(0, 7)}, has no GitHub ` +
+        'release. Nothing is left to publish; the finalize job creates the release at that tag and dispatches the docs rebuild.',
+    };
+  }
+  if (registry === 'no') {
+    return {
+      ...owed,
+      level: 'notice',
+      title: 'A version is owed its publish',
+      message:
+        `${tag} is on its version commit ${versionCommit.slice(0, 7)}, but npm does not serve ${coordinate} and there is ` +
+        'no GitHub release: it is staged and waiting for a maintainer to promote it, or its publish never happened. ' +
+        `Only the run on ${versionCommit.slice(0, 7)} can publish it. If it did not, re-run it: ` +
+        `${rerunCommand({ repository, workflowRef, sha: versionCommit })}. If ${version} will never ship, delete the tag ` +
+        `with a maintainer's own credentials (gh api -X DELETE repos/${repo}/git/refs/tags/${tag}).`,
+    };
+  }
+  return {
+    ...owed,
+    level: 'warning',
+    message: `${tag} has no GitHub release, and the registry did not say whether ${coordinate} is live. Nothing is created on a guess; the next run asks again.`,
   };
 }
 
@@ -344,12 +459,13 @@ export function renderLapse({ packageName, version, minutes }) {
     `### ${packageName}@${version} is STAGED, not live`,
     '',
     `Nobody promoted it within the ${minutes} minute window this run waited, so the registry does not serve it`,
-    `and this run created no \`${tag}\` tag, no GitHub release and no docs rebuild dispatch.`,
+    `and this run created no GitHub release and no docs rebuild dispatch. Its \`${tag}\` tag only marks the`,
+    'version commit: the version job made it before the stage.',
     '',
     'Nothing is lost by that. Once a maintainer promotes it, the next run of this workflow on the default',
-    `branch sees ${packageName}@${version} live with no ${tag} release, skips the publish, and tags the`,
-    'release commit, creates the release and dispatches the docs rebuild itself. Until then it stays a',
-    'version that never happened.',
+    `branch sees ${packageName}@${version} live with no ${tag} release, skips the publish, and creates the`,
+    'release at that tag and dispatches the docs rebuild itself. Until then it stays a version that never',
+    'happened.',
   ].join('\n');
 }
 
@@ -358,7 +474,7 @@ export function renderPromoted({ packageName, version }) {
   return [
     `### ${packageName}@${version} was promoted and is live`,
     '',
-    `The registry now lists it, so this run goes on to tag \`v${version}\`, create the GitHub release and`,
+    `The registry now lists it, so this run goes on to create the GitHub release at \`v${version}\` and`,
     'dispatch the docs rebuild, exactly as a direct publish does.',
   ].join('\n');
 }
@@ -417,6 +533,7 @@ export async function main(argv, io = {}) {
     appendFile = appendFileSync,
     readFile = readFileSync,
     inspect = inspectRelease,
+    findVersion = findVersionCommit,
     now = () => Date.now(),
     sleepImpl = sleep,
   } = io;
@@ -444,55 +561,71 @@ export async function main(argv, io = {}) {
   const timedFetch = withFetchTimeout(fetchImpl, DEFAULT_FETCH_TIMEOUT_MS);
 
   if (verb === 'pending') {
-    return runPending({ options, env, packageName, registry, timedFetch, out, appendFile, inspect, sleepImpl });
+    return runPending({ options, env, packageName, registry, timedFetch, out, appendFile, inspect, findVersion, sleepImpl });
   }
   return runAwait({ options, env, packageName, registry, timedFetch, out, appendFile, readFile, now, sleepImpl });
 }
 
-async function runPending({ options, env, packageName, registry, timedFetch, out, appendFile, inspect, sleepImpl }) {
+async function runPending({ options, env, packageName, registry, timedFetch, out, appendFile, inspect, findVersion, sleepImpl }) {
   const repo = path.resolve(options.repo || '.');
   // NOTHING HERE MAY FAIL THE VERSION JOB. That job opens the Version PR and carries the protection
   // gate on every path; a red there for a question about a release that is already permanent would
   // block the ordinary work of the repository. Every fault lands on "not live", which is the
-  // pipeline's behaviour before this step existed.
+  // pipeline's behaviour before this step existed, and on a tagged version every fault lands on
+  // "nothing owed", which is what this step answered for one before the tag moved ahead of the
+  // publish.
   let release;
   try {
     release = inspect(repo, packageName);
   } catch (error) {
     release = { isRelease: false, code: 'unclassifiable', reason: error instanceof Error ? error.message : String(error) };
   }
+  const askRelease = () =>
+    githubReleaseStatus({
+      apiUrl: env.GITHUB_API_URL || DEFAULT_API_URL,
+      repository: env.GITHUB_REPOSITORY,
+      tag: `v${release.version}`,
+      token: env.GH_TOKEN,
+      fetchImpl: timedFetch,
+    });
+  const askRegistry = () => registryListsVersionWithRetry(registry, packageName, release.version, timedFetch, { sleepImpl });
   let registryStatus = null;
   let githubRelease = null;
+  let versionCommit = null;
   if (release?.isRelease) {
-    registryStatus = await registryListsVersionWithRetry(registry, packageName, release.version, timedFetch, {
-      sleepImpl,
-    });
-    if (registryStatus === 'yes') {
-      githubRelease = await githubReleaseStatus({
-        apiUrl: env.GITHUB_API_URL || DEFAULT_API_URL,
-        repository: env.GITHUB_REPOSITORY,
-        tag: `v${release.version}`,
-        token: env.GH_TOKEN,
-        fetchImpl: timedFetch,
-      });
+    registryStatus = await askRegistry();
+    if (registryStatus === 'yes') githubRelease = await askRelease();
+  } else if (release?.code === 'already-released' && release.version) {
+    // The ordinary push between releases ends here, after one request: the release exists.
+    githubRelease = await askRelease();
+    if (githubRelease === 'absent') {
+      try {
+        versionCommit = findVersion(repo, release.version)?.sha ?? null;
+      } catch {
+        versionCommit = null;
+      }
+      if (versionCommit && versionCommit === release.tagSha) registryStatus = await askRegistry();
     }
   }
-  const decision = decidePending({ packageName, release, registry: registryStatus, githubRelease });
+  const decision = decidePending({
+    packageName,
+    release,
+    registry: registryStatus,
+    githubRelease,
+    versionCommit,
+    repository: env.GITHUB_REPOSITORY,
+    workflowRef: env.GITHUB_WORKFLOW_REF,
+  });
   out(`${decision.message}\n`);
-  annotate(
-    out,
-    decision.level,
-    decision.finalize ? 'A promoted version is owed its GitHub release' : 'Promotion check',
-    decision.message,
-  );
+  annotate(out, decision.level, decision.title, decision.message);
   writeOutputs(env, appendFile, {
     live: String(decision.live),
     finalize: String(decision.finalize),
     version: decision.version,
     sha: decision.sha,
   });
-  if (decision.finalize && env.GITHUB_STEP_SUMMARY) {
-    appendFile(env.GITHUB_STEP_SUMMARY, `### A promoted version is owed its GitHub release\n\n${decision.message}\n\n`);
+  if (decision.level !== 'info' && decision.title !== 'Promotion check' && env.GITHUB_STEP_SUMMARY) {
+    appendFile(env.GITHUB_STEP_SUMMARY, `### ${decision.title}\n\n${decision.message}\n\n`);
   }
   return 0;
 }
@@ -562,8 +695,8 @@ async function runAwait({ options, env, packageName, registry, timedFetch, out, 
   out(`${rendered}\n`);
   out(
     `::warning title=Staged, not live::${packageName}@${version} was not promoted within ${window.minutes} minute(s). ` +
-      `It is staged and NOT live, and has no v${version} tag, GitHub release or docs dispatch yet. ` +
-      'A later run on the default branch creates all three once it is promoted.\n',
+      'It is staged and NOT live, and has no GitHub release or docs dispatch yet. ' +
+      'A later run on the default branch creates both once it is promoted.\n',
   );
   if (env.GITHUB_STEP_SUMMARY) appendFile(env.GITHUB_STEP_SUMMARY, `${rendered}\n\n`);
   writeOutputs(env, appendFile, { live: 'false', version });

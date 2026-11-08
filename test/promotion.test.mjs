@@ -162,12 +162,14 @@ test('a version live on npm with no GitHub release is the one thing that is fina
 test('every other answer finalizes nothing, and only "live" withholds the release job', () => {
   const rows = [
     // [release, registry, githubRelease, live, finalize, level]
-    [{ isRelease: false, code: 'already-released' }, null, null, false, false, 'info'],
     [{ isRelease: false, code: 'never-versioned' }, null, null, false, false, 'info'],
     [PENDING, 'no', null, false, false, 'info'],
     [PENDING, 'unknown', null, false, false, 'warning'],
     [PENDING, 'yes', 'present', true, false, 'info'],
     [PENDING, 'yes', 'unknown', true, false, 'warning'],
+    // The version commit's own run, after its tag step: the same answers, the tag changes nothing.
+    [{ ...PENDING, head: PENDING.sha, tagSha: PENDING.sha }, 'no', null, false, false, 'info'],
+    [{ ...PENDING, head: PENDING.sha, tagSha: PENDING.sha }, 'yes', 'present', true, false, 'info'],
   ];
   for (const [release, registry, githubRelease, live, finalize, level] of rows) {
     const decision = decidePending({ packageName: PKG, release, registry, githubRelease });
@@ -181,6 +183,65 @@ test('every other answer finalizes nothing, and only "live" withholds the releas
     decidePending({ packageName: PKG, release: PENDING, registry: 'unknown', githubRelease: null }).message,
     /treated as not live/,
   );
+});
+
+// THE TAG NOW COMES BEFORE THE PUBLISH, so a tag no longer proves one, and a run that is not on the
+// version commit may not publish it. These are the arms that change makes, each pinned by its answer.
+const LATER = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const REPO = { repository: 'cosyte/x12', workflowRef: 'cosyte/x12/.github/workflows/release.yml@refs/heads/main' };
+
+test('a pending version this run is not the version commit of: finalized when live, reported when not', () => {
+  const later = { ...PENDING, head: LATER };
+  const owed = decidePending({ packageName: PKG, release: later, registry: 'no', githubRelease: null, ...REPO });
+  assert.deepEqual([owed.live, owed.finalize, owed.level], [false, false, 'notice']);
+  assert.equal(owed.title, 'A version is owed its publish');
+  assert.match(owed.message, /only the run on its version commit cd8f296 publishes it, so this run on aaaaaaa does not/);
+  assert.match(
+    owed.message,
+    /gh run list --repo cosyte\/x12 --workflow release\.yml --commit cd8f29625f6ce4de739ca9e43fac66a46efe118c, then gh run rerun <run id> --failed --repo cosyte\/x12/,
+    'it names the run that can publish it, and how to re-run it',
+  );
+  const stranded = decidePending({ packageName: PKG, release: later, registry: 'yes', githubRelease: 'absent', ...REPO });
+  assert.deepEqual([stranded.live, stranded.finalize, stranded.sha], [true, true, PENDING.sha], 'transform 0.1.4 from its next run');
+  assert.match(stranded.message, /tagging that commit first if the tag is missing/);
+  const unknown = decidePending({ packageName: PKG, release: later, registry: 'unknown', githubRelease: null, ...REPO });
+  assert.deepEqual([unknown.live, unknown.finalize, unknown.level], [false, false, 'warning']);
+  assert.match(unknown.message, /publishes nothing either way/);
+});
+
+test('a tagged version on a later commit asks its GitHub release first, and finalizes only at a tag on its version commit', () => {
+  const tagged = { isRelease: false, code: 'already-released', version: '0.1.1', head: LATER, tagSha: PENDING.sha };
+  const ask = (githubRelease, registry, versionCommit = PENDING.sha) =>
+    decidePending({ packageName: PKG, release: tagged, registry, githubRelease, versionCommit, ...REPO });
+
+  // The ordinary push between releases.
+  const done = ask('present', null);
+  assert.deepEqual([done.live, done.finalize, done.level, done.version, done.sha], [false, false, 'info', '', '']);
+
+  // Published, tagged before the publish, release step never finished: finalized at the tag.
+  const owedRelease = ask('absent', 'yes');
+  assert.deepEqual([owedRelease.live, owedRelease.finalize, owedRelease.sha], [true, true, PENDING.sha]);
+  assert.equal(owedRelease.title, 'A published version is owed its GitHub release');
+
+  // Tagged and not on npm: staged and waiting, or its publish never happened. Reported, never finalized.
+  const owedPublish = ask('absent', 'no');
+  assert.deepEqual([owedPublish.live, owedPublish.finalize, owedPublish.level], [false, false, 'notice']);
+  assert.match(owedPublish.message, /staged and waiting for a maintainer to promote it, or its publish never happened/);
+  assert.match(owedPublish.message, /gh run rerun <run id> --failed/);
+  assert.match(owedPublish.message, /gh api -X DELETE repos\/cosyte\/x12\/git\/refs\/tags\/v0\.1\.1/);
+
+  // A tag on another commit is never released at, whatever npm says.
+  const misplaced = ask('absent', 'yes', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+  assert.deepEqual([misplaced.live, misplaced.finalize, misplaced.level], [false, false, 'warning']);
+  assert.match(misplaced.message, /not at bbbbbbb, the commit that introduced 0\.1\.1/);
+  const orphan = ask('absent', null, null);
+  assert.deepEqual([orphan.finalize, orphan.level], [false, 'warning']);
+
+  // Anything not read creates nothing.
+  for (const [githubRelease, registry] of [['unknown', null], [null, null], ['absent', 'unknown']]) {
+    const silent = ask(githubRelease, registry);
+    assert.deepEqual([silent.live, silent.finalize, silent.level], [false, false, 'warning'], `${githubRelease}/${registry}`);
+  }
 });
 
 // -- await: the window and the poll ------------------------------------------------------------------
@@ -266,7 +327,8 @@ test('a lapsed window stops at the deadline, never sleeps past it, and reports n
 test('a lapse says plainly that the version is staged, not live, and what finishes it', () => {
   const text = renderLapse({ packageName: PKG, version: '0.1.1', minutes: 120 });
   assert.match(text, /STAGED, not live/);
-  assert.match(text, /no `v0\.1\.1` tag, no GitHub release and no docs rebuild dispatch/);
+  assert.match(text, /no GitHub release and no docs rebuild dispatch/);
+  assert.match(text, /`v0\.1\.1` tag only marks the\s+version commit/, 'the tag exists: the version job made it before the stage');
   assert.match(text, /next run of this workflow on the default\s+branch/);
 });
 
@@ -308,8 +370,12 @@ async function runMain(argv, { env = {}, fetchImpl, ...io } = {}) {
   return { code, stdout, stderr, outputs, summary };
 }
 
-/** A repository whose history is a released version, then a version commit consuming a changeset. */
-function makeReleasedRepo({ tagged = false } = {}) {
+/**
+ * A repository whose history is a released version, then a version commit consuming a changeset, and
+ * (unless `later` is false) a later commit, which is what the push that catches up usually is.
+ * `tagged` tags the version commit, which is where the version job's tag step puts the tag.
+ */
+function makeReleasedRepo({ tagged = false, later = true } = {}) {
   const dir = tempDir('promotion-repo-');
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
@@ -330,11 +396,13 @@ function makeReleasedRepo({ tagged = false } = {}) {
   git('add', '-A');
   git('commit', '-qm', 'Version Packages');
   const sha = git('rev-parse', 'HEAD').trim();
-  // A later commit with no version change: the push that catches up is usually not the version commit.
-  write('README.md', 'later work\n');
-  git('add', '-A');
-  git('commit', '-qm', 'docs: later work');
-  if (tagged) git('tag', 'v0.1.1');
+  if (tagged) git('tag', 'v0.1.1', sha);
+  if (later) {
+    // A later commit with no version change: the push that catches up is usually not the version commit.
+    write('README.md', 'later work\n');
+    git('add', '-A');
+    git('commit', '-qm', 'docs: later work');
+  }
   return { dir, sha };
 }
 
@@ -349,7 +417,7 @@ test('pending: a promoted version with no release finalizes at its version commi
   });
   assert.equal(run.code, 0);
   assert.deepEqual(run.outputs, { live: 'true', finalize: 'true', version: '0.1.1', sha });
-  assert.match(run.stdout, /::notice title=A promoted version is owed its GitHub release::/);
+  assert.match(run.stdout, /::notice title=A published version is owed its GitHub release::/);
   assert.match(run.summary, /promoted after the run that staged it/);
   assert.deepEqual(
     fake.requests.map((r) => r.url),
@@ -359,8 +427,8 @@ test('pending: a promoted version with no release finalizes at its version commi
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('pending: an unpromoted version is a release to publish, and nothing is finalized', async () => {
-  const { dir, sha } = makeReleasedRepo();
+test('pending: an unpromoted version is a release to publish on its version commit, and nothing is finalized', async () => {
+  const { dir, sha } = makeReleasedRepo({ later: false });
   const fake = fakeFetch([listing('0.1.0')]);
   const run = await runMain(['pending', '--repo', dir, '--package', PKG, '--registry', REGISTRY], {
     env: GITHUB,
@@ -373,16 +441,49 @@ test('pending: an unpromoted version is a release to publish, and nothing is fin
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('pending: a tagged version asks nobody anything, and a fault anywhere is "not live"', async () => {
+test('pending: on a later commit an unpublished version is reported with the run that can publish it', async () => {
+  const { dir, sha } = makeReleasedRepo();
+  const fake = fakeFetch([listing('0.1.0')]);
+  const run = await runMain(['pending', '--repo', dir, '--package', PKG, '--registry', REGISTRY], {
+    env: { ...GITHUB, GITHUB_WORKFLOW_REF: 'cosyte/x12/.github/workflows/release.yml@refs/heads/main' },
+    fetchImpl: fake.impl,
+  });
+  assert.equal(run.code, 0, 'a report, not a failure: the version commit\'s own run may still be running');
+  assert.deepEqual(run.outputs, { live: 'false', finalize: 'false', version: '0.1.1', sha });
+  assert.match(run.stdout, /::notice title=A version is owed its publish::/);
+  assert.match(run.summary, new RegExp(`--workflow release\\.yml --commit ${sha}`));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('pending: a tagged version asks its GitHub release, once, and a fault anywhere creates nothing', async () => {
   const tagged = makeReleasedRepo({ tagged: true });
-  const quiet = fakeFetch([listing('0.1.1')]);
+  const quiet = fakeFetch([{ status: 200, body: {} }]);
   const run = await runMain(['pending', '--repo', tagged.dir, '--package', PKG, '--registry', REGISTRY], {
     env: GITHUB,
     fetchImpl: quiet.impl,
   });
   assert.equal(run.code, 0);
   assert.deepEqual(run.outputs, { live: 'false', finalize: 'false', version: '', sha: '' });
-  assert.equal(quiet.requests.length, 0, 'nothing pending means no network at all');
+  assert.deepEqual(
+    quiet.requests.map((r) => r.url),
+    ['https://api.example.invalid/repos/cosyte/x12/releases/tags/v0.1.1'],
+    'the ordinary push between releases costs one request, and the registry is not asked',
+  );
+
+  // Tagged before the publish, published, and the release step never finished: finalized at the tag.
+  const owed = await runMain(['pending', '--repo', tagged.dir, '--package', PKG, '--registry', REGISTRY], {
+    env: GITHUB,
+    fetchImpl: fakeFetch([{ status: 404, body: {} }, listing('0.1.0', '0.1.1')]).impl,
+  });
+  assert.deepEqual(owed.outputs, { live: 'true', finalize: 'true', version: '0.1.1', sha: tagged.sha });
+
+  // Tagged and not on npm, from a later commit: reported, never published from here.
+  const unpublished = await runMain(['pending', '--repo', tagged.dir, '--package', PKG, '--registry', REGISTRY], {
+    env: GITHUB,
+    fetchImpl: fakeFetch([{ status: 404, body: {} }, listing('0.1.0')]).impl,
+  });
+  assert.deepEqual(unpublished.outputs, { live: 'false', finalize: 'false', version: '0.1.1', sha: tagged.sha });
+  assert.match(unpublished.stdout, /::notice title=A version is owed its publish::/);
   rmSync(tagged.dir, { recursive: true, force: true });
 
   const { dir } = makeReleasedRepo();
@@ -451,7 +552,7 @@ test('await: a lapsed window is green, says STAGED not live, and leaves the rele
   assert.equal(run.code, 0, 'an unpromoted version is not a failed run');
   assert.deepEqual(run.outputs, { live: 'false', version: '0.1.1' });
   assert.match(run.stdout, /::warning title=Staged, not live::/);
-  assert.match(run.stdout, /A later run on the default branch creates all three once it is promoted/);
+  assert.match(run.stdout, /A later run on the default branch creates both once it is promoted/);
   assert.match(run.summary, /is STAGED, not live/);
   assert.equal(clock.sleeps.reduce((a, b) => a + b, 0), 2 * 60_000, 'the window is the one the caller passed');
   rmSync(report.dir, { recursive: true, force: true });
@@ -504,17 +605,36 @@ test('the staging run waits, bounded three times over, in the right order', () =
   assert.equal(Number(declared[1]), DEFAULT_WINDOW_MINUTES);
 });
 
-test('the version job asks "already live?" only when a release is pending, and only narrows is-release', () => {
+test('the version job asks what is owed on every run, tags before it installs, and only narrows is-release', () => {
   const workflow = parseWorkflow(readWorkflow(WORKFLOW, readFileSync));
   const version = workflow.byId.version;
-  const notes = version.steps.find((step) => step.fields.id === 'notes');
-  const promoted = version.steps.find((step) => step.fields.id === 'promoted');
-  assert.ok(notes && promoted);
-  assert.ok(promoted.index > notes.index, 'it reads the notes gate\'s answer, so it runs after it');
-  assert.equal(promoted.fields.if, "${{ steps.notes.outputs.is-release == 'true' }}");
+  const step = (id) => version.steps.find((candidate) => candidate.fields.id === id);
+  const notes = step('notes');
+  const promoted = step('promoted');
+  const tag = step('tag');
+  assert.ok(notes && promoted && tag);
+  assert.ok(promoted.index > notes.index, 'it runs after the notes gate, which can stop the run first');
+  // ON EVERY RUN: a tag no longer proves a publish, so a tagged version is asked what it is owed too.
+  assert.equal(promoted.fields.if, undefined, 'the promoted step must run on every push, tagged or not');
   assert.match(promoted.body, /promotion\.mjs pending --repo \. --package "\$PACKAGE_NAME"/);
   assert.equal(promoted.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}');
   assert.deepEqual(Object.keys(promoted.env).sort(), ['GH_TOKEN', 'PACKAGE_NAME']);
+
+  // THE TAG, BEFORE ANYTHING SLOW. It is the version commit's whole defence against a workflow change
+  // merging while its release is in flight, so it sits straight after the two questions that decide
+  // whether it is owed, and ahead of `pnpm install` and `Verify`, which take minutes.
+  assert.equal(tag.index, promoted.index + 1, 'the tag step comes straight after the promoted step');
+  const install = version.steps.find((candidate) => /pnpm install --frozen-lockfile/.test(candidate.body));
+  const verify = version.steps.find((candidate) => candidate.label === 'Verify');
+  assert.ok(install && verify && tag.index < install.index && tag.index < verify.index, 'the tag is made before the install');
+  assert.equal(
+    tag.fields.if,
+    "${{ (steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true') || steps.promoted.outputs.finalize == 'true' }}",
+    'tagged exactly when this run owes a publish (is-release without the tag term) or a finalize',
+  );
+  assert.match(tag.body, /node \.cosyte-release-tooling\/scripts\/release-tag\.mjs ensure --repo \. --package "\$PACKAGE_NAME"/);
+  assert.equal(tag.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}', 'the automatic token, at the contents: write this job already holds');
+  assert.deepEqual(Object.keys(tag.env).sort(), ['GH_TOKEN', 'PACKAGE_NAME']);
 
   assert.deepEqual(
     {
@@ -524,12 +644,24 @@ test('the version job asks "already live?" only when a release is pending, and o
       'finalize-sha': version.blocks.outputs['finalize-sha'],
     },
     {
-      'is-release': "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
-      finalize: '${{ steps.promoted.outputs.finalize }}',
+      'is-release': "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' && steps.tag.outputs.ready == 'true' }}",
+      finalize: "${{ steps.promoted.outputs.finalize == 'true' && steps.tag.outputs.ready == 'true' }}",
       'finalize-version': '${{ steps.promoted.outputs.version }}',
       'finalize-sha': '${{ steps.promoted.outputs.sha }}',
     },
   );
+
+  // A REFUSED TAG IS A RED RUN, AFTER THE VERSION PR STEP. The tag step exits 0 on a refusal so the
+  // Version PR is still opened on this push; this last step is where the refusal fails the job.
+  const changesets = step('changesets');
+  const refuse = version.steps.find((candidate) => /steps\.tag\.outputs\.ready != 'true'/.test(candidate.fields.if ?? ''));
+  assert.ok(refuse, 'the version job must fail when a release it owes could not be tagged');
+  assert.equal(refuse.fields.if, "${{ steps.tag.outcome == 'success' && steps.tag.outputs.ready != 'true' }}");
+  assert.ok(refuse.index > changesets.index, 'after the Version PR step, so a refusal does not stop the Version PR');
+  assert.equal(refuse.index, version.steps.length - 1, 'and last');
+  assert.match(refuse.body, /exit 1/);
+  assert.match(refuse.body, /gh run rerun \$GITHUB_RUN_ID --failed --repo \$GITHUB_REPOSITORY/);
+  assert.equal(refuse.env.TAG_COMMAND, '${{ steps.tag.outputs.command }}');
 });
 
 test('finalize and release never start in the same run, and finalize cannot publish', () => {

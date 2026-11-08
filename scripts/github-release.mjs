@@ -22,11 +22,16 @@
 //      no consumer can install. The direct arm does not ask, because it runs seconds after its own
 //      publish, where registry propagation lag would read as a refusal of a version that did ship.
 //   2. `release-notes.mjs assert` proves the body's bytes against this version and package.
-//   3. `gh release view`, then either create the release with its assets in one call, or bring an
-//      existing one up to date: its body is edited, and its assets are compared, never replaced. An
-//      asset already attached with the same content is left as it is, one attached with different
-//      content fails the run, and only an asset the release does not carry yet is uploaded.
-//   4. the docs dispatch, which reports and never fails the run.
+//   3. `v<version>` already exists and points at `--target`, the commit this run built and released.
+//      The version job made that tag before anything was published (`release-tag.mjs`), and this
+//      script never makes one: once the default branch's workflow files move on, GitHub refuses a
+//      `GITHUB_TOKEN` any tag at the older commit, and that refusal is what stranded transform 0.1.4.
+//   4. `gh release view`, then either create the release with its assets in one call, AT THAT TAG
+//      and with no `--target`, or bring an existing one up to date: its body is edited, and its
+//      assets are compared, never replaced. An asset already attached with the same content is left
+//      as it is, one attached with different content fails the run, and only an asset the release
+//      does not carry yet is uploaded.
+//   5. the docs dispatch, which reports and never fails the run.
 //
 // THE CALLER'S PACK-DOCS COMMAND IS NOT RUN HERE. It is a shell string the calling repository supplies
 // (`pnpm pack:docs` by default), so it runs where the caller's other commands run: in the workflow
@@ -35,10 +40,11 @@
 // of them is a shell. It attaches whichever of `dist-artifacts/{docs-content,source}.tar.gz` that
 // command left behind, exactly as the step it replaced did.
 //
-// Run it by hand from a caller checkout (it really does create a release):
+// Run it by hand from a caller checkout (it really does create a release, at a tag that must already
+// point at <sha>):
 //
 //   pnpm pack:docs && GH_TOKEN=... node scripts/github-release.mjs --package @cosyte/x12 \
-//     --version 0.1.1 --target <sha> --notes notes.md --dispatch-docs false
+//     --version 0.1.1 --target <sha> --notes notes.md --dispatch-docs false --repository cosyte/x12
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -50,6 +56,7 @@ import { gunzipSync } from 'node:zlib';
 
 import { withFetchTimeout } from './install-check.mjs';
 import { DEFAULT_REGISTRY, registryListsVersionWithRetry } from './promotion.mjs';
+import { DEFAULT_API_URL, releaseTag, resolveTag, tagCommand } from './release-tag.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,30 +65,24 @@ export const ASSET_DIR = 'dist-artifacts';
 export const ASSETS = Object.freeze(['docs-content.tar.gz', 'source.tar.gz']);
 
 /**
- * THE TAG IS `v<version>`, AND IT MUST STAY PARSEABLE BY cosyte/docs. Every caller of this workflow is
- * a single-package repository, for which Changesets tags `v<version>`; it uses `<pkg>@<version>` only
- * in a multi-package one. docs' `parseTag()` strips a leading `v` and reads `/^(\d+)\.(\d+)\.(\d+)/`,
- * so `@cosyte/x12@0.0.1` parses to null and derives a version slot carrying a `/`, which is not a
- * directory name. docs keeps only releases carrying `docs-content.tar.gz`, so a release at that
- * spelling would be the one it selected.
- *
- * @param {string} version
+ * THE TAG IS `v<version>`, and its one definition, with why, is `release-tag.mjs`'s `releaseTag`: the
+ * version job makes the tag there, and this script releases it. Re-exported for this file's callers.
  */
-export function releaseTag(version) {
-  return `v${version}`;
-}
+export { releaseTag };
 
 /**
- * `--target` IS REQUIRED ON CREATE. `changeset publish` creates the `v<version>` tag only in the
- * runner's local clone, and this pipeline turns off `createGithubReleases`, which is the only thing
- * that would have pushed it; a staged or caught-up version has no tag anywhere. Pointing `--target`
- * at the release commit makes gh create the tag itself, so there is one tag and one release, both made
- * here. The assets go in the same call: gh creates the release as a draft, uploads, and only then
- * publishes it, so no published release is ever visible without its artifacts. The title is the tag
- * and nothing else; the reader is already in the repository.
+ * `--verify-tag`, AND NEVER `--target`. The tag already exists: the version job made it on the version
+ * commit before anything was published (`release-tag.mjs`). `--verify-tag` makes gh refuse rather
+ * than make a tag of its own when it is missing. `--target` would send `target_commitish`, and GitHub
+ * refuses a `GITHUB_TOKEN` that field, EVEN FOR A TAG THAT ALREADY EXISTS, whenever the default
+ * branch's workflow files differ from the tagged commit's (measured 2026-11-08; see
+ * `release-tag.mjs`). Without it the same token creates the release at the existing tag whatever the
+ * default branch has become. The assets go in the same call: gh creates the release as a draft,
+ * uploads, and only then publishes it, so no published release is ever visible without its
+ * artifacts. The title is the tag and nothing else; the reader is already in the repository.
  */
-export function createArgs({ tag, assets, target, notes }) {
-  return ['release', 'create', tag, ...assets, '--target', target, '--title', tag, '--notes-file', notes];
+export function createArgs({ tag, assets, notes }) {
+  return ['release', 'create', tag, ...assets, '--verify-tag', '--title', tag, '--notes-file', notes];
 }
 
 export function editArgs({ tag, notes }) {
@@ -320,8 +321,10 @@ const USAGE =
   'usage:\n' +
   '  github-release.mjs --package <name> --version <v> --target <sha> --notes <file>\n' +
   '                     [--dispatch-docs true|false] [--require-live]\n' +
-  '                     [--registry <url>]\n' +
-  '  GH_TOKEN creates the release; DISPATCH_TOKEN, when set, dispatches the docs rebuild.\n';
+  '                     [--registry <url>] [--repository <owner/name>]\n' +
+  '  --target is the commit v<version> must already point at; nothing here makes the tag.\n' +
+  '  GH_TOKEN creates the release; DISPATCH_TOKEN, when set, dispatches the docs rebuild;\n' +
+  '  GITHUB_REPOSITORY is the repository when --repository is absent.\n';
 
 /** `--require-live` is the one flag that takes no value. */
 export function parseArgv(argv) {
@@ -380,7 +383,14 @@ export async function main(argv, io = {}) {
   const version = options.version || '';
   const target = options.target || '';
   const notes = options.notes || '';
-  const required = { '--package': packageName, '--version': version, '--target': target, '--notes': notes };
+  const repository = options.repository || env.GITHUB_REPOSITORY || '';
+  const required = {
+    '--package': packageName,
+    '--version': version,
+    '--target': target,
+    '--notes': notes,
+    '--repository (or GITHUB_REPOSITORY)': repository,
+  };
   for (const [name, value] of Object.entries(required)) {
     if (!value) {
       err(`${name} is required\n${USAGE}`);
@@ -402,15 +412,15 @@ export async function main(argv, io = {}) {
     if (listed !== 'yes') {
       const why = listed === 'no' ? 'does not list it' : 'did not answer';
       out(
-        `::warning title=GitHub release not created::The registry ${why} for ${coordinate}, so no ${tag} tag, ` +
-          'GitHub release or docs dispatch was created. A later run on the default branch creates them once it is live.\n',
+        `::warning title=GitHub release not created::The registry ${why} for ${coordinate}, so no ${tag} ` +
+          'GitHub release or docs dispatch was created. A later run on the default branch creates both once it is live.\n',
       );
       summary([
         `### ${tag} NOT created`,
         '',
         `The registry ${why} for \`${coordinate}\`, and a release is only ever created for a version it serves.`,
-        'Nothing was written. A later run on the default branch creates the tag, the release and the docs',
-        'dispatch once it is live.',
+        'Nothing was written. A later run on the default branch creates the release and the docs dispatch',
+        'once it is live.',
         '',
       ]);
       return 0;
@@ -443,7 +453,31 @@ export async function main(argv, io = {}) {
   }
   out(`Release body for ${tag}:\n${body}\n`);
 
-  // 3. THE RELEASE. An existing one is brought up to date rather than duplicated. A create that
+  // 3. THE TAG IS ALREADY THERE, ON THE COMMIT THIS RUN RELEASES. Read through the API, not the
+  //    checkout, at the last moment before the first write. Missing, elsewhere and unreadable all
+  //    refuse with nothing written: a release at a tag on another commit would describe, and carry
+  //    the assets of, a commit it was not built from.
+  const found = await resolveTag({
+    apiUrl: env.GITHUB_API_URL || DEFAULT_API_URL,
+    repository,
+    tag,
+    token: env.GH_TOKEN || '',
+    fetchImpl: withFetchTimeout(fetchImpl),
+  });
+  if (found.status !== 'present' || found.commit !== target) {
+    const why =
+      found.status === 'absent'
+        ? `${tag} does not exist. The version job makes it on the version commit before anything is published; ` +
+          `make it with a maintainer's own credentials (${tagCommand({ repository, tag, sha: target })}) and re-run this job`
+        : found.status === 'present'
+          ? `${tag} points at ${found.commit}, not at ${target}, the commit this run released`
+          : `whether ${tag} exists could not be read (${found.detail}); re-run this job`;
+    err(`::error title=GitHub release not created::No release was created for ${coordinate}: ${why}.\n`);
+    return 1;
+  }
+  out(`${tag} points at ${target}, the commit this run released.\n`);
+
+  // 4. THE RELEASE. An existing one is brought up to date rather than duplicated. A create that
   //    fails because another run created the same release in the meantime (a later push catching up
   //    while this run's own wait saw the promotion) is that same update, not a failure; a create that
   //    fails for any other reason fails the run.
@@ -514,19 +548,19 @@ export async function main(argv, io = {}) {
     out(`${tag} already has a GitHub release; updating its body and checking its assets.\n`);
     if (update() !== 0) return 1;
   } else {
-    const created = run('gh', createArgs({ tag, assets, target, notes }), { env });
+    const created = run('gh', createArgs({ tag, assets, notes }), { env });
     if (created.code !== 0) {
       if (run('gh', ['release', 'view', tag], { env, quiet: true }).code === 0) {
         out(`${tag} was created by another run while this one was creating it; updating it instead.\n`);
         if (update() !== 0) return 1;
       } else {
-        err(`::error title=GitHub release not created::gh could not create ${tag} at ${target} for ${coordinate}.\n`);
+        err(`::error title=GitHub release not created::gh could not create the ${tag} release, at the tag on ${target}, for ${coordinate}.\n`);
         return 1;
       }
     }
   }
 
-  // 4. THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth outcome,
+  // 5. THE DOCS REBUILD. Four outcomes, and each one says so in the log, because the fifth outcome,
   //    doing nothing quietly, is indistinguishable from one that works.
   //
   //    A FAILED DISPATCH DOES NOT FAIL THE RUN, DELIBERATELY. By the time this runs the version is

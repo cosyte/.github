@@ -1293,11 +1293,11 @@ function packageVersionAt(repo, rev) {
 /**
  * Find the commit that introduced `version` into package.json.
  *
- * Anchoring on the VERSION rather than on HEAD matters. The publish does not always happen on the
- * version commit itself: if a version-commit run fails anywhere before `changeset publish` (a test
- * flake, an approval timeout), the next push to main is what publishes, and by then HEAD is an
- * ordinary commit. Deriving from HEAD would find nothing there and the release would be skipped or
- * fail after npm already had the package.
+ * Anchoring on the VERSION rather than on HEAD matters, because a run on a LATER commit still has
+ * to find the version commit: to finish a release whose publish happened but whose GitHub release
+ * did not (the `finalize` job checks out this commit and releases it), and to say which run can
+ * still publish a version whose own run did not. Only the version commit's own run publishes it
+ * (see `cmdPrepare`); deriving from HEAD on a later commit would find nothing to release at all.
  */
 export function findVersionCommit(repo, version) {
   const shas = git(repo, ['log', '--format=%H', '--', 'package.json']).split('\n').filter(Boolean);
@@ -1418,15 +1418,25 @@ export function hasPriorVersion(repo, version) {
 /**
  * Work out whether there is a pending release and, if so, what it consumed.
  *
- * A release is pending when the version in package.json has no `v<version>` tag yet. That is
- * exactly when `changeset publish` will publish, so the gate and the publish agree on what is
- * happening without either guessing.
+ * A release is pending when the version in package.json has no `v<version>` tag yet, or when HEAD
+ * is the version commit itself and carries that tag. The second is the version commit's own run
+ * after `release-tag.mjs` tagged it, which it does BEFORE anything is published (a GitHub token
+ * cannot make that tag once the default branch's workflow files have moved on; README.md, "Why the
+ * tag comes before the publish"). So on the version commit a tag says only which commit is being
+ * released, and whether npm already serves it is the registry's question, asked by
+ * `promotion.mjs pending` straight after this. On any other commit a tag still means what it always
+ * meant here: that version is not this run's to publish.
+ *
+ * The result also carries `head` (the commit checked out) and `tagSha` (the commit `v<version>`
+ * points at, or null), which `promotion.mjs` and `release-tag.mjs` read rather than asking git
+ * again.
  *
  * `code` says WHY there is nothing pending, and the caller acts on it rather than on the prose,
  * because only two of the four are benign:
  *
- *   already-released   the version is tagged, so `changeset publish` has nothing to do. This is the
- *                      state of every ordinary push to main between releases. Quiet, exit 0.
+ *   already-released   the version is tagged and HEAD is not that tagged version commit, so
+ *                      nothing is this run's to publish. This is the state of every ordinary push
+ *                      to main between releases. Quiet, exit 0.
  *   never-versioned    package.json's version has never changed in this repo's history, so nothing
  *                      has been released and no changeset has been consumed. There is no release
  *                      here to describe, and the next thing that should happen is the "Version
@@ -1447,13 +1457,30 @@ export function inspectRelease(repo, packageName) {
     return { isRelease: false, code: 'no-package-json', reason: 'no readable package.json at HEAD' };
   }
 
-  if (gitOrNull(repo, ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}`]) !== null) {
-    return {
-      isRelease: false,
-      code: 'already-released',
-      version,
-      reason: `v${version} is already tagged, so no release is pending`,
-    };
+  const head = (gitOrNull(repo, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']) ?? '').trim();
+  const tagSha = (gitOrNull(repo, ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}^{commit}`]) ?? '').trim() || null;
+  if (tagSha !== null) {
+    // LOOKED PAST ONLY ON THE TAGGED VERSION COMMIT ITSELF, and that is narrow on purpose. A tag on
+    // any other commit, an older release's own commit after a revert included, still short-circuits
+    // exactly as it always has, before the never-versioned and version-reverted branches below.
+    let taggedHere = false;
+    if (tagSha === head) {
+      try {
+        taggedHere = findVersionCommit(repo, version)?.sha === head;
+      } catch {
+        taggedHere = false;
+      }
+    }
+    if (!taggedHere) {
+      return {
+        isRelease: false,
+        code: 'already-released',
+        version,
+        head,
+        tagSha,
+        reason: `v${version} is already tagged, so no release is pending`,
+      };
+    }
   }
 
   // A repo that has never been versioned is not a release that cannot describe itself; it is a repo
@@ -1552,6 +1579,10 @@ export function inspectRelease(repo, packageName) {
   //     and not implemented. The tag is this pipeline's proxy for "npm has this version". Creating one
   //     for a version npm does not have makes the proxy assert a falsehood, and trades away a
   //     deliberately fail-closed ADR 0001 property to route around a bug in the classifier.
+  //     (Since 2026-11-08 the version commit is tagged BEFORE its publish, because a GitHub token
+  //     cannot tag it once the default branch's workflow files move on, so the tag is no longer that
+  //     proxy: npm and the GitHub release are. It still cannot be used this way. On the tagged
+  //     version commit the tag is looked past, and on any later commit no run publishes at all.)
   //   detect "the reverting commit RESTORED changesets" as the precondition -- rejected as a
   //     PRECONDITION, kept as reported EVIDENCE below. It is real evidence, but making the fix depend
   //     on the recovery commit having that exact file shape makes the unblocking fragile (reword the
@@ -1633,7 +1664,7 @@ export function inspectRelease(repo, packageName) {
     );
   }
 
-  return { isRelease: true, version, sha: commit.sha, consumed, ...collected };
+  return { isRelease: true, version, sha: commit.sha, head, tagSha, consumed, ...collected };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1674,8 +1705,10 @@ function cmdPrepare(options) {
     setOutput('is-release', 'false');
     // `is-release` is what release.yml hands to `changesets/action` as permission to publish, so a
     // false here means npm is not reached at all. That is safe only when we KNOW there is nothing to
-    // publish, which is what `already-released` says: the version is tagged, and this pipeline only
-    // ever creates that tag after a successful publish.
+    // publish FROM THIS RUN, which is what `already-released` says: the version is tagged and HEAD is
+    // not the tagged version commit, and only the version commit's own run publishes (below). Whether
+    // a tagged version was published, or is still owed something, is `promotion.mjs pending`'s
+    // question, asked against the registry and the GitHub release on every run.
     //
     // `never-versioned` is benign for the same reason and by a different route: package.json's
     // version has never changed, so no changeset has ever been consumed and nothing has ever been
@@ -1786,6 +1819,25 @@ function cmdPrepare(options) {
         RECOVERY,
       ].join('\n'),
     );
+  }
+
+  // ONLY THE VERSION COMMIT'S OWN RUN MAY PUBLISH IT. A run on a later commit used to publish a
+  // version whose own run had stopped short, and it published ITS tree, so the tarball could carry
+  // commits the release notes never described, and npm's provenance named a commit that is not the
+  // one the version was cut from. Now the version commit is tagged before anything is published, and
+  // a tarball from any other commit would sit under a tag that does not hold it. So a later commit
+  // derives and checks the notes as before (an unfit body still stops every push, as it always
+  // has), and then withholds the permission. What that version is still owed, and the command that
+  // re-runs its own run, is `promotion.mjs pending`'s to say, and it says it on every run.
+  if (release.head && release.sha !== release.head) {
+    setOutput('is-release', 'false');
+    process.stdout.write(
+      `No release from this commit: ${packageName}@${release.version} is pending, and its version ` +
+        `commit is ${release.sha.slice(0, 7)}, not this one (${release.head.slice(0, 7)}). Only a run ` +
+        `on the version commit publishes it, so the tarball, its tag and its provenance all name that ` +
+        `commit. Whether it is still owed anything is reported by the step after this one.\n`,
+    );
+    return;
   }
 
   const out = resolve(options.out);

@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -84,20 +85,52 @@ function recorder(answers = {}) {
 
 const CARRIES_BOTH = 'docs-content.tar.gz\nsource.tar.gz\n';
 
+const API = 'https://api.example.invalid';
+const TAG_AT_SHA = { status: 200, body: { ref: `refs/tags/v${VERSION}`, object: { type: 'commit', sha: SHA } } };
+
+/**
+ * One `fetch` for both readers the script has: the GitHub API, which answers where `v<version>`
+ * points (`tag`, by default at SHA, or a function of the URL), and the registry, which `registry`
+ * answers when `--require-live` asks it. A request to anything else fails the test.
+ */
+function routed({ registry, tag = TAG_AT_SHA } = {}) {
+  const requests = [];
+  const impl = async (url, options = {}) => {
+    requests.push({ url, headers: options.headers ?? {} });
+    if (url.startsWith(`${API}/repos/`)) {
+      const answer = typeof tag === 'function' ? tag(url) : tag;
+      if (answer instanceof Error) throw answer;
+      return { status: answer.status, json: async () => answer.body };
+    }
+    if (registry) return registry(url, options);
+    throw new Error(`the script asked ${url}, which nothing here answers`);
+  };
+  return { impl, requests };
+}
+
 /**
  * Drive `main` with captured output and every effect injected. `bytes` answers a read of an asset,
  * the one this run built (`dist-artifacts/<name>`) or the one downloaded from the release
  * (`<temp dir>/<name>`); by default both read the same, so an attached asset is the same content.
+ * `fetchImpl` answers the registry; `tag` answers the tag lookup (see `routed`).
  */
-async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl, bytes = () => Buffer.from('tarball') } = {}) {
+async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl, tag, bytes = () => Buffer.from('tarball') } = {}) {
   const rec = recorder(answers);
+  const fetched = routed({ registry: fetchImpl, ...(tag === undefined ? {} : { tag }) });
   let stdout = '';
   let stderr = '';
   const summary = [];
   const made = [];
   const removed = [];
   const code = await main(argv, {
-    env: { GH_TOKEN: 'ghs_test_release_token', DISPATCH_TOKEN: 'ghp_test_dispatch_token', GITHUB_STEP_SUMMARY: 'summary', ...env },
+    env: {
+      GH_TOKEN: 'ghs_test_release_token',
+      DISPATCH_TOKEN: 'ghp_test_dispatch_token',
+      GITHUB_STEP_SUMMARY: 'summary',
+      GITHUB_REPOSITORY: 'cosyte/hl7',
+      GITHUB_API_URL: API,
+      ...env,
+    },
     run: rec.run,
     capture: rec.capture,
     exists,
@@ -110,7 +143,7 @@ async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl, 
     removeDir: (dir) => removed.push(dir),
     readFile: () => 'body',
     appendFile: (_file, text) => summary.push(text),
-    fetchImpl,
+    fetchImpl: fetched.impl,
     sleepImpl: async () => {},
     stdout: (s) => {
       stdout += s;
@@ -120,7 +153,7 @@ async function drive(argv, { answers, env = {}, exists = () => true, fetchImpl, 
     },
     toolingDir: '/tooling/scripts',
   });
-  return { code, stdout, stderr, summary: summary.join(''), made, removed, ...rec };
+  return { code, stdout, stderr, summary: summary.join(''), made, removed, requests: fetched.requests, ...rec };
 }
 
 const ARGV = ['--package', PKG, '--version', VERSION, '--target', SHA, '--notes', NOTES, '--dispatch-docs', 'true'];
@@ -132,11 +165,15 @@ const listing = (...versions) => async () => ({
 
 // -- The argument vectors ------------------------------------------------------------------------------
 
-test('the tag is v<version>, the create carries --target and its assets, and the dispatch uses -f', () => {
+test('the tag is v<version>, the create carries --verify-tag and its assets and NO --target, and the dispatch uses -f', () => {
   assert.equal(releaseTag('0.1.1'), 'v0.1.1');
-  assert.deepEqual(createArgs({ tag: 'v0.1.1', assets: ASSETS, target: SHA, notes: NOTES }), [
-    'release', 'create', 'v0.1.1', ...ASSETS, '--target', SHA, '--title', 'v0.1.1', '--notes-file', NOTES,
+  // `--target` sends `target_commitish`, which GitHub refuses a GITHUB_TOKEN even for a tag that
+  // already exists once the default branch's workflow files have moved on (measured 2026-11-08).
+  // `--verify-tag` releases the tag the version job made, and refuses rather than make one.
+  assert.deepEqual(createArgs({ tag: 'v0.1.1', assets: ASSETS, notes: NOTES }), [
+    'release', 'create', 'v0.1.1', ...ASSETS, '--verify-tag', '--title', 'v0.1.1', '--notes-file', NOTES,
   ]);
+  assert.ok(!createArgs({ tag: 'v0.1.1', assets: ASSETS, target: SHA, notes: NOTES }).includes('--target'), 'a target handed in is not sent');
   // No `--clobber`: an immutable release refuses to replace an asset, so an attached one is compared
   // instead, and only an asset the release does not carry yet is ever handed to the upload.
   assert.deepEqual(uploadArgs({ tag: 'v0.1.1', assets: ASSETS }), ['release', 'upload', 'v0.1.1', ...ASSETS]);
@@ -156,7 +193,7 @@ test('the tag is v<version>, the create carries --target and its assets, and the
 
 // -- The order, which is the guarantee ---------------------------------------------------------------
 
-test('a new release: assert, look, create at the target with the assets, then dispatch', async () => {
+test('a new release: assert, read the tag, look, create at the tag with the assets, then dispatch', async () => {
   const run = await drive(ARGV, { answers: { 'release view': 1 } });
   assert.equal(run.code, 0);
   assert.deepEqual(run.keys(), ['assert', 'release view', 'release create', 'dispatch']);
@@ -166,7 +203,14 @@ test('a new release: assert, look, create at the target with the assets, then di
   ]);
   assert.equal(asserted.cmd, process.execPath);
   assert.equal(view.quiet, true);
-  assert.deepEqual(create.args, createArgs({ tag: 'v0.0.2', assets: ASSETS, target: SHA, notes: NOTES }));
+  assert.deepEqual(create.args, createArgs({ tag: 'v0.0.2', assets: ASSETS, notes: NOTES }));
+  assert.deepEqual(
+    run.requests.map((request) => request.url),
+    [`${API}/repos/cosyte/hl7/git/ref/tags/v0.0.2`],
+    'where the tag points is read once, through the API, before the first write',
+  );
+  assert.equal(run.requests[0].headers.authorization, 'Bearer ghs_test_release_token');
+  assert.match(run.stdout, new RegExp(`v0\\.0\\.2 points at ${SHA}, the commit this run released`));
   assert.equal(create.token, 'ghs_test_release_token', 'the release is cut with the automatic token');
   assert.equal(dispatch.token, 'ghp_test_dispatch_token', 'the dispatch authenticates with its own token');
   assert.match(run.stdout, /Dispatched package-released to cosyte\/docs for @cosyte\/hl7@0\.0\.2/);
@@ -360,6 +404,57 @@ test('notes that fail the assert stop everything before the first gh call', asyn
   assert.deepEqual(run.keys(), ['assert']);
 });
 
+// -- The tag: already made, on the commit this run released, or nothing is written ---------------------
+
+test('a missing, misplaced or unreadable tag creates nothing, and gh is never asked to write', async () => {
+  const cases = [
+    ['missing', { status: 404, body: { message: 'Not Found' } }, /v0\.0\.2 does not exist\. The version job makes it on the version commit before anything is published/],
+    [
+      'on another commit',
+      { status: 200, body: { object: { type: 'commit', sha: 'f'.repeat(40) } } },
+      new RegExp(`v0\\.0\\.2 points at ${'f'.repeat(40)}, not at ${SHA}, the commit this run released`),
+    ],
+    ['unreadable', { status: 502, body: {} }, /whether v0\.0\.2 exists could not be read \(GitHub answered 502\)/],
+    ['a transport fault', new Error('socket hang up'), /could not be read \(the request failed \(socket hang up\)\)/],
+  ];
+  for (const [label, tag, why] of cases) {
+    const run = await drive(ARGV, { tag, answers: { 'release view': 1 } });
+    assert.equal(run.code, 1, `${label}: a release at no tag, or at a tag elsewhere, is a failed run`);
+    assert.deepEqual(run.keys(), ['assert'], `${label}: nothing after the notes assert, and no gh call at all`);
+    assert.match(run.stderr, /::error title=GitHub release not created::No release was created for @cosyte\/hl7@0\.0\.2: /);
+    assert.match(run.stderr, why, label);
+  }
+  const missing = await drive(ARGV, { tag: { status: 404, body: {} } });
+  assert.match(
+    missing.stderr,
+    new RegExp(`gh api repos/cosyte/hl7/git/refs -f ref=refs/tags/v0\\.0\\.2 -f sha=${SHA}`),
+    'a missing tag names the command that makes it on the right commit',
+  );
+});
+
+test('an annotated tag is followed to its commit', async () => {
+  const run = await drive(ARGV, {
+    answers: { 'release view': 1 },
+    tag: (url) =>
+      url.endsWith('/git/ref/tags/v0.0.2')
+        ? { status: 200, body: { object: { type: 'tag', sha: 'a'.repeat(40) } } }
+        : { status: 200, body: { object: { type: 'commit', sha: SHA } } },
+  });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(run.requests.map((request) => request.url), [
+    `${API}/repos/cosyte/hl7/git/ref/tags/v0.0.2`,
+    `${API}/repos/cosyte/hl7/git/tags/${'a'.repeat(40)}`,
+  ]);
+});
+
+test('the repository is required, because the tag is read from it', async () => {
+  const run = await drive(ARGV, { env: { GITHUB_REPOSITORY: '' } });
+  assert.equal(run.code, 2);
+  assert.deepEqual(run.keys(), []);
+  const named = await drive([...ARGV, '--repository', 'cosyte/hl7'], { env: { GITHUB_REPOSITORY: '' }, answers: { 'release view': 1 } });
+  assert.equal(named.code, 0, named.stderr);
+});
+
 // -- The dispatch, which reports and never fails the run -----------------------------------------------
 
 test('a failed dispatch is annotated with the command to finish by hand, and the run stays green', async () => {
@@ -429,6 +524,28 @@ test('bad usage is exit 2 and runs nothing', async () => {
 
 // -- End to end: the real spawn site, the real assert, a fake gh -----------------------------------------
 
+/**
+ * A local stand-in for the GitHub API, so the child process reads where the tag points through its
+ * real `fetch`: it answers the one lookup the script makes with `v0.0.2` at SHA, and 404s the rest.
+ * Hands `fn` the environment the child needs and the list of paths it was asked for.
+ */
+async function withTagApi(fn) {
+  const asked = [];
+  const server = createServer((req, res) => {
+    asked.push(req.url);
+    const found = req.url === `/repos/cosyte/hl7/git/ref/tags/v${VERSION}`;
+    res.writeHead(found ? 200 : 404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(found ? TAG_AT_SHA.body : { message: 'Not Found' }));
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  try {
+    const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
+    return await fn({ GITHUB_API_URL: `http://127.0.0.1:${port}`, GITHUB_REPOSITORY: 'cosyte/hl7' }, asked);
+  } finally {
+    await new Promise((done) => server.close(done));
+  }
+}
+
 test('end to end: the real assert passes a real body, and gh is handed exactly the create and the dispatch', async () => {
   const work = mkdtempSync(join(tmpdir(), 'github-release-'));
   const bin = join(work, 'bin');
@@ -447,27 +564,31 @@ test('end to end: the real assert passes a real body, and gh is handed exactly t
   mkdirSync(join(work, 'dist-artifacts'));
   for (const asset of ASSETS) writeFileSync(join(work, asset), 'tarball');
   try {
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'true'],
-      {
-        cwd: work,
-        encoding: 'utf8',
-        env: {
-          PATH: `${bin}:${process.env.PATH}`,
-          GH_TOKEN: 'ghs_test_release_token',
-          DISPATCH_TOKEN: 'ghp_test_dispatch_token',
-          GITHUB_STEP_SUMMARY: join(work, 'summary.md'),
+    await withTagApi(async (api, asked) => {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'true'],
+        {
+          cwd: work,
+          encoding: 'utf8',
+          env: {
+            PATH: `${bin}:${process.env.PATH}`,
+            GH_TOKEN: 'ghs_test_release_token',
+            DISPATCH_TOKEN: 'ghp_test_dispatch_token',
+            GITHUB_STEP_SUMMARY: join(work, 'summary.md'),
+            ...api,
+          },
         },
-      },
-    );
-    assert.match(stdout, /carries 10 described change\(s\) and no banned content/, 'the real assert ran');
-    const calls = readFileSync(log, 'utf8').trim().split('\n');
-    assert.deepEqual(calls, [
-      'ghs_test_release_token|release view v0.0.2',
-      `ghs_test_release_token|release create v0.0.2 ${ASSETS.join(' ')} --target ${SHA} --title v0.0.2 --notes-file ${notes}`,
-      'ghp_test_dispatch_token|api repos/cosyte/docs/dispatches -f event_type=package-released -f client_payload[package]=@cosyte/hl7 -f client_payload[version]=0.0.2',
-    ]);
+      );
+      assert.match(stdout, /carries 10 described change\(s\) and no banned content/, 'the real assert ran');
+      assert.deepEqual(asked, ['/repos/cosyte/hl7/git/ref/tags/v0.0.2'], 'the tag is read through the real fetch');
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      assert.deepEqual(calls, [
+        'ghs_test_release_token|release view v0.0.2',
+        `ghs_test_release_token|release create v0.0.2 ${ASSETS.join(' ')} --verify-tag --title v0.0.2 --notes-file ${notes}`,
+        'ghp_test_dispatch_token|api repos/cosyte/docs/dispatches -f event_type=package-released -f client_payload[package]=@cosyte/hl7 -f client_payload[version]=0.0.2',
+      ]);
+    });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -504,13 +625,15 @@ test('end to end: a re-run against a release carrying its assets compares them t
     const notes = join(work, 'release-notes.md');
     writeFileSync(notes, readFileSync(BODY, 'utf8'));
     try {
-      const child = await execFileAsync(
-        process.execPath,
-        [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'false'],
-        { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: 'x' } },
-      ).then(
-        (result) => ({ code: 0, ...result }),
-        (error) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }),
+      const child = await withTagApi((api) =>
+        execFileAsync(
+          process.execPath,
+          [SCRIPT, '--package', PKG, '--version', VERSION, '--target', SHA, '--notes', notes, '--dispatch-docs', 'false'],
+          { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: 'x', ...api } },
+        ).then(
+          (result) => ({ code: 0, ...result }),
+          (error) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }),
+        ),
       );
       const calls = readFileSync(log, 'utf8').trim().split('\n');
       assert.ok(!calls.some((call) => call.startsWith('release upload')), `${scenario}: nothing may be uploaded over a carried asset`);
@@ -547,15 +670,18 @@ test('end to end: a body that names another version is refused, and gh is never 
   const notes = join(work, 'release-notes.md');
   writeFileSync(notes, readFileSync(BODY, 'utf8'));
   try {
-    await assert.rejects(
-      execFileAsync(
-        process.execPath,
-        [SCRIPT, '--package', PKG, '--version', '0.0.3', '--target', SHA, '--notes', notes, '--dispatch-docs', 'false'],
-        { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: 'x' } },
-      ),
-      (error) => error.code === 1,
-    );
-    assert.equal(existsSync(log), false, 'no gh call may follow a refused body');
+    await withTagApi(async (api, asked) => {
+      await assert.rejects(
+        execFileAsync(
+          process.execPath,
+          [SCRIPT, '--package', PKG, '--version', '0.0.3', '--target', SHA, '--notes', notes, '--dispatch-docs', 'false'],
+          { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: 'x', ...api } },
+        ),
+        (error) => error.code === 1,
+      );
+      assert.equal(existsSync(log), false, 'no gh call may follow a refused body');
+      assert.deepEqual(asked, [], 'and the tag is not even read');
+    });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

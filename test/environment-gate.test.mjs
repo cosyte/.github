@@ -1395,6 +1395,9 @@ const CONVERGED_ON_THE_SHARED_READER = [
   'pr-title.test.mjs',
   'promotion.test.mjs',
   'release-notes.test.mjs',
+  // Evaluates the version, release and finalize jobs' conditions and outputs, read through the
+  // shared reader, over what the real scripts wrote while `main` moved under a release.
+  'release-tag.test.mjs',
   'trusted-publishing.test.mjs',
   'workflow-sha.test.mjs',
 ];
@@ -1636,17 +1639,21 @@ test('AC1: the "Version Packages" job references no deployment environment and c
   // is-release` then reads empty forever and `release` never starts again. So the value is pinned to
   // the gate's own output and nothing else, and its absence is a failure rather than a default.
   //
-  // ONE CONJUNCT IS ADDED TO IT, AND IT IS PINNED WHOLE WITH IT, because the only edit it permits is
-  // one that withholds. A version the notes gate calls pending but npm already serves (a stage
-  // promoted after its run stopped watching) has nothing left to publish, so `promoted.live` takes
-  // it out. `x == 'true' && y != 'true'` is true only where the notes gate said true, so no value
-  // of the new term can start the environment-held job on a run the notes gate did not call a
-  // release; and an empty `live`, which is what every fault in that step leaves, changes nothing.
+  // TWO CONJUNCTS ARE ADDED TO IT, AND THEY ARE PINNED WHOLE WITH IT, because the only edits they
+  // permit are ones that withhold. A version the notes gate calls pending but npm already serves (a
+  // stage promoted after its run stopped watching) has nothing left to publish, so `promoted.live`
+  // takes it out; an empty `live`, which is what every fault in that step leaves, changes nothing.
+  // And a version whose `v<version>` is not on its version commit is not published at all, because
+  // once the default branch's workflow files move on no GITHUB_TOKEN can tag it, and a version on npm
+  // that can never be tagged can never be released (transform 0.1.4, 2026-11-08). That term reads
+  // `== 'true'`, so a tag step that was skipped, refused or faulted withholds. Every term is ANDed
+  // to the notes gate's own `== 'true'`, so no value of either can start the environment-held job
+  // on a run the notes gate did not call a release.
   assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
   assert.equal(
     version.blocks.outputs['is-release'],
-    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
-    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live"',
+    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' && steps.tag.outputs.ready == 'true' }}",
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live" and "not tagged"',
   );
 });
 
@@ -2335,9 +2342,10 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   // output its condition reads, and that is pinned link by link, the way the stage report's is:
   //
   //   its condition requires `needs.version.outputs.finalize == 'true'`;
-  //   that output is the version job's `steps.promoted.outputs.finalize` and nothing else;
-  //   the step that writes it sits BELOW the gate in the gate's own job and does not opt back in,
-  //   so a gate that refused means that step never ran and the output is empty, not `true`.
+  //   that output is the version job's `steps.promoted.outputs.finalize`, ANDed with the tag step's
+  //   `ready`, and nothing else;
+  //   the steps that write them sit BELOW the gate in the gate's own job and do not opt back in,
+  //   so a gate that refused means those steps never ran and the output is `false`, not `true`.
   const survivingJobs = workflow.jobs.filter((job) => STATUS_CHECK_FUNCTION.test(job.keys.if ?? ''));
   assert.deepEqual(
     survivingJobs.map((job) => job.id),
@@ -2349,13 +2357,18 @@ test('AC9: no packing, registry authentication or publishing is reachable past a
   assert.equal(finalize.keys.environment, undefined, 'finalize must not hold the release environment');
   assert.match(finalize.keys.if, /needs\.version\.outputs\.finalize == 'true'/);
   assert.match(finalize.keys.if, /needs\.version\.outputs\.is-release != 'true'/);
-  assert.equal(workflow.byId.version.blocks.outputs.finalize, '${{ steps.promoted.outputs.finalize }}');
+  assert.equal(
+    workflow.byId.version.blocks.outputs.finalize,
+    "${{ steps.promoted.outputs.finalize == 'true' && steps.tag.outputs.ready == 'true' }}",
+  );
   const versionSteps = workflow.byId.version.steps;
-  const promoted = versionSteps.find((step) => step.fields.id === 'promoted');
   const gateStep = versionSteps.find(isGate);
-  assert.ok(promoted && gateStep, 'the promoted step and the gate must both be in the version job');
-  assert.ok(promoted.index > gateStep.index, 'the step that writes `finalize` must run below the protection gate');
-  assert.equal(optsBackInAfterFailure(promoted), false, 'and it must not itself run after a failure');
+  for (const id of ['promoted', 'tag']) {
+    const writer = versionSteps.find((step) => step.fields.id === id);
+    assert.ok(writer && gateStep, `the ${id} step and the gate must both be in the version job`);
+    assert.ok(writer.index > gateStep.index, `the ${id} step, which \`finalize\` reads, must run below the protection gate`);
+    assert.equal(optsBackInAfterFailure(writer), false, `and the ${id} step must not itself run after a failure`);
+  }
 
   // AND THE CLASSIFIER IS ASKED WHAT IT MATCHES, IN BOTH DIRECTIONS. `assert.deepEqual` over the
   // list above passes whether or not the predicate that built it is any good, which is exactly how

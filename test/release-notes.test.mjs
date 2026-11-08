@@ -619,16 +619,15 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
   const publishes = (step) => /uses: changesets\/action@/.test(step.body) && step.with.publish !== undefined;
 
   // DERIVED EXACTLY ONCE BEFORE THE PUBLISH, IN THE JOB THAT DOES NOT PUBLISH, AND NEVER AFTER IT.
-  // Deriving again on the far side of the publish cannot work at all: `changeset publish` creates the
-  // `v<version>` tag locally and "is a release pending" is answered by whether that tag exists, so a
-  // second derivation in the publishing job always finds nothing and every successful release would
-  // end red with no release created.
+  // A second derivation in the publishing job would run after the approval, against whatever the
+  // tree said then, so the bytes published would not be the bytes this gate proved before anyone was
+  // asked. (It used to be impossible outright, while the tag followed the publish and a tag read as
+  // "already released"; the tag now comes first, and `prepare` looks past it on the version commit.)
   //
-  // THE ONE OTHER DERIVATION IS THE CATCH-UP'S, AND THAT ARGUMENT IS WHY IT CAN EXIST. `finalize`
-  // runs in a LATER run, for a staged version promoted after its own run stopped watching, from a
-  // fresh checkout of the release commit. No `v<version>` tag exists there or anywhere, which is the
-  // whole reason that job runs, so `prepare` at that commit derives exactly the body the stage's run
-  // derived. It is pinned to that job and to that commit, and to nothing else.
+  // THE ONE OTHER DERIVATION IS THE CATCH-UP'S. `finalize` runs in a LATER run, for a version published
+  // without its release, from a fresh checkout of the release commit, where `v<version>` sits on
+  // HEAD and is looked past, so `prepare` at that commit derives exactly the body the version's own
+  // run derived. It is pinned to that job and to that commit, and to nothing else.
   const prepares = [...text.matchAll(/release-notes\.mjs prepare\b/g)];
   assert.equal(prepares.length, 2, 'the notes are derived once before the publish, and once by the catch-up');
   assert.equal(release.steps.filter(derives).length, 0, 'the publishing job must never derive notes');
@@ -673,14 +672,16 @@ test('AC7: release.yml derives the notes once, carries them across the job bound
   // at all, just as silently. Both faces are the same gap, so the value is pinned to the gate's own
   // output and its absence is a failure rather than an empty string.
   //
-  // ONE CONJUNCT NARROWS IT, AND IT CAN ONLY WITHHOLD: a version the notes gate calls pending but npm
-  // already serves has nothing left to publish. `test/environment-gate.test.mjs` (AC1) says why that
-  // is the only edit to this line that is safe, and pins the same string.
+  // TWO CONJUNCTS NARROW IT, AND BOTH CAN ONLY WITHHOLD: a version the notes gate calls pending but
+  // npm already serves has nothing left to publish, and a version whose tag is not on its version
+  // commit must not be published, because no GITHUB_TOKEN could tag it afterwards.
+  // `test/environment-gate.test.mjs` (AC1) says why those are the only edits to this line that are
+  // safe, and pins the same string.
   assert.ok(version.blocks.outputs, 'the version job must declare the outputs the publish job reads');
   assert.equal(
     version.blocks.outputs['is-release'],
-    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}",
-    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live"',
+    "${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' && steps.tag.outputs.ready == 'true' }}",
+    'the discriminator the publish job is gated on must be the notes gate\'s own answer, narrowed only by "already live" and "not tagged"',
   );
   const restores = release.steps.filter((step) => /base64 -d/.test(step.body));
   assert.equal(restores.length, 1, 'exactly one step restores the notes in the publish job');
@@ -1007,12 +1008,46 @@ test('inspectRelease still finds the changesets when the publish lands on a LATE
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('inspectRelease reports nothing pending once the version is tagged', () => {
+test('inspectRelease reports nothing pending once the version is tagged, on any commit but the tagged version commit', () => {
   const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  const versionCommit = run('rev-parse', 'HEAD').toString().trim();
   run('tag', 'v0.0.2');
+  // The ordinary push between releases: a later commit, with the version tagged behind it.
+  writeFile(dir, 'README.md', 'later work\n');
+  run('add', '-A');
+  run('commit', '-qm', 'docs: later work');
   const release = inspectRelease(dir, '@cosyte/hl7');
   assert.equal(release.isRelease, false);
+  assert.equal(release.code, 'already-released');
   assert.match(release.reason, /already tagged/);
+  assert.equal(release.tagSha, versionCommit, 'it says where the tag is, for the step that asks what it is owed');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('on the tagged version commit itself the tag is looked past: the tag now comes before the publish', () => {
+  // `release-tag.mjs` tags the version commit BEFORE anything is published, because once the default
+  // branch's workflow files move on no GITHUB_TOKEN can make that tag (transform 0.1.4, 2026-11-08).
+  // So on the version commit a tag says only which commit is being released. If `inspectRelease`
+  // still read it as "already released", a re-run of the version commit's own run after a failed
+  // publish would publish nothing, ever. Whether npm already serves it is the registry's question.
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  const versionCommit = run('rev-parse', 'HEAD').toString().trim();
+  run('tag', 'v0.0.2');
+  const release = inspectRelease(dir, '@cosyte/hl7');
+  assert.equal(release.isRelease, true);
+  assert.equal(release.version, '0.0.2');
+  assert.equal(release.sha, versionCommit);
+  assert.equal(release.head, versionCommit);
+  assert.equal(release.tagSha, versionCommit);
+  assert.equal(release.kept.length, 2, 'the body is derived exactly as before the tag existed');
+
+  // ... and ONLY there. The same tag on a later commit, or a tag on another commit while HEAD is the
+  // version commit, short-circuits exactly as it always has.
+  const elsewhere = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  elsewhere.run('tag', 'v0.0.2', 'HEAD~1');
+  const misplaced = inspectRelease(elsewhere.dir, '@cosyte/hl7');
+  assert.equal(misplaced.code, 'already-released', 'a tag on another commit is not looked past');
+  rmSync(elsewhere.dir, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1093,42 +1128,47 @@ test('prepare writes publishable notes for a real release commit', () => {
 });
 
 test('the workflow composition holds: derive BEFORE publish, assert AFTER the tag exists', () => {
-  // This is the shape release.yml runs, and testing the two halves in isolation missed it.
-  // `changeset publish` creates the v<version> tag in the runner's local clone, so anything that
-  // asks "is a release pending" after the publish step is answered no. Deriving twice therefore
-  // cannot work: the second derivation finds nothing and every successful release ends red with no
-  // GitHub release created. The notes must be derived once, before publish, and reused.
+  // This is the shape release.yml runs, and testing the two halves in isolation missed it. The notes
+  // are derived once, before anyone is asked to approve anything, and the publish job asserts those
+  // bytes. The tag now exists BEFORE the publish (the version job makes it), so this walks the order
+  // the workflow runs: derive, tag, assert, and a re-derivation at the tagged version commit.
   const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
   const notes = join(dir, 'notes.md');
 
-  // Step 1, before `changesets/action`.
+  // Step 1, the notes gate in the version job.
   const prepared = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', notes]);
   assert.equal(prepared.status, 0, prepared.stderr);
   assert.ok(readFileSync(notes, 'utf8').includes('npm install @cosyte/hl7@0.0.2'));
 
-  // `changeset publish` runs here and tags locally.
+  // Step 2, `release-tag.mjs` tags the version commit, before anything is published.
   run('tag', 'v0.0.2');
 
-  // Step 2, inside the publish step: assert the file that already exists, and publish it.
+  // Step 3, in the publish job: assert the file that already exists, and publish it.
   const asserted = runCli([
     'assert', '--file', notes, '--expect-version', '0.0.2', '--expect-package', '@cosyte/hl7',
   ]);
   assert.equal(asserted.status, 0, `assert must still pass after the tag exists: ${asserted.stderr}`);
 
-  // And the thing that made this a blocker: re-deriving at this point yields nothing at all.
-  const reprepared = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', join(dir, 'again.md')]);
-  assert.equal(reprepared.status, 0);
-  assert.match(reprepared.stdout, /No release pending/);
-  assert.throws(() => readFileSync(join(dir, 'again.md'), 'utf8'), /ENOENT/);
+  // Re-deriving at the tagged version commit (a re-run of this run, or `finalize` at this commit)
+  // yields the SAME bytes: the tag changes nothing about what the release says. It is still derived
+  // once and carried, so the bytes a human approved are the bytes published.
+  const again = join(dir, 'again.md');
+  const reprepared = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', again]);
+  assert.equal(reprepared.status, 0, reprepared.stderr);
+  assert.equal(readFileSync(again, 'utf8'), readFileSync(notes, 'utf8'));
   rmSync(dir, { recursive: true, force: true });
 });
 
 test('prepare exits 0 and writes nothing when no release is pending', () => {
   const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
   run('tag', 'v0.0.2');
+  writeFile(dir, 'README.md', 'later work\n');
+  run('add', '-A');
+  run('commit', '-qm', 'docs: later work');
   const result = runCli(['prepare', '--repo', dir, '--package', '@cosyte/hl7', '--out', join(dir, 'notes.md')]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /No release pending/);
+  assert.throws(() => readFileSync(join(dir, 'notes.md'), 'utf8'), /ENOENT/);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1240,13 +1280,57 @@ test('prepare grants publish permission only for a pending release', () => {
   assert.equal(pending.outputs['is-release'], 'true');
   assert.equal(pending.outputs.version, '0.0.2', 'the publish step needs the version to assert on');
 
-  // `changeset publish` has now run and tagged, which is the state of every ordinary push to main
-  // between releases. Permission is withheld, and withholding it is what `changeset publish` would
-  // have done anyway: there is nothing left to publish.
+  // The version job has tagged the version commit, before the publish. On that commit the permission
+  // stands: whether npm already serves the version is asked against the registry in the next step,
+  // and a re-run after a failed publish must still be able to publish.
   run('tag', 'v0.0.2');
+  const tagged = runPrepare(dir, { out: join(dir, 'tagged.md') });
+  assert.equal(tagged.status, 0, tagged.stderr);
+  assert.equal(tagged.outputs['is-release'], 'true', 'the tag on the version commit itself is looked past');
+
+  // A later push, the state of every ordinary push to main between releases. Permission is withheld,
+  // and withholding it is what `changeset publish` would have done anyway: nothing is this run's.
+  writeFile(dir, 'README.md', 'later work\n');
+  run('add', '-A');
+  run('commit', '-qm', 'docs: later work');
   const settled = runPrepare(dir, { out: join(dir, 'again.md') });
   assert.equal(settled.status, 0, settled.stderr);
   assert.equal(settled.outputs['is-release'], 'false');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('only the version commit\'s own run is given permission to publish', () => {
+  // A run on a later commit used to publish a version whose own run stopped short, and it published
+  // ITS tree: a tarball carrying commits the notes never described, with provenance naming a commit
+  // the version was not cut from, under a tag (now made before the publish) on the version commit.
+  // So the later run derives and checks the notes as before, and then withholds the permission.
+  const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
+  const versionCommit = run('rev-parse', 'HEAD').toString().trim();
+  writeFile(dir, 'src.ts', 'export const fixed = true;\n');
+  run('add', '-A');
+  run('commit', '-qm', 'fix: a later change, merged before the version commit published');
+
+  const release = inspectRelease(dir, '@cosyte/hl7');
+  assert.equal(release.isRelease, true, 'the version is still pending: finalize and the report read this');
+  assert.equal(release.sha, versionCommit);
+  assert.notEqual(release.head, versionCommit);
+
+  const later = runPrepare(dir);
+  assert.equal(later.status, 0, later.stderr);
+  assert.equal(later.outputs['is-release'], 'false', 'a later commit is not given the publish');
+  assert.match(later.stdout, /Only a run on the version commit publishes it/);
+  assert.throws(() => readFileSync(join(dir, 'notes.md'), 'utf8'), /ENOENT/, 'and it hands the publish job no body');
+
+  // An unfit body still stops every push, as it always has: the check runs before the withholding.
+  const unfit = makeVersionCommitRepo({
+    changesets: { 'a.md': `---\n"@cosyte/hl7": patch\n---\n\nCorrect the SOP Class UID names ${'x'.repeat(400)}.\n` },
+  });
+  writeFile(unfit.dir, 'README.md', 'later\n');
+  unfit.run('add', '-A');
+  unfit.run('commit', '-qm', 'docs: later');
+  const red = runPrepare(unfit.dir);
+  assert.equal(red.status, 1, 'an unfit body on a pending version is red on a later push too');
+  rmSync(unfit.dir, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1255,6 +1339,9 @@ test('inspectRelease reports WHY nothing is pending in a form the caller can act
   // are not interchangeable.
   const { dir, run } = makeVersionCommitRepo({ changesets: GOOD_CHANGESETS });
   run('tag', 'v0.0.2');
+  writeFile(dir, 'README.md', 'later work\n');
+  run('add', '-A');
+  run('commit', '-qm', 'docs: later work');
   assert.equal(inspectRelease(dir, '@cosyte/hl7').code, 'already-released');
   rmSync(dir, { recursive: true, force: true });
 
@@ -1994,11 +2081,21 @@ test('DEFECT 1: the revert-shaped log line is only printed when the evidence sup
 
 test('DEFECT 1: a tagged version still short-circuits before any of this', () => {
   // Ordering check. `already-released` is what carried ccda and dicom through the same recovery, and
-  // the new branch must not get in front of it.
+  // the new branch must not get in front of it. Their tag sat where a real release puts it, on the
+  // commit that first introduced 0.0.3, two commits behind the revert at HEAD.
   const { dir, run } = makeRevertedVersionCommitRepo();
-  run('tag', 'v0.0.3');
+  run('tag', 'v0.0.3', 'HEAD~2');
   assert.equal(inspectRelease(dir, '@cosyte/fhir').code, 'already-released');
   rmSync(dir, { recursive: true, force: true });
+
+  // A tag on the revert commit itself is looked past, because HEAD is then the tagged commit that
+  // introduced 0.0.3 most recently, and the answer is still the one that grants nothing.
+  const onRevert = makeRevertedVersionCommitRepo();
+  onRevert.run('tag', 'v0.0.3');
+  const release = inspectRelease(onRevert.dir, '@cosyte/fhir');
+  assert.equal(release.isRelease, false);
+  assert.equal(release.code, 'version-reverted');
+  rmSync(onRevert.dir, { recursive: true, force: true });
 });
 
 test('DEFECT 2: the over-cap refusal does not hand back the sentence it just refused', () => {
