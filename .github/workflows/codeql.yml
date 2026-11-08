@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # THE INVARIANT: EVERY `github/codeql-action/*` PIN IN THIS REPO CARRIES ONE SHA. That is both
       # uses below plus `upload-sarif` in scorecard.yml. It is not tidiness, it is the whole defect
-      # class, and it is not enforced by anything, so it has to be read here.
+      # class, and `test/codeql-pins.test.mjs` fails the build when the pins disagree.
       #
       # `analyze` reads the config file `init` wrote and REFUSES IT WHEN THE VERSIONS DIFFER:
       # config-utils.ts throws a ConfigurationError, "Loaded a configuration file for version 'X',
@@ -62,13 +62,14 @@ jobs:
       # v4.37.4 while #15 (`analyze`) was still on v4.37.3. Merging one was obviously wrong; merging
       # BOTH, the correct-looking act, would have landed 4.37.4 against 4.37.3 and thrown the same
       # error. So: NEVER merge a codeql-action Dependabot PR here. Supersede the set with one commit
-      # that sets every pin to one version, and close the PRs. 2026-08-03 did that at v4.37.5.
+      # that sets every pin to one version, and close the PRs. 2026-08-03 did that at v4.37.5, and
+      # 2026-11-07 at v4.37.9, the last patch on that line: a minor version waits for the owner.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: ${{ matrix.language }}
           queries: ${{ inputs.queries }}
       - name: Analyze
-        uses: github/codeql-action/analyze@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: "/language:${{ matrix.language }}"
