@@ -108,6 +108,7 @@ jobs:
   # to require; see the note above.
   no-emdash:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -127,6 +128,7 @@ jobs:
   # THE HALF THAT MUST NEVER BE A REQUIRED CONTEXT. See the Dependabot note above.
   no-emdash-messages:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Pull requests only: on a push to `main` the message is already written, and this job exists to
     # stop one landing.
     if: github.event_name == 'pull_request'

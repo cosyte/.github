@@ -34,6 +34,8 @@ permissions:
 jobs:
   analysis:
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write

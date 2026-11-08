@@ -129,6 +129,9 @@ jobs:
         node: ${{ fromJSON(inputs.node-versions) }}
         os: ${{ fromJSON(inputs.os) }}
     runs-on: ${{ matrix.os }}
+    # A caller cannot bound a job that calls this workflow, so the bound is here: about seven times
+    # the slowest leg measured on 2026-11-07 (4 minutes, hl7 on Node 24).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -251,6 +254,9 @@ jobs:
   prepublish:
     if: ${{ inputs.run-prepublish-manifest-lint || inputs.run-prepublish-install }}
     runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here, above the install
+    # step's own 15 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `job.workflow_sha` rather than `main`: the script must be the one that belongs to the
