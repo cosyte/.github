@@ -6,6 +6,9 @@ name: Self-check
 # It also runs the unit tests for scripts/, which is where the release-notes derivation and the gate
 # that refuses meaningless release bodies live. That code runs in 8+ public repos behind a protected
 # environment, so it is awkward to iterate on there and has to be proved here.
+#
+# And it checks the package lists in the community files and the org profile against the catalog
+# of our libraries (`package-lists`).
 on:
   push:
     branches: [main]
@@ -70,3 +73,22 @@ jobs:
       # package.json, no lockfile, and no install step to stay verifiable.
       - name: Unit tests
         run: node --test "test/*.test.mjs"
+
+  # The package lists in SECURITY.md, CONTRIBUTING.md and profile/README.md against the catalog in
+  # the latest @cosyte/script-utils on npm, which cosyte/config generates from each library's
+  # package.json. The latest, not a pin: a release that changes the catalog turns the next run red,
+  # the nightly one included, until the lists follow it. `npm pack` fetches the tarball and runs none
+  # of its code; the check reads catalog.json out of it. Its own job, so the registry being out of
+  # reach never fails the unit tests above.
+  package-lists:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: The package lists follow the catalog
+        run: node test/package-lists.mjs

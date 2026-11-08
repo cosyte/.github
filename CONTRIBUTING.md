@@ -1,5 +1,7 @@
 # Contributing to Cosyte
 
+<!-- catalog:roster:start: test/package-lists.mjs checks this list against the package catalog. -->
+
 Thanks for considering a contribution. This guide covers our 14 libraries, one
 for each of 8 standards (`@cosyte/hl7`, `@cosyte/mllp`, `@cosyte/fhir`,
 `@cosyte/ccda`, `@cosyte/x12`, `@cosyte/ncpdp`, `@cosyte/astm`, and
@@ -9,6 +11,8 @@ for each of 8 standards (`@cosyte/hl7`, `@cosyte/mllp`, `@cosyte/fhir`,
 development. They get better when real integration teams surface the vendor
 quirks they hit in production, and a bug report with a reproducing fixture is one
 of the most valuable things you can send us.
+
+<!-- catalog:roster:end -->
 
 This is the org-wide guide. Some repos add their own `CONTRIBUTING.md` with
 package-specific detail (for example, `@cosyte/hl7` documents how to add a
