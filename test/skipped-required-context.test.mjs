@@ -819,7 +819,7 @@ const EVERY_JOB_ID = {
   'no-emdash.yml': ['no-emdash', 'no-emdash-messages'],
   'org-defaults-coverage.yml': ['org-defaults-coverage'],
   'publish-reference.yml': ['publish-reference'],
-  'self-check.yml': ['actionlint', 'scripts'],
+  'self-check.yml': ['actionlint', 'scripts', 'package-lists'],
   'self-codeql.yml': ['codeql'],
   'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],
