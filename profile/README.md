@@ -7,7 +7,15 @@
 
 # Integration that feels like modern software.
 
-Open-source libraries for healthcare's data standards, and the integrations built on them.
+We build, host and run healthcare integrations, on open-source libraries we wrote and maintain in
+public.
+
+- **Building with healthcare data?** Use our libraries: install any one in the table below from
+  npm, with a quickstart for each at
+  [docs.cosyte.com](https://docs.cosyte.com/?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=paths-docs).
+- **Need an integration built or run?** We build it, then host and run it: in your environment, or
+  in ours under a Business Associate Agreement, set up per engagement. See
+  [our integration services](https://cosyte.com/integration-services?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=hire-us).
 
 <!-- catalog:roster:start: test/package-lists.mjs checks this list against the package catalog. -->
 
@@ -58,6 +66,6 @@ support Node.js 22 or later, tested on 22 and 24.
   [0.1 announcement](https://github.com/cosyte/.github/discussions/70), questions, ideas, and what
   you build with the libraries. Report bugs in each library's own issue tracker.
 - [Pathways](https://github.com/cosyte/pathways): our integration engine, in development.
+- [Integration services](https://cosyte.com/integration-services?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=start-services): we build, host and run
+  integrations for teams that need one.
 - [cosyte.com](https://cosyte.com/?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=start-site): who we are and what we build.
-
-Need an integration built? See [our integration services](https://cosyte.com/integration-services?utm_source=github&utm_medium=profile&utm_campaign=evergreen&utm_content=hire-us).

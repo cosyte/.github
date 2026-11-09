@@ -20,8 +20,8 @@ We read every issue and every discussion.
 Do not report security issues in public. See the
 [security policy](https://github.com/cosyte/.github/security/policy).
 
-## Need an integration built?
+## Need an integration built or run?
 
-We build healthcare integrations: interfaces, replacements for Mirth Connect channels, and the
-pipelines these libraries plug into. See
-**[our integration services](https://cosyte.com/integration-services)**.
+We build healthcare integrations: interfaces and the pipelines these libraries plug into. We also
+host and run integrations, in your environment or in ours under a Business Associate Agreement, set
+up per engagement. See **[our integration services](https://cosyte.com/integration-services)**.
