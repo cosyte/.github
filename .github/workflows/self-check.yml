@@ -159,28 +159,42 @@ jobs:
       run-prepublish-install: false
 
   # THE TESTING STANDARD'S JOBS, against the same fixture. `systems` above turns on `ci.yml`'s
-  # `coverage-ratchet` and `mutation` jobs; these two run the scheduled reusables. The fixture's
-  # `cosyte-mutate` and `cosyte-ratchet` are the stand-ins in `test/fixtures/quality-stubs/`, because
-  # the real tools are not on npm yet: each accepts only the command lines the real tool accepts,
-  # checks that the base ref has a merge base and that the reports it would read are on disk, refuses
-  # `raise`, and judges nothing. So a green run here proves the wiring (the checkout's history, the
-  # order of the steps, the directory, the summary, the artifacts), not the tools.
+  # `coverage-ratchet` and `mutation` jobs; these run the scheduled reusables. The fixture's
+  # `cosyte-mutate` and `cosyte-ratchet` are the stand-ins in `test/fixtures/quality-stubs/`: each
+  # accepts only the command lines the real tool accepts, checks that the base ref has a merge base
+  # and that the reports it would read are on disk, refuses `raise`, and judges nothing. The
+  # `cosyte-mutate` stand-in also reads the two variables a sharded weekly run sets, which is the
+  # contract `weekly-mutation.yml` asks of the real tool. So a green run here proves the wiring (the
+  # checkout's history, the order of the steps, the directory, the shards, the cache, the merge, the
+  # summary, the artifacts), not the tools.
   nightly-properties:
     uses: ./.github/workflows/nightly-properties.yml
     with:
       working-directory: test/fixtures/ci-caller
       test-cmd: pnpm run test:properties
+  # A SHARDED RUN: two shards, one of which holds no file of the fixture, merged into one report.
   weekly-mutation:
     uses: ./.github/workflows/weekly-mutation.yml
     with:
       working-directory: test/fixtures/ci-caller
+      shard-count: 2
+  # AN INCREMENTAL RUN: the same call again, after the first. Its shards restore the incremental files
+  # the first run's shards saved, so each says it started from earlier results.
+  weekly-mutation-incremental:
+    needs: weekly-mutation
+    uses: ./.github/workflows/weekly-mutation.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      shard-count: 2
+      report-name: mutation-report-incremental
 
-  # What the two runs kept. The fixture's `test:properties` requires COSYTE_PROPERTY_RUNS to be a
-  # whole number and prints a planted failure report in colour, so the nightly artifact must hold its
-  # seed, once, at the depth the reusable set; the weekly artifact must hold the full run's report and
-  # the ratchet's own report beside it.
+  # What the runs kept. The fixture's `test:properties` requires COSYTE_PROPERTY_RUNS to be a whole
+  # number and prints a planted failure report in colour, so the nightly artifact must hold its seed,
+  # once, at the depth the reusable set. The weekly artifact must hold the merged report, the
+  # ratchet's own report beside it, and a note from each of its two shards; the second weekly run's
+  # notes must each say the shard started from the first run's results.
   quality-artifacts:
-    needs: [nightly-properties, weekly-mutation]
+    needs: [nightly-properties, weekly-mutation, weekly-mutation-incremental]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -200,6 +214,74 @@ jobs:
           cat "${artifacts}/mutation-report/ratchet.txt"
           grep -F 'cosyte-ratchet check (a stand-in)' "${artifacts}/mutation-report/ratchet.txt"
           grep -F '  read reports/mutation/mutation.json' "${artifacts}/mutation-report/ratchet.txt"
+          jq -e '.files | has("src/index.mjs")' "${artifacts}/mutation-report/mutation.json"
+          cat "${artifacts}/mutation-report/shards.txt"
+          test "$(wc -l < "${artifacts}/mutation-report/shards.txt")" -eq 2
+          cat "${artifacts}/mutation-report-incremental/shards.txt"
+          test "$(grep -c ': incremental, ' "${artifacts}/mutation-report-incremental/shards.txt")" -eq 2
+          test -s "${artifacts}/mutation-report-incremental/mutation.json"
+
+  # THE RELEASE GATES' SCRIPTS, run for real, none of them able to publish: `release.yml` itself cannot
+  # run here (it needs a protected environment and publishes), so each script it runs before the
+  # publish is run on this repository and the fixture instead. The mutation gate reads a real
+  # workflow's latest run through the API with this job's token at `actions: read` and must reach a
+  # verdict (a pass or a refusal, never an unreadable result), and must skip a workflow file that is
+  # not there. The samples gate packs the fixture, installs the tarball into a clean directory and
+  # runs `release-samples/greeting.md` against it. The SBOM is written from the fixture's installed
+  # production tree and must be CycloneDX naming the fixture.
+  release-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        working-directory: test/fixtures/ci-caller
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: test/fixtures/ci-caller/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: test/fixtures/ci-caller/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: The mutation gate reads a real run, and skips a workflow that is not there
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH_HINT: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          status=0
+          node scripts/mutation-gate.mjs --repo . --workflow self-check.yml --max-age-days 8 || status=$?
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 1 ]; then
+            echo "::error::the mutation gate could not read self-check.yml's latest run (exit ${status})"
+            exit 1
+          fi
+          skipped="$(node scripts/mutation-gate.mjs --repo . --workflow no-such-weekly-mutation.yml --max-age-days 8)"
+          echo "${skipped}"
+          grep -F 'mutation gate skipped: ' <<< "${skipped}"
+      - name: The docs samples run against the fixture's packed tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "${GITHUB_WORKSPACE}/scripts/tarball-samples.mjs" --repo . --docs-dir release-samples | tee "${RUNNER_TEMP}/samples.txt"
+          grep -F 'ran release-samples/greeting.md:7' "${RUNNER_TEMP}/samples.txt"
+          grep -F 'samples gate: 1 sample(s) ran against the tarball, 0 not run, 0 failed' "${RUNNER_TEMP}/samples.txt"
+      - name: The SBOM is CycloneDX and names the fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "${GITHUB_WORKSPACE}/scripts/sbom.mjs" --repo . --out "${RUNNER_TEMP}/sbom/sbom.cdx.json"
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.5" and .metadata.component.name == "ci-caller-fixture" and (.components | type) == "array"' "${RUNNER_TEMP}/sbom/sbom.cdx.json"
 
   # What `bench-compare` kept, on a pull request (the only event it runs on). The comparison ends
   # green whatever it measured, so this is what turns a comparison that wrote nothing, or wrote a

@@ -437,6 +437,48 @@ on:
         description: "Node version for every job that sets up Node, 24 or later (e.g. \"24\"). Empty keeps version on 22 and release and finalize on 24."
         type: string
         default: ""
+      # THE PRE-PUBLISH GATES' INPUTS. See "THE PRE-PUBLISH GATES" in the `version` job, where they
+      # run, and README.md, "The release gates", for how a caller turns each one on.
+      #
+      # THE MUTATION GATE IS ON FOR EVERY CALLER, AND IT READS, IT DOES NOT RUN. It reads the latest
+      # completed run of this workflow file on the caller's default branch and refuses a release when
+      # that run did not succeed or finished more than `mutation-max-age-days` ago. A caller without
+      # the file skips it, saying so by name, so a caller that has not adopted the weekly run is not
+      # held by it.
+      mutation-workflow:
+        description: "The caller's weekly mutation workflow file, whose latest result on the default branch the release reads. A caller without the file skips the gate."
+        type: string
+        default: "weekly-mutation.yml"
+      mutation-max-age-days:
+        description: "The oldest a successful weekly mutation run may be, in days, for a release to go ahead."
+        type: number
+        default: 8
+      # THE OTHER THREE ARE OFF UNTIL A CALLER TURNS THEM ON, so no release breaks before its
+      # library has adopted the piece each one runs.
+      run-benchmarks:
+        description: "Before publishing, run the test:perf scaling gate and time each bench suite against the build with cosyte-bench."
+        type: boolean
+        default: false
+      bench-suites:
+        description: "The suites run-benchmarks times, separated by spaces or new lines, relative to the repository root. Empty runs every bench/*.bench.mjs and bench/*.bench.ts."
+        type: string
+        default: ""
+      bench-target:
+        description: "The built entry run-benchmarks times each suite against, relative to the repository root."
+        type: string
+        default: "dist/index.mjs"
+      run-package-checks:
+        description: "Before publishing, pack the package and check the tarball: every declared file and exports entry is in it, it installs into a clean directory, and each entry point loads."
+        type: boolean
+        default: false
+      run-tarball-samples:
+        description: "Before publishing, install the packed tarball into a clean directory and run every docs sample against it."
+        type: boolean
+        default: false
+      docs-dir:
+        description: "The directory of documentation pages whose samples run-tarball-samples runs, relative to the repository root."
+        type: string
+        default: "docs-content"
     # NO npm SECRET, AND THE ABSENCE IS THE POINT. Every publish authenticates through npm trusted
     # publishing (see "EVERY PUBLISH AUTHENTICATES" at the top of this file), so no npm token is
     # declared, read or handed to any step. A caller passing `secrets: inherit` names no secret, so
@@ -495,8 +537,9 @@ jobs:
   # It also carries the protection gate, unconditionally, for every path this workflow has.
   version:
     runs-on: ubuntu-latest
-    # A caller cannot bound a job that calls this workflow, so the bound is here.
-    timeout-minutes: 30
+    # A caller cannot bound a job that calls this workflow, so the bound is here. 60, not 30, since
+    # the pre-publish gates run here too: a caller's scaling gate, bench suites and samples.
+    timeout-minutes: 60
     # NAMED IN FULL, BECAUSE NAMING ONE KEY SETS EVERY OTHER TO `none`. "If you specify the access for
     # any of these permissions, all of those that are not specified are set to `none`", so a block
     # that asked only for what a reader thinks this job needs would strip `contents` and 403 the very
@@ -966,6 +1009,127 @@ jobs:
         run: |
           node .cosyte-release-tooling/scripts/changelog-check.mjs \
             --repo . --version "$NOTES_VERSION"
+      # ▶ THE PRE-PUBLISH GATES, AND WHY THEY ARE HERE AND NOT IN THE JOB THAT PUBLISHES.
+      #
+      #   Each runs only on the run that owes a publish (the same predicate the tag step reads), after
+      #   `Verify` has installed and built the tree, and each fails this job when it refuses. The
+      #   `release` job `needs:` this one and never opts back in after a failure, so a refusal here
+      #   stops the publish before anyone is asked to approve it. This job holds no `id-token: write`,
+      #   so nothing a gate runs can publish. A refused gate leaves the tag the step above made, as a
+      #   red `Verify` does: re-run this run's failed jobs once the cause is gone.
+      #
+      #   NO FULL MUTATION RUN HAPPENS IN THIS FILE. One takes hours. The mutation gate reads the
+      #   latest result of the caller's scheduled run (`weekly-mutation.yml`, sharded and
+      #   incremental) and starts nothing.
+      #
+      #   The other three are off until a caller turns them on, and each says by name, in this log,
+      #   that it skipped. README.md, "The release gates", says how a caller turns each one on.
+      - name: Release gate, the latest weekly mutation result
+        if: ${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
+        env:
+          # The automatic token, under `GH_TOKEN` for the reason the protection gate gives. It reads
+          # workflow runs with the `actions: read` this job already holds.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH_HINT: ${{ github.event.repository.default_branch }}
+          MUTATION_WORKFLOW: ${{ inputs.mutation-workflow }}
+          MUTATION_MAX_AGE_DAYS: ${{ inputs.mutation-max-age-days }}
+        run: |
+          node .cosyte-release-tooling/scripts/mutation-gate.mjs --repo . \
+            --workflow "$MUTATION_WORKFLOW" --max-age-days "$MUTATION_MAX_AGE_DAYS"
+      # The scaling gate is the caller's `test:perf` (`@cosyte/test-utils/perf`), which must pass. Each
+      # bench suite is then timed against the build with `cosyte-bench run`, and its results file
+      # checked with `cosyte-bench check`: a suite that could not measure fails, since a skip is not a
+      # pass. The numbers are kept as the `release-benchmarks` artifact. There is no comparison with
+      # an earlier release here: that is `ci.yml`'s `bench-compare`, which stays advisory.
+      - name: Release gate, the benchmarks and the scaling gate
+        if: ${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
+        shell: bash
+        env:
+          RUN_BENCHMARKS: ${{ inputs.run-benchmarks }}
+          BENCH_SUITES: ${{ inputs.bench-suites }}
+          BENCH_TARGET: ${{ inputs.bench-target }}
+        run: |
+          set -euo pipefail
+          if [ "${RUN_BENCHMARKS}" != "true" ]; then
+            echo "benchmarks gate skipped: run-benchmarks is off, so no benchmark or scaling gate runs before this release"
+            exit 0
+          fi
+          if ! node -e 'process.exit(require("./package.json").scripts?.["test:perf"] ? 0 : 1)'; then
+            echo "::error::run-benchmarks is on, and package.json has no test:perf script. Add the scaling gate from @cosyte/test-utils/perf as test:perf, or turn run-benchmarks off."
+            exit 1
+          fi
+          out="${RUNNER_TEMP}/release-benchmarks"
+          mkdir -p "${out}"
+          pnpm run test:perf
+          {
+            echo "### Release gate: benchmarks and the scaling gate"
+            echo
+            echo "The scaling gate (test:perf) passed."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          suites=()
+          if [ -n "${BENCH_SUITES//[[:space:]]/}" ]; then
+            read -r -d '' -a suites <<< "${BENCH_SUITES}" || true
+          else
+            shopt -s nullglob
+            suites=(bench/*.bench.mjs bench/*.bench.ts)
+            shopt -u nullglob
+          fi
+          if [ "${#suites[@]}" -eq 0 ]; then
+            echo "no bench suite: name one in bench-suites, or add bench/<name>.bench.mjs; only the scaling gate ran"
+            echo "No bench suite ran." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          for suite in "${suites[@]}"; do
+            name="$(basename "${suite}")"
+            name="${name%.*}"
+            pnpm exec cosyte-bench run --suite "${suite}" --target "${BENCH_TARGET}" --out "${out}/${name}.json"
+            pnpm exec cosyte-bench check "${out}/${name}.json"
+            echo "- ${suite}: measured, results in the release-benchmarks artifact" >> "${GITHUB_STEP_SUMMARY}"
+          done
+      - name: Keep the release benchmarks
+        if: ${{ inputs.run-benchmarks && steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-benchmarks
+          path: ${{ runner.temp }}/release-benchmarks/
+          if-no-files-found: ignore
+          retention-days: 90
+      # The two pre-publish layers `ci.yml`'s `prepublish` job runs on a pull request, here on the
+      # commit being released: the manifest names only specifiers a registry can resolve; then
+      # `npm pack`, every file the manifest declares (each `exports` target included) is in the
+      # tarball, the tarball installs into a clean directory, and every entry point loads by name.
+      # That the types resolve for every `exports` entry is `pnpm attw` in `Verify` above, which every
+      # caller runs, on a packed tarball too. `scripts/prepublish-check.mjs` holds both layers.
+      - name: Release gate, the package checks on the packed tarball
+        if: ${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
+        shell: bash
+        env:
+          RUN_PACKAGE_CHECKS: ${{ inputs.run-package-checks }}
+          EXPECT_UNPUBLISHED_DEPS: ${{ inputs.expect-unpublished-deps }}
+        run: |
+          set -euo pipefail
+          if [ "${RUN_PACKAGE_CHECKS}" != "true" ]; then
+            echo "package checks gate skipped: run-package-checks is off, so the tarball is checked by pnpm attw in Verify alone"
+            exit 0
+          fi
+          node .cosyte-release-tooling/scripts/prepublish-check.mjs manifest --repo . --expect-unpublished-deps "${EXPECT_UNPUBLISHED_DEPS}"
+          node .cosyte-release-tooling/scripts/prepublish-check.mjs pack --repo . --expect-unpublished-deps "${EXPECT_UNPUBLISHED_DEPS}"
+      # The package's documentation samples, run against the exact tarball `npm pack` makes, installed
+      # into a clean directory: `scripts/tarball-samples.mjs` says what a sample is and how it runs.
+      # A caller with no docs directory, or no sample in it, is told so by name and passes.
+      - name: Release gate, the docs samples against the packed tarball
+        if: ${{ steps.notes.outputs.is-release == 'true' && steps.promoted.outputs.live != 'true' }}
+        shell: bash
+        env:
+          RUN_TARBALL_SAMPLES: ${{ inputs.run-tarball-samples }}
+          DOCS_DIR: ${{ inputs.docs-dir }}
+        run: |
+          set -euo pipefail
+          if [ "${RUN_TARBALL_SAMPLES}" != "true" ]; then
+            echo "samples gate skipped: run-tarball-samples is off, so no docs sample runs against the packed tarball before this release"
+            exit 0
+          fi
+          node .cosyte-release-tooling/scripts/tarball-samples.mjs --repo . --docs-dir "${DOCS_DIR}"
       # ▶ THE VERSION-PR ARM, AND THE PUBLISH COMMAND IS NOT WITHHELD HERE, IT DOES NOT EXIST HERE.
       #
       #   `changesets/action` runs the publish command itself, so the ONLY place a publish can be
@@ -1361,6 +1525,13 @@ jobs:
             exit 1
           fi
           echo "v${NOTES_VERSION} points at ${GITHUB_SHA}, the commit this job publishes."
+      # THE SBOM THE GITHUB RELEASE CARRIES, WRITTEN BEFORE THE PUBLISH. CycloneDX JSON, from this
+      # job's own installed production tree (`scripts/sbom.mjs`), and attached by `github-release.mjs`
+      # in the call that creates the release, since an immutable release takes no asset later. Here,
+      # ahead of the publish, so an SBOM that cannot be written stops the release while npm is untouched.
+      - name: Write the SBOM the GitHub release carries
+        run: |
+          node .cosyte-release-tooling/scripts/sbom.mjs --repo . --out "$RUNNER_TEMP/sbom/sbom.cdx.json"
       # ▶ THE PUBLISH, AND EVERY STEP THAT CAN REACH THE REGISTRY IS INSIDE THIS ENVIRONMENT-HELD JOB.
       #
       #   The action publishes on exactly one arm, `!hasChangesets && hasPublishScript`. It reaches
@@ -1580,7 +1751,8 @@ jobs:
           bash -c "$PACK_DOCS_CMD"
           node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
             --package "$PACKAGE_NAME" --version "$PROMOTED_VERSION" --target "$GITHUB_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS" \
+            --sbom "$RUNNER_TEMP/sbom/sbom.cdx.json"
 
       # `mode != 'staged'` IS THE HALF THAT KEEPS A STAGED VERSION OUT OF THIS STEP, AND IT IS HERE
       # EXPLICITLY RATHER THAN LEFT TO FOLLOW FROM `published`.
@@ -1636,7 +1808,8 @@ jobs:
           # propagation lag would read as a refusal of a version that did ship.
           node .cosyte-release-tooling/scripts/github-release.mjs \
             --package "$PACKAGE_NAME" --version "$version" --target "$GITHUB_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS" \
+            --sbom "$RUNNER_TEMP/sbom/sbom.cdx.json"
 
       # THE POST-PUBLISH INSTALL GATE. Nothing in this pipeline has ever installed what it published.
       # Every gate above reads the working tree or a locally packed tarball, so a manifest that is
@@ -1894,6 +2067,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # The SBOM the release carries, from the release commit's own production tree, as the `release`
+      # job writes it before its publish.
+      - name: Write the SBOM the GitHub release carries
+        run: |
+          node .cosyte-release-tooling/scripts/sbom.mjs --repo . --out "$RUNNER_TEMP/sbom/sbom.cdx.json"
       # THE NOTES, DERIVED AT THE RELEASE COMMIT BY THE SAME GATE THAT DERIVED THEM BEFORE THE STAGE.
       # `prepare` anchors on the commit that introduced package.json's version and reads the
       # changesets that commit consumed, so at that commit it yields the body the stage's own run
@@ -1944,4 +2122,5 @@ jobs:
           bash -c "$PACK_DOCS_CMD"
           node .cosyte-release-tooling/scripts/github-release.mjs --require-live \
             --package "$PACKAGE_NAME" --version "$FINALIZE_VERSION" --target "$FINALIZE_SHA" \
-            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS"
+            --notes "$RUNNER_TEMP/release-notes.md" --dispatch-docs "$DISPATCH_DOCS" \
+            --sbom "$RUNNER_TEMP/sbom/sbom.cdx.json"

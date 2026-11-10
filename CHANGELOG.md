@@ -17,6 +17,31 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `release.yml` runs pre-publish gates in its `version` job, after `Verify` and before anything can
+  publish (README.md, "The release gates"). It runs no full mutation pass. Eight inputs are added
+  after `node-version`, each optional with a default; job ids, secrets and permissions are unchanged,
+  and the `version` job's bound moves from 30 to 60 minutes.
+  - The mutation gate is on for every caller: it reads the latest completed run of the caller's
+    `mutation-workflow` (default `weekly-mutation.yml`) on the default branch through the GitHub API
+    and refuses when that run did not succeed or finished more than `mutation-max-age-days` (default
+    8) ago. **Act on:** a caller that has a `.github/workflows/weekly-mutation.yml` must keep its
+    latest run green and recent, or each release refuses; a caller without the file skips the gate
+    and is told so in the log.
+  - `run-benchmarks` (with `bench-suites` and `bench-target`), `run-package-checks` and
+    `run-tarball-samples` (with `docs-dir`) are `false` by default and each says by name that it
+    skipped. To opt in, set the input under `with:`.
+  - Every GitHub release now carries `sbom.cdx.json`, a CycloneDX SBOM of the package's production
+    tree, written before the publish (and in `finalize` from the release commit) and attached by
+    `scripts/github-release.mjs`'s new `--sbom` in the call that creates the release.
+- `weekly-mutation.yml` is sharded and incremental (README.md, "The sharded weekly run"). A new job,
+  `shard`, runs the caller's `mutate-cmd` on each of `shard-count` shards (a new input, default 8,
+  1 to 16) with `COSYTE_MUTATE_SHARD` and `COSYTE_MUTATE_INCREMENTAL_FILE` set, restoring and saving
+  each shard's incremental results through the Actions cache. `mutation` keeps its id and now merges
+  the shard reports (`scripts/mutation-shards.mjs`) before the ratchet; it fails when a shard failed.
+  A new input, `report-name` (default `mutation-report`), names the merged artifact. **Act on:** it
+  needs a `cosyte-mutate` that reads `COSYTE_MUTATE_SHARD`, which `@cosyte/vitest-config` 0.1.4 does
+  not, so no caller should adopt it before that release; and schedule it at least every 6 days, so
+  each shard's cache entry is read before GitHub evicts it.
 - The performance standard's jobs, both off until a caller opts in (README.md, "The performance
   standard's jobs"). `ci.yml` takes four inputs: `run-scaling-gate` and `run-bench-compare`, both
   `false` by default, and `bench-suites` (default `""`) and `bench-target` (default

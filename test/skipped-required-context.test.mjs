@@ -745,7 +745,20 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
   //
   // THE FOURTH, `self-check.yml:performance-artifacts`, IS NO CALLER'S CONTEXT EITHER, for the same
   // reason: it reads what `systems`' `bench-compare` kept, on a pull request.
-  assert.deepEqual(withDependencies, ['release.yml:release', 'release.yml:finalize', 'self-check.yml:quality-artifacts', 'self-check.yml:performance-artifacts']);
+  //
+  // THE FIFTH, `self-check.yml:weekly-mutation-incremental`, IS NO CALLER'S CONTEXT EITHER: it calls
+  // the weekly run a second time, after the first, so its shards restore what the first one saved.
+  //
+  // THE SIXTH, `weekly-mutation.yml:mutation`, PASSES THROUGH THE ORDINARY RULE: it carries
+  // `!cancelled()`, so a failed shard does not skip it, and its first step fails it instead.
+  assert.deepEqual(withDependencies, [
+    'release.yml:release',
+    'release.yml:finalize',
+    'self-check.yml:weekly-mutation-incremental',
+    'self-check.yml:quality-artifacts',
+    'self-check.yml:performance-artifacts',
+    'weekly-mutation.yml:mutation',
+  ]);
   const finalize = under(parseWorkflow('release.yml', read(join(WORKFLOWS, 'release.yml'))).jobs, 'finalize');
   assert.equal(holdsAnEnvironment(finalize), false, 'finalize must not hold an environment');
   assert.equal(survives(scalar(finalize, 'if') ?? ''), true, 'a dependent job without an environment must survive a failed dependency');
@@ -811,7 +824,9 @@ const PUBLISHED_JOB_IDS = {
   // TWO FILES ADDED, so `properties` and `mutation` are new contexts. Each runs on a schedule the
   // caller writes, never on a pull request, so no ruleset has a reason to require either.
   'nightly-properties.yml': ['properties'],
-  'weekly-mutation.yml': ['mutation'],
+  // ADDED, NOT RENAMED: `shard` is a new context, one per matrix entry, and `mutation` still names
+  // the job that holds each package's score to its floor.
+  'weekly-mutation.yml': ['shard', 'mutation'],
   // ADDED, NOT RENAMED. A new file, so `conventional-commits` is a new context no caller's ruleset
   // names yet. It carries no condition and no `needs:`, so a caller may require it.
   'pr-title.yml': ['conventional-commits'],
@@ -846,7 +861,9 @@ const EVERY_JOB_ID = {
   // ADDED, NOT RENAMED: the two scheduled reusables run against the fixture, and `quality-artifacts`
   // reads what they kept.
   // ADDED, NOT RENAMED: `performance-artifacts` reads what `systems`' `bench-compare` kept.
-  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'quality-artifacts', 'performance-artifacts'],
+  // ADDED, NOT RENAMED: `weekly-mutation-incremental` calls the weekly run again, after the first,
+  // and `release-gates` runs the scripts `release.yml` runs before a publish.
+  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'weekly-mutation-incremental', 'quality-artifacts', 'release-gates', 'performance-artifacts'],
   'self-codeql.yml': ['codeql'],
   'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],

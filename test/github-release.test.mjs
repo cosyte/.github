@@ -693,3 +693,28 @@ test('the script is reachable where every caller runs it from', () => {
   assert.ok(existsSync(SCRIPT));
   assert.ok(existsSync(join(dirname(SCRIPT), 'release-notes.mjs')));
 });
+
+// -- The SBOM, attached in the same create as the docs assets ----------------------------------------
+
+const SBOM = '/tmp/runner/sbom/sbom.cdx.json';
+
+test('--sbom attaches the SBOM in the create, beside the docs assets, so an immutable release carries it', async () => {
+  const run = await drive([...ARGV, '--sbom', SBOM], { answers: { 'release view': 1 } });
+  assert.equal(run.code, 0, run.stderr);
+  const create = run.calls.find((call) => call.key === 'release create');
+  assert.deepEqual(create.args, createArgs({ tag: 'v0.0.2', assets: [...ASSETS, SBOM], notes: NOTES }));
+});
+
+test('--sbom on an existing release is compared or uploaded like any other asset', async () => {
+  const run = await drive([...ARGV, '--sbom', SBOM], { answers: { 'release assets': CARRIES_BOTH } });
+  assert.equal(run.code, 0, run.stderr);
+  const upload = run.calls.find((call) => call.key === 'release upload');
+  assert.deepEqual(upload.args, uploadArgs({ tag: 'v0.0.2', assets: [SBOM] }));
+});
+
+test('--sbom naming a file that is not there creates nothing, rather than a release without it', async () => {
+  const run = await drive([...ARGV, '--sbom', SBOM], { exists: (file) => file !== SBOM, answers: { 'release view': 1 } });
+  assert.equal(run.code, 1);
+  assert.match(run.stderr, /^::error title=GitHub release not created::The SBOM \/tmp\/runner\/sbom\/sbom\.cdx\.json is not there/m);
+  assert.deepEqual(run.keys(), []);
+});

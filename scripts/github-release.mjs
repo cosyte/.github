@@ -321,8 +321,9 @@ const USAGE =
   'usage:\n' +
   '  github-release.mjs --package <name> --version <v> --target <sha> --notes <file>\n' +
   '                     [--dispatch-docs true|false] [--require-live]\n' +
-  '                     [--registry <url>] [--repository <owner/name>]\n' +
+  '                     [--registry <url>] [--repository <owner/name>] [--sbom <file>]\n' +
   '  --target is the commit v<version> must already point at; nothing here makes the tag.\n' +
+  '  --sbom is attached with the docs assets, and must be there: a release is not created without it.\n' +
   '  GH_TOKEN creates the release; DISPATCH_TOKEN, when set, dispatches the docs rebuild;\n' +
   '  GITHUB_REPOSITORY is the repository when --repository is absent.\n';
 
@@ -430,6 +431,17 @@ export async function main(argv, io = {}) {
 
   // The assets the caller's pack-docs command left in its tree, in the step before this script.
   const assets = ASSETS.map((name) => path.join(ASSET_DIR, name)).filter((file) => exists(file));
+  // THE SBOM GOES IN THE SAME CREATE AS THE DOCS ASSETS, because an immutable release takes no new
+  // asset once it is published. Named and absent is a refusal before anything is written, never a
+  // release without it: `sbom.mjs` writes it in the step before, and its absence means that step did
+  // not run.
+  if (options.sbom !== undefined) {
+    if (!exists(options.sbom)) {
+      err(`::error title=GitHub release not created::The SBOM ${options.sbom} is not there, so no ${tag} release was created for ${coordinate}.\n`);
+      return 1;
+    }
+    assets.push(options.sbom);
+  }
 
   // 2. THE BODY, PROVED ON ITS BYTES BY THE ENTRY POINT THAT KNOWS NOTHING ABOUT HOW THEY WERE MADE.
   //    It is compared against the version being released here, which on the direct arm is the one

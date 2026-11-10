@@ -11,10 +11,10 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | Workflow | Purpose | Used by |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers** · [the test suite under Bun] · [under Deno] · [the coverage ratchet] · [mutation of a pull request's changed files], on every system the caller lists ([Every system and runtime](#every-system-and-runtime), [The testing standard's jobs](#the-testing-standards-jobs)). Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
-| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → derive the release notes → **tag the version commit, before anything is published** → verify → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a version published without its release (a staged version **promoted after its own run stopped waiting**, or a direct publish whose release step never finished), at the tag on the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
+| [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → derive the release notes → **tag the version commit, before anything is published** → verify → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a version published without its release (a staged version **promoted after its own run stopped waiting**, or a direct publish whose release step never finished), at the tag on the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). **The pre-publish gates** run in `version`, before anything can publish: the latest weekly mutation result (read, never re-run), and, once a caller turns them on, its benchmarks with the scaling gate, the package checks on the packed tarball, and its docs samples against the installed tarball; each GitHub release also carries a CycloneDX SBOM ([The release gates](#the-release-gates)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`nightly-properties.yml`](.github/workflows/nightly-properties.yml) | **one job**, `properties`: the caller's test suite with `COSYTE_PROPERTY_RUNS=10000`, and the replay seed of every property that fails kept in the job summary and the `property-run` artifact ([The testing standard's jobs](#the-testing-standards-jobs)) | no repository calls it yet |
-| [`weekly-mutation.yml`](.github/workflows/weekly-mutation.yml) | **one job**, `mutation`: the full mutation run, then each package's mutation score against its floor in `quality-floor.json`, in the job summary. A score below its floor is red. It never commits; raising a floor is a pull request | no repository calls it yet |
+| [`weekly-mutation.yml`](.github/workflows/weekly-mutation.yml) | **two jobs.** `shard`: the full mutation run, **split across `shard-count` parallel jobs** (default 8), each restoring and saving its share's StrykerJS incremental results through the Actions cache, so a later run retests only what changed. `mutation`: the shards merged into one report per package, then each package's mutation score against its floor in `quality-floor.json`, in the job summary. A score below its floor, or a shard that failed, is red. It never commits; raising a floor is a pull request ([The sharded weekly run](#the-sharded-weekly-run)) | no repository calls it yet |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | no repository calls it today |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
@@ -62,6 +62,12 @@ jobs:
       package-name: "@cosyte/hl7"
       # publish-mode: staged # optional; the default, direct, is live when the run ends. See below
       # node-version: "24" # optional, 24 or later; empty keeps version on 22, release and finalize on 24
+      # The pre-publish gates; see "The release gates". The mutation gate is on, and skips a caller
+      # with no weekly-mutation.yml; the other three are off until set.
+      # mutation-max-age-days: 8 # the oldest a green weekly mutation run may be
+      # run-benchmarks: true # test:perf, then each bench suite with cosyte-bench
+      # run-package-checks: true # the two pre-publish layers on the packed tarball
+      # run-tarball-samples: true # the docs samples against the installed tarball
     # npm authenticates by trusted publishing (OIDC), so there is no npm token to pass. The package's
     # trusted-publisher entry on npmjs.com names THIS repository and `release.yml` (this file),
     # never cosyte/.github. See "How a release authenticates to npm".
@@ -418,11 +424,10 @@ opts in, so a caller that changes nothing sees two new skipped checks, `ci / cov
 | `ci.yml`, `run-coverage-ratchet: true` | `coverage-ratchet` | every event | `pnpm test:coverage`, then `cosyte-ratchet check --skip mutation`, with `--base origin/<base branch>` on a pull request |
 | `ci.yml`, `run-mutation: true` | `mutation` | a pull request | `cosyte-mutate changed --base origin/<base branch>`, then `cosyte-ratchet check --skip coverage --base origin/<base branch>` |
 | `nightly-properties.yml` | `properties` | the caller's schedule | the caller's `test-cmd` (default `pnpm test`) with `COSYTE_PROPERTY_RUNS` set to `property-runs` (default `10000`) |
-| `weekly-mutation.yml` | `mutation` | the caller's schedule | the caller's `mutate-cmd` (default `pnpm exec cosyte-mutate full`), then `cosyte-ratchet check --skip coverage` |
+| `weekly-mutation.yml` | `shard` (one per shard), then `mutation` | the caller's schedule | on each shard, the caller's `mutate-cmd` (default `pnpm exec cosyte-mutate full`) over its share of the files; then the shards merged, and `cosyte-ratchet check --skip coverage` |
 
-The tools are not on npm yet: `cosyte-ratchet` ships in `@cosyte/script-utils` and `cosyte-mutate`
-in `@cosyte/vitest-config`, both released from cosyte/config once the owner approves the release.
-So no library can turn these on today. After that release, a library adopts the standard in its own
+The tools are released from cosyte/config: `cosyte-ratchet` in `@cosyte/script-utils` and
+`cosyte-mutate` in `@cosyte/vitest-config`. A library adopts the standard in its own
 repository (decision 0004, "How a repository adopts it"): it adds both packages and StrykerJS to its
 devDependencies, adds a `stryker.config.mjs`, runs a full mutation run, writes `quality-floor.json`
 with `cosyte-ratchet raise`, and then opts in here:
@@ -450,12 +455,21 @@ jobs:
 ```yaml
 # <parser>/.github/workflows/weekly-mutation.yml
 on:
-  schedule: [{ cron: "43 4 * * 0" }]
+  # Twice a week, so each shard's cache entry is read before GitHub evicts it (7 days unread).
+  schedule: [{ cron: "43 4 * * 0" }, { cron: "43 4 * * 3" }]
   workflow_dispatch: {}
 jobs:
   mutation:
     uses: cosyte/.github/.github/workflows/weekly-mutation.yml@workflows-YYYY-MM-DD-COMMIT
+    # with:
+    #   shard-count: 8 # the default; 1 to 16 parallel jobs
 ```
+
+**`ci / mutation` is meant to become a required check.** Once a library has turned `run-mutation`
+on and its changed-files runs pass, its ruleset should require `ci / mutation`, so no pull request
+merges with a surviving mutant in the code it changed. It is skipped on every event but a pull
+request, which is the one event a ruleset gates. Which contexts a library requires is set in its own
+ruleset, not here.
 
 How they run:
 
@@ -473,6 +487,7 @@ How they run:
   each printed pair once with the test and the property that printed it, writes them to the summary
   and to `seeds.txt`, and keeps the log and `seeds.txt` as the `property-run` artifact for 30 days. A
   depth that is not a whole number of cases is refused before the suite starts.
+- **Sharded and incremental.** See [The sharded weekly run](#the-sharded-weekly-run).
 - **Never a commit.** The weekly run has `contents: read` and keeps no credential. A score below its
   floor turns it red; a score above it changes nothing. Raising a floor is a pull request a person or
   an agent opens after `cosyte-ratchet raise --skip coverage`.
@@ -484,8 +499,11 @@ What we proved here, and what we could not. `test/testing-standard-jobs.test.mjs
 script these jobs add against a stub `pnpm`: the arguments each hands the tools, the base ref, the
 summary, the seed recording, and that every failure reaches the job's exit status.
 `self-check.yml`'s `systems` job turns both `ci.yml` jobs on, its `nightly-properties` and
-`weekly-mutation` jobs run the two reusables, all against `test/fixtures/ci-caller/`, and
-`quality-artifacts` checks what the two scheduled runs kept. Because the real tools are not on npm,
+`weekly-mutation` jobs run the two reusables (the weekly one on two shards), its
+`weekly-mutation-incremental` job runs the weekly one again after the first, all against
+`test/fixtures/ci-caller/`, and `quality-artifacts` checks what the scheduled runs kept: the merged
+report, a note from each shard, and, from the second weekly run, that each shard started from the
+first run's cached results. Because the real tools are not on npm,
 the fixture links `test/fixtures/quality-stubs/`: stand-ins for `cosyte-mutate` and
 `cosyte-ratchet` that accept only the command lines the real tools accept, refuse `raise`, check that
 the base ref has a merge base and that each report the real tool would read is on disk, and judge
@@ -495,6 +513,41 @@ real tools pass its tree on a hosted runner, whether a changed-files mutation ru
 budget for a pull request (a large changed file is mutated whole), and whether a full mutation score
 is steady enough week to week for an exact comparison (decision 0004 measured it moving 0.36
 points between two runs of unchanged code, and leaves a tolerance to the owner).
+
+### The sharded weekly run
+
+A full mutation run of a large library takes hours: hl7's first full run counted 11,422 mutants,
+estimated at 45 minutes to 3.5 hours on 16 cores, so roughly 3 to 14 hours on one 4-core hosted
+runner, past what one job may take. So `weekly-mutation.yml` splits it.
+
+- **Shards.** The `shard` job is a matrix of 1 to `shard-count` (default 8, at most 16). Each shard
+  runs the caller's `mutate-cmd` with `COSYTE_MUTATE_SHARD=<k>/<n>` and
+  `COSYTE_MUTATE_INCREMENTAL_FILE=reports/mutation/incremental.json` set; `cosyte-mutate full`
+  mutates only its share of the files the StrykerJS config names and writes
+  `reports/mutation/shard-<k>-of-<n>.json` in each package it ran in. Variables, not arguments, so
+  they reach every `cosyte-mutate` a caller's command starts, in a repository with several packages
+  too. Each shard's job is bounded at 340 minutes, inside GitHub's 6 hour limit, and every shard runs
+  to its end when another fails (`fail-fast: false`).
+- **The cache.** Before its run each shard restores the newest cache entry for its own shard of the
+  same count (key prefix `cosyte-mutation-v1-<working-directory>-<count>-<shard>-`), and after it
+  saves its incremental files under a key unique to the run, even when the run failed. A scheduled
+  run is on the default branch, so its entries are the default branch's latest results, and a run on
+  another branch reads its own branch's entries first and the default branch's after. StrykerJS then
+  retests only the mutants whose code or tests changed. Each shard says in its summary whether it
+  started from earlier results. Changing `shard-count` starts every shard from nothing once.
+- **The merge.** The `mutation` job runs after every shard, even a failed one, and fails at once if
+  any shard did not succeed; a skipped job would satisfy a required context. It then joins each
+  package's shard reports into its `reports/mutation/mutation.json` with
+  `scripts/mutation-shards.mjs` (checked out at the workflow's own commit), refusing a package that
+  is missing a shard or a file that two shards reported, and runs `cosyte-ratchet check --skip
+  coverage` exactly as the unsharded run did: red below a floor, never a commit. The merged report,
+  the ratchet's report and the shard notes are the `mutation-report` artifact.
+
+**What the real tool still needs.** `cosyte-mutate` in `@cosyte/vitest-config` 0.1.4 does not read
+the two variables yet: it runs everything and writes `mutation.json`, and each shard then fails,
+saying that its tool does not shard. The workflow side is done and proved against the stand-in in
+`test/fixtures/quality-stubs/`, which reads them. A library adopts the sharded run once a
+`cosyte-mutate` that shards is released from cosyte/config.
 
 ## The performance standard's jobs
 
@@ -1582,6 +1635,58 @@ weather. That stays three-valued and warns, exactly as it does post-publish.
   seeding files inside another gate's scan roots. Belt and braces: layer 2 refuses a tarball that
   contains the tooling checkout (`tooling-in-tarball`) rather than trusting every caller's `files`
   field to keep it out.
+
+## The release gates
+
+`release.yml` runs four gates before anything can publish, and attaches an SBOM to every GitHub
+release. **No full mutation run happens anywhere in `release.yml`**: one takes hours, so the release
+reads the latest weekly result instead.
+
+The gates are steps of the `version` job, after its `Verify` ladder, and run only on the run that owes
+a publish. A gate that refuses fails `version`, and `release` `needs:` it and never opts back in after
+a failure, so the refusal stops the publish before anyone is asked to approve it; `version` holds no
+`id-token: write`, so nothing a gate runs can publish. A refused gate leaves the tag the version job
+made, as a red `Verify` does: re-run the run's failed jobs once the cause is gone.
+
+| Gate | Input | On by default | Skips, saying so by name, when |
+|---|---|---|---|
+| The latest weekly mutation result | `mutation-workflow` (default `weekly-mutation.yml`), `mutation-max-age-days` (default 8) | yes | the caller has no `.github/workflows/<mutation-workflow>` |
+| The benchmarks and the scaling gate | `run-benchmarks`, with `bench-suites` and `bench-target` | no | `run-benchmarks` is off |
+| The package checks on the packed tarball | `run-package-checks` (reads `expect-unpublished-deps`) | no | `run-package-checks` is off |
+| The docs samples against the packed tarball | `run-tarball-samples`, with `docs-dir` (default `docs-content`) | no | `run-tarball-samples` is off, or the docs directory or its samples are absent |
+
+- **Mutation** (`scripts/mutation-gate.mjs`). Reads, through the GitHub API with the automatic
+  token at `actions: read` (which the `version` job already holds), the latest completed run of the
+  caller's weekly mutation workflow on its default branch. It refuses when that run did not succeed
+  or finished more than `mutation-max-age-days` ago, and when the workflow has no completed run on
+  the default branch. It re-runs nothing. Whether the caller has the workflow is read from the
+  checkout being released, not the API, so a token that cannot read workflows fails closed instead
+  of reading as "no workflow". A result it cannot read fails closed.
+- **Benchmarks.** Runs the caller's `test:perf` (the scaling gate from `@cosyte/test-utils/perf`),
+  which must pass, then each bench suite (`bench-suites`, or every `bench/*.bench.mjs` and
+  `bench/*.bench.ts`) with `cosyte-bench run --target <bench-target>` against the build, and checks
+  each results file with `cosyte-bench check`. A suite that cannot measure fails; with no suite the
+  scaling gate runs alone. The results are the `release-benchmarks` artifact. Turned on with no
+  `test:perf` script, it fails and says so.
+- **Package checks.** The two pre-publish layers `ci.yml`'s `prepublish` job runs, on the commit being
+  released: the manifest names only specifiers a registry can resolve; then `npm pack`, every file
+  the manifest declares (each `exports` target included) is in the tarball, it installs into a clean
+  directory, and every entry point loads by name. That the types resolve for every `exports` entry
+  is `pnpm attw` in `Verify`, which every caller runs on a packed tarball already.
+- **Docs samples** (`scripts/tarball-samples.mjs`). Packs the tree with `npm pack`, installs that one
+  tarball into a clean directory that resolves nothing else, and runs every TypeScript and JavaScript
+  sample on the pages under `docs-dir` (the generated `api/` folder left out) there, importing the
+  package by its published name. A `// =>` line is an assertion, a `throws` sample must throw, and a
+  `no-run <reason>` sample is listed and not run. TypeScript runs with Node's type stripping and is not
+  type-checked here; the library's own sample suite type-checks it.
+- **The SBOM** (`scripts/sbom.mjs`). A CycloneDX 1.5 JSON file, `sbom.cdx.json`, naming the package
+  and every package in its installed production tree, with versions, purls and declared licenses.
+  The `release` job writes it before the publish, so an SBOM that cannot be written stops the
+  release, and `finalize` writes it from the release commit; `github-release.mjs` attaches it in the
+  call that creates the release, since an immutable release takes no asset later. The same tree gives
+  the same bytes, so a re-run finds the attached one the same. It is on for every caller.
+- **Provenance.** Unchanged: the publish step asks npm for provenance on a public caller, and the
+  `release` job holds `id-token: write`.
 
 ## Direct publishing, and staging on request
 

@@ -40,9 +40,10 @@ function repo({ floor = true } = {}) {
   return { root, base: git('rev-parse', 'main') };
 }
 
-/** Run a stand-in's bin in `cwd`. */
-function stub(name, args, cwd) {
-  return spawnSync(process.execPath, [join(STUBS, `${name}.mjs`), ...args], { cwd, encoding: 'utf8' });
+/** Run a stand-in's bin in `cwd`, with `env` added to this process's environment. */
+function stub(name, args, cwd, env = {}) {
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COSYTE_MUTATE_')));
+  return spawnSync(process.execPath, [join(STUBS, `${name}.mjs`), ...args], { cwd, encoding: 'utf8', env: { ...clean, ...env } });
 }
 
 /** Write the coverage reports a coverage run leaves. */
@@ -70,6 +71,56 @@ test('cosyte-mutate full writes the full report', () => {
   const run = stub('cosyte-mutate', ['full'], root);
   assert.equal(run.status, 0, run.stderr);
   assert.ok(existsSync(join(root, 'reports/mutation/mutation.json')));
+});
+
+// THE SHARD CONTRACT `weekly-mutation.yml` hands a sharding `cosyte-mutate`: COSYTE_MUTATE_SHARD
+// names the share and the report it writes, COSYTE_MUTATE_INCREMENTAL_FILE where earlier results
+// are read and the new ones written. The stand-in splits the fixture's source files by a hash of
+// their path, so a file stays in its shard from run to run, and every shard writes a report, an empty
+// one when its share is empty.
+function sources(root, names) {
+  for (const name of names) {
+    mkdirSync(dirname(join(root, 'src', name)), { recursive: true });
+    writeFileSync(join(root, 'src', name), 'export {};\n');
+  }
+}
+
+test('cosyte-mutate full with a shard writes that shard\'s report, and the shards share the files between them', () => {
+  const { root } = repo();
+  sources(root, ['a.mjs', 'b.mjs', 'c.mjs', 'deep/d.mjs', 'e.mjs']);
+  const seen = [];
+  for (const shard of ['1/3', '2/3', '3/3']) {
+    const run = stub('cosyte-mutate', ['full'], root, { COSYTE_MUTATE_SHARD: shard });
+    assert.equal(run.status, 0, run.stderr);
+    const [k, n] = shard.split('/');
+    const report = JSON.parse(readFileSync(join(root, `reports/mutation/shard-${k}-of-${n}.json`), 'utf8'));
+    seen.push(...Object.keys(report.files));
+    for (const file of Object.values(report.files)) assert.deepEqual(file.mutants.map((m) => m.status), ['Killed']);
+  }
+  assert.deepEqual(seen.sort(), ['src/a.mjs', 'src/b.mjs', 'src/c.mjs', 'src/deep/d.mjs', 'src/e.mjs']);
+  assert.equal(existsSync(join(root, 'reports/mutation/mutation.json')), false, 'a shard never writes the full report');
+  const again = stub('cosyte-mutate', ['full'], root, { COSYTE_MUTATE_SHARD: '2/3' });
+  assert.equal(again.status, 0);
+  assert.match(again.stdout, /^cosyte-mutate full \(a stand-in\): shard 2 of 3, \d+ file\(s\); it mutates nothing$/m);
+});
+
+test('cosyte-mutate full reads and writes the incremental file it is handed', () => {
+  const { root } = repo();
+  sources(root, ['a.mjs']);
+  const env = { COSYTE_MUTATE_SHARD: '1/1', COSYTE_MUTATE_INCREMENTAL_FILE: 'reports/mutation/incremental.json' };
+  const first = stub('cosyte-mutate', ['full'], root, env);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /^ {2}incremental: no earlier results at reports\/mutation\/incremental\.json$/m);
+  assert.ok(existsSync(join(root, 'reports/mutation/incremental.json')));
+  const second = stub('cosyte-mutate', ['full'], root, env);
+  assert.match(second.stdout, /^ {2}incremental: read 1 earlier result\(s\) from reports\/mutation\/incremental\.json$/m);
+});
+
+test('cosyte-mutate refuses a shard it cannot be', () => {
+  const { root } = repo();
+  for (const shard of ['0/2', '3/2', '1', 'a/b', '1/0']) {
+    assert.equal(stub('cosyte-mutate', ['full'], root, { COSYTE_MUTATE_SHARD: shard }).status, 2, shard);
+  }
 });
 
 test('cosyte-mutate refuses what the real one refuses, and a base with no merge base', () => {
