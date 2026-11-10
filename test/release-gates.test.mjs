@@ -250,7 +250,7 @@ test('release writes the SBOM before the publish, and both of its release steps 
   const write = stepIndex(RELEASE, 'Write the SBOM the GitHub release carries');
   assert.ok(write > stepIndex(RELEASE, 'Verify'));
   assert.ok(write < stepIndex(RELEASE, 'Publish to npm'), 'an SBOM that cannot be written stops the publish');
-  assert.match(RELEASE.steps[write].body, new RegExp(`node \\.cosyte-release-tooling/scripts/sbom\\.mjs --repo \\. --out ${SBOM_PATH.replace(/\$/g, '\\$')}`));
+  assert.ok(RELEASE.steps[write].body.includes(`node .cosyte-release-tooling/scripts/sbom.mjs --repo . --out ${SBOM_PATH}`), RELEASE.steps[write].body);
   for (const label of ['Publish the GitHub release + dispatch docs rebuild', 'Publish the GitHub release + dispatch docs rebuild, once the staged version is live']) {
     assert.match(stepOf(RELEASE, label).body, /--sbom "\$RUNNER_TEMP\/sbom\/sbom\.cdx\.json"/, label);
   }

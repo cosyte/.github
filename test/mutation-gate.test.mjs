@@ -87,7 +87,7 @@ test('it asks for the latest completed run on the default branch, and passes a f
   ]);
   const result = await checkMutation(base(fetchImpl));
   assert.equal(result.verdict, 'pass', result.message);
-  assert.match(result.message, /https:\/\/github\.com\/example\/lib\/actions\/runs\/42/);
+  assert.ok(result.message.includes('(https://github.com/example/lib/actions/runs/42)'), result.message);
   const runs = new URL(asked.find((a) => a.url.startsWith(RUNS_URL)).url);
   assert.equal(runs.searchParams.get('branch'), 'trunk');
   assert.equal(runs.searchParams.get('status'), 'completed');

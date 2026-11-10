@@ -130,12 +130,13 @@ export function mutate(argv, io) {
       const incremental = io.env.COSYTE_MUTATE_INCREMENTAL_FILE;
       if (incremental !== undefined && incremental !== "") {
         const at = join(io.cwd, incremental);
-        if (existsSync(at)) {
-          const earlier = Object.keys(JSON.parse(readFileSync(at, "utf8")).files ?? {}).length;
-          io.log(`  incremental: read ${earlier} earlier result(s) from ${incremental}`);
-        } else {
-          io.log(`  incremental: no earlier results at ${incremental}`);
+        let earlier = null;
+        try {
+          earlier = Object.keys(JSON.parse(readFileSync(at, "utf8")).files ?? {}).length;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
         }
+        io.log(earlier === null ? `  incremental: no earlier results at ${incremental}` : `  incremental: read ${earlier} earlier result(s) from ${incremental}`);
         mkdirSync(dirname(at), { recursive: true });
         writeFileSync(at, report);
       }
