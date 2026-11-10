@@ -614,32 +614,99 @@ test('with several shards, a mutation.json is never read as a shard report', () 
 });
 
 // THE PROBE: A RUN OF SEVERAL SHARDS CHECKS, IN SECONDS, THAT ITS TOOL SHARDS. Without it a tool that
-// does not shard runs the whole suite on every shard, hours each, and only then fails.
+// does not shard runs the whole suite on every shard, hours each, and only then fails. The probe runs
+// the caller's command as written, once, on a shard no file can be in, so a tool that reads the
+// variable writes an empty shard report and stops, and any other is caught before the full run.
 const STUB_MUTATE = join(REPO, 'test/fixtures/quality-stubs/cosyte-mutate.mjs');
+const EMPTY_SHARD = '8589934592';
+const PROBE_REPORT = `reports/mutation/shard-${EMPTY_SHARD}-of-${EMPTY_SHARD}.json`;
+// The bound the step sets in its own env, which the first test below reads.
+const PROBE_ENV = { SHARD: '2', SHARD_COUNT: '2', CI: 'true', PROBE_SECONDS: '180' };
 
-test('the probe asks the mutate command for its help and fails at once when it does not name the shard variable', () => {
+/** A tool whose help names the shard variable, and which runs everything whatever the variable says. */
+function namesButIgnores(dir) {
+  const path = join(dir, 'names-but-ignores.mjs');
+  writeFileSync(
+    path,
+    [
+      "import { mkdirSync, writeFileSync } from 'node:fs';",
+      "if (process.argv.includes('--help')) {",
+      "  process.stdout.write('cosyte-mutate: run StrykerJS with the shared config, over everything or over a change.\\nCOSYTE_MUTATE_SHARD=<k>/<n>\\n');",
+      '} else {',
+      "  mkdirSync('reports/mutation', { recursive: true });",
+      "  writeFileSync('reports/mutation/mutation.json', '{}\\n');",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  return path;
+}
+
+test('the probe runs the mutate command once, on a shard no file can be in, and passes the stand-in that shards', () => {
   const step = stepNamed(WEEKLY, 'shard', PROBE_STEP);
   assert.match(step, /^ {10}MUTATE_CMD: \$\{\{ inputs\.mutate-cmd \}\}$/m);
-  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { SHARD: '1', SHARD_COUNT: '8', MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
-  assert.equal(run.status, 1, run.stderr + run.stdout);
-  // One call, the help: nothing is mutated.
-  assert.deepEqual(run.calls, ['exec cosyte-mutate full --help']);
-  assert.match(run.stdout, /^::error::the cosyte-mutate this run installed cannot shard: `pnpm exec cosyte-mutate full --help` does not name COSYTE_MUTATE_SHARD\. A run of 8 shards needs @cosyte\/vitest-config 0\.1\.5 or later; update it, or set shard-count: 1/m);
-});
-
-test('the probe passes the stand-in that shards and refuses the stand-in of 0.1.4, under CI as on a runner', () => {
-  const env = { SHARD: '2', SHARD_COUNT: '2', CI: 'true' };
-  const shards = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...env, MUTATE_CMD: `node '${STUB_MUTATE}' full` } });
+  assert.match(step, /^ {10}PROBE_SECONDS: 180$/m);
+  const seen =runStep(WEEKLY, 'shard', PROBE_STEP, {
+    env: {
+      ...PROBE_ENV,
+      COSYTE_MUTATE_INCREMENTAL_FILE: 'reports/mutation/incremental.json',
+      MUTATE_CMD: `pnpm exec cosyte-mutate full; printf '%s|%s\\n' "$COSYTE_MUTATE_SHARD" "\${COSYTE_MUTATE_INCREMENTAL_FILE-unset}" > seen.txt; mkdir -p reports/mutation; echo '{}' > ${PROBE_REPORT}`,
+    },
+  });
+  assert.equal(seen.status, 0, seen.stderr + seen.stdout);
+  // One call, the command as written: no `--help`, and the incremental file is not the probe's.
+  assert.deepEqual(seen.calls, ['exec cosyte-mutate full']);
+  assert.equal(readFileSync(join(seen.cwd, 'seen.txt'), 'utf8'), `${EMPTY_SHARD}/${EMPTY_SHARD}|unset\n`);
+  assert.equal(existsSync(join(seen.cwd, PROBE_REPORT)), false, 'the probe leaves no report behind');
+  const shards = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: `node '${STUB_MUTATE}' full` } });
   assert.equal(shards.status, 0, shards.stderr + shards.stdout);
   assert.match(shards.stdout, /^cosyte-mutate can shard: /m);
-  const old = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...env, MUTATE_CMD: `COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full` } });
+  assert.equal(existsSync(join(shards.cwd, 'reports/mutation/mutation.json')), false);
+});
+
+test('the probe never runs a full mutation for a compound mutate command', () => {
+  // Before, `--help` went at the end of the line, so only the last command saw it and the first
+  // ran everything inside the probe.
+  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: `node '${STUB_MUTATE}' full && node '${STUB_MUTATE}' full` } });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal(existsSync(join(run.cwd, 'reports/mutation/mutation.json')), false, 'a full run happened inside the probe');
+});
+
+test('the probe fails a tool whose help names the shard variable but which ignores it, before the full run', () => {
+  const root = mkdtempSync(join(tmpdir(), 'weekly-probe-'));
+  const tool = namesButIgnores(root);
+  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: `node '${tool}' full` } });
+  assert.equal(run.status, 1, run.stderr + run.stdout);
+  assert.match(run.stdout, /^::error::the cosyte-mutate this run installed cannot shard: .*wrote reports\/mutation\/mutation\.json/m);
+  assert.match(run.stdout, /needs @cosyte\/vitest-config 0\.1\.5 or later; update it, or set shard-count: 1/);
+});
+
+test('the probe refuses the stand-in of 0.1.4, alone or as one package of several', () => {
+  const old = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: `COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full` } });
   assert.equal(old.status, 1, old.stderr + old.stdout);
   assert.match(old.stdout, /needs @cosyte\/vitest-config 0\.1\.5 or later/);
-  // Several packages: every help printed must name the variable, so one old package fails the probe.
   const mixed = runStep(WEEKLY, 'shard', PROBE_STEP, {
-    env: { ...env, MUTATE_CMD: `node '${STUB_MUTATE}' full --help; COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full` },
+    env: { ...PROBE_ENV, MUTATE_CMD: `mkdir -p a b; (cd a && node '${STUB_MUTATE}' full); (cd b && COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full)` },
   });
   assert.equal(mixed.status, 1, mixed.stderr + mixed.stdout);
+  assert.match(mixed.stdout, /b\/reports\/mutation\/mutation\.json/);
+});
+
+test('the probe stops a command that does not finish an empty shard in its time, and fails it', () => {
+  const started = Date.now();
+  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, PROBE_SECONDS: '1', MUTATE_CMD: 'sleep 30' } });
+  assert.equal(run.status, 1, run.stderr + run.stdout);
+  assert.ok(Date.now() - started < 15000, 'the probe waited for the command');
+  assert.match(run.stdout, /^::error::the cosyte-mutate this run installed cannot shard: `sleep 30` did not finish a shard that holds no file in 1 seconds/m);
+});
+
+test('the probe fails a command that fails, or that writes no shard report', () => {
+  const failed = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full' }, pnpmExit: 2 });
+  assert.equal(failed.status, 1, failed.stderr + failed.stdout);
+  assert.match(failed.stdout, /^::error::`pnpm exec cosyte-mutate full` exited 2 on a shard that holds no file/m);
+  const silent = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...PROBE_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
+  assert.equal(silent.status, 1, silent.stderr + silent.stdout);
+  assert.match(silent.stdout, /^::error::the cosyte-mutate this run installed cannot shard: `pnpm exec cosyte-mutate full` wrote no reports\/mutation\/shard-8589934592-of-8589934592\.json/m);
 });
 
 test('with one shard the probe asks nothing, since any cosyte-mutate will do', () => {

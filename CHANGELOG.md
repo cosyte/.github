@@ -17,6 +17,22 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `weekly-mutation.yml`'s check that `cosyte-mutate` can shard no longer runs `<mutate-cmd> --help`.
+  It runs `mutate-cmd` as written, once, with `COSYTE_MUTATE_SHARD` naming a shard no file can be in,
+  and fails, saying that sharding needs `@cosyte/vitest-config` 0.1.5 or later, when the command
+  wrote a `mutation.json`, is still running after 180 seconds (it is stopped), exits non-zero, or
+  wrote no shard report; the empty shard reports it leaves are deleted. Before, `--help` went only
+  at the end of the line, so a compound `mutate-cmd` (`a && b`) ran a full mutation inside the check,
+  and a tool whose help named the variable but which ignored it passed the check and was caught only
+  after the full run. Inputs and their defaults, job ids, outputs, secrets and permissions are
+  unchanged. **Act on:** with more than one shard, the check now runs your `mutate-cmd` once more
+  than before, for seconds with a tool that shards; a command that does more than mutate (a build
+  before it, say) does that part in the check too.
+
+## workflows-2026-11-10-27aa79969b26
+
+2026-11-10. Act on: nothing, against `workflows-2026-11-10-ab87aabbbafc`.
+
 - `weekly-mutation.yml` can be adopted before the tool that shards is on npm (README.md, "The
   sharded weekly run"). With more than one shard, each shard has a new step right after the install,
   "Check that cosyte-mutate can shard", which runs `<mutate-cmd> --help` and fails within seconds

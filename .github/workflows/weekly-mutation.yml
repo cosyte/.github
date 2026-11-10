@@ -37,7 +37,7 @@ name: Weekly mutation
 # several packages too. A shard that leaves no shard report fails and says why: a `cosyte-mutate`
 # that does not read them runs everything and writes `mutation.json`, and merging that once per
 # shard would be a wrong report. Sharding needs @cosyte/vitest-config 0.1.5 or later, and with more
-# than one shard each shard checks that first, in seconds, from the tool's `--help`.
+# than one shard each shard checks that first, by running the command on a shard that holds no file.
 # WITH `shard-count: 1` ANY `cosyte-mutate` WILL DO: the `mutation.json` a tool that does not shard
 # writes is the whole report, so it is read as the report of shard 1 of 1. That tool keeps no
 # incremental results, so each such run is a full one.
@@ -121,31 +121,61 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # A RUN OF SEVERAL SHARDS NEEDS A `cosyte-mutate` THAT SHARDS, CHECKED IN SECONDS. One that does
       # not runs the whole suite on every shard, hours each, before the shard can see that it wrote no
-      # shard report. So each shard first runs the caller's command with `--help` after it, which the
-      # real tool answers wherever it sits on the line and without running anything, and fails unless
-      # every help it printed names COSYTE_MUTATE_SHARD: the help names it from @cosyte/vitest-config
-      # 0.1.5, and a command that runs several packages prints one help each. `CI=false`, since the
-      # tool refuses `--help` under CI with exit 2 and the help on stderr; the exit status is not read,
-      # only the text. With one shard any `cosyte-mutate` will do, so nothing is asked.
+      # shard report. So each shard first runs the caller's command as written, once, with
+      # COSYTE_MUTATE_SHARD naming a shard no file can be in: the tool puts a file in shard k of n when
+      # the file's 32-bit hash, mod n, is k - 1, and with n = 2^33 no hash reaches n - 1. A tool that
+      # reads the variable writes an empty shard report there and stops, in seconds. One that does not
+      # (0.1.4, or one whose help names the variable but which ignores it) runs everything instead, so
+      # the probe fails when it wrote a `mutation.json`, and stops it, and fails, when it is still
+      # running after PROBE_SECONDS. A compound command (`a && b`) runs whole, every part with the
+      # variable set, so no part of it mutates everything for longer than that bound. The probe's
+      # reports are deleted after it, and no incremental file is named, so it leaves nothing the run
+      # reads. With one shard any `cosyte-mutate` will do, so nothing is asked.
       - name: Check that cosyte-mutate can shard
         shell: bash
         env:
           MUTATE_CMD: ${{ inputs.mutate-cmd }}
+          PROBE_SECONDS: 180
         run: |
           set -euo pipefail
           if [ "${SHARD_COUNT}" = "1" ]; then
             echo "one shard: any cosyte-mutate will do, since a mutation.json it writes is read as the report of shard 1 of 1"
             exit 0
           fi
-          help="$(CI=false timeout 120 bash -c "${MUTATE_CMD} --help" 2>&1)" || true
-          helps="$(grep -c '^cosyte-mutate: run StrykerJS' <<< "${help}" || true)"
-          shards="$(grep -c '^COSYTE_MUTATE_SHARD=' <<< "${help}" || true)"
-          if [ "${shards}" -eq 0 ] || [ "${shards}" -lt "${helps}" ]; then
-            printf '%s\n' "${help}"
-            echo "::error::the cosyte-mutate this run installed cannot shard: \`${MUTATE_CMD} --help\` does not name COSYTE_MUTATE_SHARD. A run of ${SHARD_COUNT} shards needs @cosyte/vitest-config 0.1.5 or later; update it, or set shard-count: 1, which runs the whole suite on one runner with any version."
+          empty="8589934592"
+          name="shard-${empty}-of-${empty}"
+          update="A run of ${SHARD_COUNT} shards needs @cosyte/vitest-config 0.1.5 or later; update it, or set shard-count: 1, which runs the whole suite on one runner with any version."
+          started="${RUNNER_TEMP}/mutation-probe-started"
+          touch "${started}"
+          status=0
+          COSYTE_MUTATE_SHARD="${empty}/${empty}" timeout --kill-after=10 "${PROBE_SECONDS}" \
+            env -u COSYTE_MUTATE_INCREMENTAL_FILE bash -c "${MUTATE_CMD}" || status=$?
+          reports=()
+          while IFS= read -r -d '' file; do
+            reports+=("${file#./}")
+          done < <(find . -name node_modules -prune -o -type f -path "*/reports/mutation/${name}.json" -newer "${started}" -print0)
+          full=()
+          while IFS= read -r -d '' file; do
+            full+=("${file#./}")
+          done < <(find . -name node_modules -prune -o -type f -path "*/reports/mutation/mutation.json" -newer "${started}" -print0)
+          if [ "${#reports[@]}" -gt 0 ]; then rm -f -- "${reports[@]}"; fi
+          if [ "${status}" -eq 124 ] || [ "${status}" -eq 137 ]; then
+            echo "::error::the cosyte-mutate this run installed cannot shard: \`${MUTATE_CMD}\` did not finish a shard that holds no file in ${PROBE_SECONDS} seconds, and was stopped. A cosyte-mutate that reads COSYTE_MUTATE_SHARD finishes one in seconds; one that does not mutates everything. ${update}"
             exit 1
           fi
-          echo "cosyte-mutate can shard: \`${MUTATE_CMD} --help\` names COSYTE_MUTATE_SHARD"
+          if [ "${#full[@]}" -gt 0 ]; then
+            echo "::error::the cosyte-mutate this run installed cannot shard: on a shard that holds no file, \`${MUTATE_CMD}\` wrote ${full[*]}, the report of a run over everything, so it does not read COSYTE_MUTATE_SHARD. ${update}"
+            exit 1
+          fi
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::\`${MUTATE_CMD}\` exited ${status} on a shard that holds no file, before the run; its output above says why"
+            exit 1
+          fi
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo "::error::the cosyte-mutate this run installed cannot shard: \`${MUTATE_CMD}\` wrote no reports/mutation/${name}.json for a shard that holds no file. ${update}"
+            exit 1
+          fi
+          echo "cosyte-mutate can shard: \`${MUTATE_CMD}\` wrote an empty report for a shard that holds no file, in ${#reports[@]} package(s)"
       # THE NEWEST RESULTS FOR THIS SHARD, from an earlier run. The key is unique to the run, so it
       # never matches across runs; the prefix finds the newest entry, this branch's first, then the
       # default branch's. A miss is a full run of this shard, never a failure.
