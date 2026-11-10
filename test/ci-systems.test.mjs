@@ -225,7 +225,7 @@ test('the line-ending step turns a CRLF checkout into LF, and leaves a file whos
   writeFileSync(join(source, 'run.bat'), 'one\ntwo\n');
   git(source, 'init', '-q');
   git(source, '-c', 'core.autocrlf=false', 'add', '.');
-  git(source, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
+  git(source, '-c', 'user.name=t', '-c', 'user.email=t', 'commit', '-q', '-m', 'fixture');
   const checkout = (name) => {
     git(root, 'clone', '-q', source, name);
     return Object.fromEntries(['plain.txt', 'docs/page.md', 'run.bat'].map((file) => [file, readFileSync(join(root, name, file), 'utf8')]));
