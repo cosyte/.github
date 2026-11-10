@@ -1398,6 +1398,9 @@ const CONVERGED_ON_THE_SHARED_READER = [
   // Evaluates the version, release and finalize jobs' conditions and outputs, read through the
   // shared reader, over what the real scripts wrote while `main` moved under a release.
   'release-tag.test.mjs',
+  // Reads each job's setup-node and the version job's `node-version` check through the shared
+  // reader, and runs that check's own script.
+  'release-node-version.test.mjs',
   'trusted-publishing.test.mjs',
   'workflow-sha.test.mjs',
 ];
@@ -2619,9 +2622,10 @@ function parseCallContract(text) {
 test('AC11: no caller has to change anything, so every input and secret is the one it already had', () => {
   const { inputs, secrets } = parseCallContract(readWorkflow(WORKFLOW, readFileSync));
 
-  // `promotion-window-minutes` and `publish-mode` are the two inputs added since, and the loop below
-  // is what admits them: optional, with a default, so no caller has to pass either. `publish-mode`'s
-  // default is the arm every caller gets, and it is `direct`: a release is live when its run ends.
+  // `promotion-window-minutes`, `publish-mode` and `node-version` are the inputs added since, and the
+  // loop below is what admits them: optional, with a default, so no caller has to pass any.
+  // `publish-mode`'s default is the arm every caller gets, and it is `direct`: a release is live when
+  // its run ends. `node-version`'s is empty, which keeps every job on the Node line it ran on before.
   assert.deepEqual(Object.keys(inputs), [
     'package-name',
     'dispatch-docs',
@@ -2629,11 +2633,14 @@ test('AC11: no caller has to change anything, so every input and secret is the o
     'expect-unpublished-deps',
     'promotion-window-minutes',
     'publish-mode',
+    'node-version',
   ]);
   assert.equal(inputs['promotion-window-minutes'].type, 'number');
   assert.equal(inputs['promotion-window-minutes'].default, '120');
   assert.equal(inputs['publish-mode'].type, 'string');
   assert.equal(inputs['publish-mode'].default, '"direct"');
+  assert.equal(inputs['node-version'].type, 'string');
+  assert.equal(inputs['node-version'].default, '""');
   // `NPM_TOKEN` IS GONE, AND REMOVING A DECLARED SECRET ASKS NOTHING OF A CALLER THAT PASSES
   // `secrets: inherit`, which names none. Every publish authenticates through npm trusted publishing.
   assert.deepEqual(Object.keys(secrets), ['DOCS_REPO_DISPATCH_TOKEN', 'RELEASE_PR_TOKEN']);
