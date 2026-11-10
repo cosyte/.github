@@ -13,8 +13,9 @@
 //
 // ▶ THE SET THIS FILE QUANTIFIES OVER IS ENUMERATED, NEVER GLOBBED. A "gate reusable" is a
 //   `workflow_call` file whose job runs a caller-supplied scan command and whose conclusion is that
-//   command's exit status. `.github/workflows/` also holds six reusables that are not gates
-//   (`ci.yml`, `codeql.yml`, `drift-check.yml`, `nightly-fuzz.yml`, `release.yml`, `scorecard.yml`)
+//   command's exit status. `.github/workflows/` also holds reusables that are not gates
+//   (`ci.yml`, `codeql.yml`, `drift-check.yml`, `nightly-fuzz.yml`, `nightly-properties.yml`,
+//   `release.yml`, `scorecard.yml`, `weekly-mutation.yml`)
 //   and this repository's own `no-emdash.yml`, which no caller resolves. A sweep over
 //   `.github/workflows/*.yml` would refuse `ci.yml` for declaring a job id outside the three
 //   contexts below and go red on arrival, so the four files are named here and a fifth gate is

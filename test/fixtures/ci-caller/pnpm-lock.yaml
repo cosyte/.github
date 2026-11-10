@@ -11,6 +11,9 @@ importers:
       '@cosyte/script-utils':
         specifier: 0.1.8
         version: 0.1.8
+      cosyte-quality-stubs:
+        specifier: link:../quality-stubs
+        version: link:../quality-stubs
 
 packages:
 

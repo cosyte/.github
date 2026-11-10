@@ -16,6 +16,12 @@
 //                 failing to find a planted, synthetic SSN shape
 //   test          a run on a system other than the one the runner says it is, and a source module
 //                 that does not load
+//   coverage      the test verb failing; on a pass it writes the two reports the coverage ratchet
+//                 reads (`coverage/coverage-summary.json` and `coverage/lcov.info`)
+//   properties    a depth in `COSYTE_PROPERTY_RUNS` that is not a whole number of cases, the
+//                 variable the nightly property run sets; on a pass it prints a planted failure
+//                 report, in colour as vitest prints one, so the nightly run's seed recorder has a
+//                 seed to find
 //   build         writes the dist/ the shared ESM and CJS smoke step loads
 //   attw          a target in the package's exports map with no file behind it
 //
@@ -34,7 +40,7 @@ export const PLATFORM_OF_RUNNER = { Linux: "linux", Windows: "win32", macOS: "da
 export const PLANTED = ".planted";
 
 /** Directories a check never reads: what an install, a build or a plant writes. */
-const SKIPPED = new Set(["node_modules", "dist", PLANTED]);
+const SKIPPED = new Set(["node_modules", "dist", "coverage", "reports", PLANTED]);
 
 /** Every file under `dir`, recursively, as paths relative to `root` with forward slashes. */
 export function filesUnder(root, dir = root) {
@@ -109,6 +115,28 @@ export function judge(name, cleanStatus, plantedStatus, expected = RUNS) {
   return problems;
 }
 
+/** The seed and path of the planted failure report `properties` prints. */
+export const PLANTED_REPLAY = "COSYTE_PROPERTY_SEED=20261110 COSYTE_PROPERTY_PATH=0:1";
+
+/** The failure report the property runners print, as vitest shows it with colour on. */
+export function plantedFailure() {
+  const esc = String.fromCodePoint(0x1b);
+  return [
+    ` ${esc}[41m${esc}[1m FAIL ${esc}[22m${esc}[49m test/planted.test.mjs > a planted property`,
+    `${esc}[31mError: a planted property: property failed after 1 case(s), shrunk 0 time(s).${esc}[39m`,
+    `${esc}[31mReplay exactly: ${esc}[1m${PLANTED_REPLAY}${esc}[22m${esc}[39m`,
+  ];
+}
+
+/** Write the two coverage reports a coverage run leaves, for one fully covered file. */
+function writeCoverage(root) {
+  const full = { total: 1, covered: 1, skipped: 0, pct: 100 };
+  const total = { lines: full, branches: full, functions: full, statements: full };
+  mkdirSync(join(root, "coverage"), { recursive: true });
+  writeFileSync(join(root, "coverage", "coverage-summary.json"), `${JSON.stringify({ total }, null, 2)}\n`);
+  writeFileSync(join(root, "coverage", "lcov.info"), "TN:\nSF:src/index.mjs\nDA:1,1\nLF:1\nLH:1\nend_of_record\n");
+}
+
 /** Load the fixture's source module. */
 async function loadSource(root) {
   return import(pathToFileURL(join(root, "src", "index.mjs")).href);
@@ -170,6 +198,23 @@ export async function run(verb, context) {
     if (source.greeting !== "hello from the CI caller fixture") problems.push("src/index.mjs did not export the greeting");
     return report(verb, problems, "passed", log);
   }
+  if (verb === "coverage") {
+    const tested = await run("test", context);
+    if (tested !== 0) return tested;
+    writeCoverage(root);
+    return report(verb, [], "wrote coverage/coverage-summary.json and coverage/lcov.info", log);
+  }
+  if (verb === "properties") {
+    const runs = env.COSYTE_PROPERTY_RUNS;
+    if (runs === undefined || !/^[1-9]\d*$/.test(runs)) {
+      log(`properties: COSYTE_PROPERTY_RUNS is ${JSON.stringify(runs ?? null)}, not a whole number of cases`);
+      return 1;
+    }
+    log(`properties: ${runs} cases a property`);
+    log("properties: the next lines are a planted failure report, so the nightly run's seed recorder has one to find");
+    for (const line of plantedFailure()) log(line);
+    return 0;
+  }
   if (verb === "build") {
     const source = await loadSource(root);
     mkdirSync(join(root, "dist"), { recursive: true });
@@ -183,7 +228,7 @@ export async function run(verb, context) {
     const missing = missingTargets(root, manifest).map((target) => `${target} is in the exports map but not on disk`);
     return report(verb, missing, "every export target is on disk", log);
   }
-  log(`usage: node tool.mjs <format-check|lint|phi-scan|test|build|attw>, not ${verb}`);
+  log(`usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|build|attw>, not ${verb}`);
   return 2;
 }
 

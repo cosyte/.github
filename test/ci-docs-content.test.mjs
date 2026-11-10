@@ -41,7 +41,7 @@ const EXISTING_INPUTS = [
  * The inputs added after this change, by their own change, all after this one and none re-defaulting
  * anything: `test/ci-systems.test.mjs` owns them.
  */
-const LATER_INPUTS = ['working-directory', 'run-bun', 'bun-version', 'run-deno', 'deno-version'];
+const LATER_INPUTS = ['working-directory', 'run-bun', 'bun-version', 'run-deno', 'deno-version', 'run-coverage-ratchet', 'run-mutation'];
 
 const indentOf = (line) => /^ */.exec(line)[0].length;
 
@@ -103,8 +103,10 @@ test('the job set is unchanged, so this change adds no status check context', ()
     .filter((line) => /^  [a-z][\w-]*:$/.test(line))
     .map((line) => line.trim().replace(':', ''));
   // `bun` and `deno` were ADDED later, by their own change, after these three, and both are skipped
-  // unless a caller opts in: `test/ci-systems.test.mjs` owns them. This change added none.
-  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint', 'bun', 'deno']);
+  // unless a caller opts in: `test/ci-systems.test.mjs` owns them. `coverage-ratchet` and `mutation`
+  // were added after those, the same way: `test/testing-standard-jobs.test.mjs` owns them. This change
+  // added none.
+  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation']);
 });
 
 test('every job-level condition is unchanged, and no job gains `continue-on-error`', () => {

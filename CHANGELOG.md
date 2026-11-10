@@ -17,6 +17,32 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- The testing standard's jobs, all off until a caller opts in (README.md, "The testing standard's
+  jobs"). The tools they run, `cosyte-ratchet` from `@cosyte/script-utils` and `cosyte-mutate` from
+  `@cosyte/vitest-config`, are not on npm yet, so a caller opts in only after that release and after
+  it has added both packages, a `stryker.config.mjs` and a `quality-floor.json`.
+  - `ci.yml` takes two inputs, `run-coverage-ratchet` and `run-mutation`, both `false` by default,
+    which add the jobs `coverage-ratchet` and `mutation`. A caller that passes nothing sees two
+    skipped checks, `ci / coverage-ratchet` and `ci / mutation`, and no other change. To opt in, add
+    `run-coverage-ratchet: true` and `run-mutation: true` under `with:`. `coverage-ratchet` runs
+    `pnpm test:coverage` and then `cosyte-ratchet check --skip mutation`, against
+    `origin/<base branch>` on a pull request; `mutation` runs on a pull request only,
+    `cosyte-mutate changed` and then `cosyte-ratchet check --skip coverage`, both against
+    `origin/<base branch>`. Both run beside `verify`, on `ubuntu-latest` at the first Node line,
+    with the whole history checked out, and write the ratchet's report to the job summary. Require
+    either check only while its input is on, since a skipped job satisfies a required context.
+  - A new reusable, `nightly-properties.yml`, job `properties`: the caller's `test-cmd` (default
+    `pnpm test`) with `COSYTE_PROPERTY_RUNS` at `property-runs` (default `"10000"`), and every
+    replay seed a failing property prints kept in the job summary and the `property-run` artifact.
+    To opt in, call it from a scheduled workflow of the caller's own.
+  - A new reusable, `weekly-mutation.yml`, job `mutation`: the caller's `mutate-cmd` (default
+    `pnpm exec cosyte-mutate full`), then `cosyte-ratchet check --skip coverage`, with each
+    package's score against its floor in the job summary and `reports/mutation/` in the
+    `mutation-report` artifact. A score below its floor is red. It never commits. To opt in, call
+    it from a scheduled workflow of the caller's own.
+  - The `working-directory` input's description now names every job that reads it; its default and
+    behavior are unchanged. Job ids `verify`, `prepublish`, `actionlint`, `bun` and `deno`, every
+    other input and default, secrets and permissions are unchanged.
 - `ci.yml` takes two opt-in inputs, `run-bun` and `run-deno`, both `false` by default, which add the
   jobs `bun` and `deno`: each installs with pnpm from the committed lockfile, as `verify` does, and
   runs the caller's own `test` script under that runtime, `bun --bun run test` and `deno task test`

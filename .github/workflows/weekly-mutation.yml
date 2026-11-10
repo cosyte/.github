@@ -1,0 +1,103 @@
+name: Weekly mutation
+
+# Reusable full mutation run: every file the caller's StrykerJS config names is mutated, and each
+# package's mutation score is reported against its floor in quality-floor.json, in the job summary.
+# Caller (each package's .github/workflows/weekly-mutation.yml):
+#   on:
+#     schedule: [{ cron: "43 4 * * 0" }]
+#     workflow_dispatch: {}
+#   jobs:
+#     mutation:
+#       uses: cosyte/.github/.github/workflows/weekly-mutation.yml@workflows-YYYY-MM-DD-COMMIT
+# IT NEVER COMMITS. A score below its floor turns the run red; a score above it changes nothing here.
+# Raising a floor is a pull request a person or an agent opens, after `cosyte-ratchet raise`.
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
+
+on:
+  workflow_call:
+    inputs:
+      # `cosyte-mutate` is a bin of @cosyte/vitest-config. A repository with several packages runs
+      # each one's full run here, e.g. "pnpm -r exec cosyte-mutate full".
+      mutate-cmd:
+        description: "The command that runs the full mutation run."
+        type: string
+        default: "pnpm exec cosyte-mutate full"
+      node-version:
+        description: "The Node version the job runs on."
+        type: string
+        default: "22"
+      # Where the install, the run and the ratchet start. It exists so `self-check.yml` can run this
+      # workflow against the fixture under `test/`.
+      working-directory:
+        description: "The directory holding package.json and quality-floor.json, relative to the repository root."
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here. A full run of the
+    # PHI-scan engine alone took 10 to 13 minutes on 16 cores (cosyte/config, decision 0004), and a
+    # hosted runner has 4.
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: The full mutation run
+        shell: bash
+        env:
+          MUTATE_CMD: ${{ inputs.mutate-cmd }}
+        run: |
+          set -euo pipefail
+          bash -c "${MUTATE_CMD}"
+      # No `--base`: this judges no change, it compares each package's whole score with its floor.
+      # `--skip coverage`: no coverage run happens here. The ratchet's own exit status is the job's,
+      # so a drop below a floor is red, and its report is on the run's page either way.
+      - name: Each package's mutation score against its floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/mutation
+          report="reports/mutation/ratchet.txt"
+          status=0
+          pnpm exec cosyte-ratchet check --skip coverage > "${report}" 2>&1 || status=$?
+          cat "${report}"
+          {
+            echo "### Mutation score against the floor"
+            echo
+            echo '```text'
+            cat "${report}"
+            echo '```'
+            echo
+            echo "This run never commits. To raise a floor to these scores, run \`cosyte-ratchet raise --skip coverage\` after a full run and open a pull request."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+      - name: Keep the mutation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-report
+          path: ${{ inputs.working-directory }}/reports/mutation/
+          if-no-files-found: warn
+          retention-days: 30

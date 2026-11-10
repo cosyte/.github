@@ -1,0 +1,11 @@
+{
+  "name": "cosyte-quality-stubs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Stand-ins for cosyte-mutate and cosyte-ratchet, so self-check.yml can run the testing standard's jobs before the real tools are on npm. They judge nothing.",
+  "type": "module",
+  "bin": {
+    "cosyte-mutate": "cosyte-mutate.mjs",
+    "cosyte-ratchet": "cosyte-ratchet.mjs"
+  }
+}
