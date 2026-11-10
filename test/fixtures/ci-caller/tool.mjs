@@ -22,7 +22,9 @@
 //                 variable the nightly property run sets; on a pass it prints a planted failure
 //                 report, in colour as vitest prints one, so the nightly run's seed recorder has a
 //                 seed to find
-//   build         writes the dist/ the shared ESM and CJS smoke step loads
+//   perf          the real scaling gate from `@cosyte/test-utils/perf` failing or skipping on a
+//                 linear split, or its self-check failing to see a quadratic one at the same sizes
+//   build        writes the dist/ the shared ESM and CJS smoke step loads
 //   attw          a target in the package's exports map with no file behind it
 //
 // The planted inputs are what make a pass mean something: a checker that cannot run on a system,
@@ -128,6 +130,42 @@ export function plantedFailure() {
   ];
 }
 
+/** A synthetic message of `count` lines, each a few fields, built from its index. */
+export function syntheticLines(index, count) {
+  return Array.from({ length: count }, (_value, line) => `ROW|${index}|${line}|fixture`).join("\n");
+}
+
+/** The fixture's parse for the scaling gate: one forward pass, splitting lines and then fields. */
+export function splitLines(raw) {
+  return raw.split("\n").map((line) => line.split("|"));
+}
+
+/** The same output as `splitLines`, reached by rescanning from the start for every line: quadratic in length. */
+export function regressedSplitLines(raw) {
+  const out = [];
+  let lines = 1;
+  for (let at = raw.indexOf("\n"); at !== -1; at = raw.indexOf("\n", at + 1)) lines++;
+  for (let i = 0; i < lines; i++) {
+    let start = 0;
+    for (let k = 0; k < i; k++) start = raw.indexOf("\n", start) + 1;
+    let end = raw.indexOf("\n", start);
+    if (end === -1) end = raw.length;
+    out.push(raw.slice(start, end).split("|"));
+  }
+  return out;
+}
+
+/** The scaling gate's options for the fixture, the shape of the worked example in `@cosyte/test-utils`. */
+export function scalingGateOptions() {
+  return {
+    name: "ci-caller-fixture splitLines",
+    parse: splitLines,
+    weigh: (rows) => rows.length,
+    count: { n: 5000, generate: (i) => syntheticLines(i, 8) },
+    size: { inputs: 32, size: 1000, generate: (i, size) => syntheticLines(i, size) },
+  };
+}
+
 /** Write the two coverage reports a coverage run leaves, for one fully covered file. */
 function writeCoverage(root) {
   const full = { total: 1, covered: 1, skipped: 0, pct: 100 };
@@ -215,6 +253,18 @@ export async function run(verb, context) {
     for (const line of plantedFailure()) log(line);
     return 0;
   }
+  if (verb === "perf") {
+    // Loaded here rather than at the top, so the other verbs run where the tools are not installed.
+    const { assertScalingGateFires, scalingGate } = await import("@cosyte/test-utils/perf");
+    const options = scalingGateOptions();
+    const gate = scalingGate(options);
+    const skipped = [gate.count, gate.size]
+      .filter((axis) => axis.status === "skipped")
+      .map((axis) => `the ${axis.axis} axis skipped (${axis.skipReason}), and a skip is not a pass`);
+    if (skipped.length > 0) return report(verb, skipped, "", log);
+    const fires = assertScalingGateFires(options, { regressedParse: regressedSplitLines });
+    return report(verb, [], `the scaling gate passed on both axes, and its self-check saw a quadratic split at ${fires.signal}`, log);
+  }
   if (verb === "build") {
     const source = await loadSource(root);
     mkdirSync(join(root, "dist"), { recursive: true });
@@ -228,7 +278,7 @@ export async function run(verb, context) {
     const missing = missingTargets(root, manifest).map((target) => `${target} is in the exports map but not on disk`);
     return report(verb, missing, "every export target is on disk", log);
   }
-  log(`usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|build|attw>, not ${verb}`);
+  log(`usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|perf|build|attw>, not ${verb}`);
   return 2;
 }
 

@@ -158,7 +158,8 @@ const UPLOAD = 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
 
 test('ci.yml takes two new inputs, after every existing one, and both are off by default', () => {
   const names = inputNames(CI);
-  assert.deepEqual(names.slice(-2), ['run-coverage-ratchet', 'run-mutation']);
+  // The performance standard's four inputs follow them: `test/performance-jobs.test.mjs` owns those.
+  assert.deepEqual(names.slice(-6, -4), ['run-coverage-ratchet', 'run-mutation']);
   assert.deepEqual(inputOf(CI, 'run-coverage-ratchet'), {
     description: '"Hold coverage to quality-floor.json with cosyte-ratchet, in the coverage-ratchet job."',
     type: 'boolean',
@@ -174,7 +175,7 @@ test('ci.yml takes two new inputs, after every existing one, and both are off by
 });
 
 test('ci.yml adds coverage-ratchet and mutation after the existing jobs, each behind its own input', () => {
-  assert.deepEqual(jobIds(CI), ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation']);
+  assert.deepEqual(jobIds(CI), ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation', 'scaling-gate', 'bench-compare']);
   assert.deepEqual(jobKeys(CI, 'coverage-ratchet').slice(0, 3), [
     '    if: ${{ inputs.run-coverage-ratchet }}',
     '    runs-on: ubuntu-latest',

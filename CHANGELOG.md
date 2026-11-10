@@ -17,6 +17,21 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- The performance standard's jobs, both off until a caller opts in (README.md, "The performance
+  standard's jobs"). `ci.yml` takes four inputs: `run-scaling-gate` and `run-bench-compare`, both
+  `false` by default, and `bench-suites` (default `""`) and `bench-target` (default
+  `"dist/index.mjs"`), which only `bench-compare` reads. A caller that passes nothing sees two
+  skipped checks, `ci / scaling-gate` and `ci / bench-compare`, and no other change. Job ids before
+  them, every other input and default, secrets and permissions are unchanged.
+  - `scaling-gate` runs `pnpm test:perf`, the caller's run of the scaling gate from
+    `@cosyte/test-utils/perf`, and is red when it fails. To opt in, add `run-scaling-gate: true`
+    under `with:`; require it only while that input is on.
+  - `bench-compare` runs on a pull request only. It builds the head and, in a worktree, the base,
+    and times both with `cosyte-bench compare` from `@cosyte/bench` for each suite (every
+    `bench/*.bench.mjs` and `bench/*.bench.ts`, or those `bench-suites` names). The Markdown goes in
+    the job summary, and the `results-v1` documents in the `bench-comparison` artifact. It never
+    fails: a regression is a warning on the run's page. To opt in, add `run-bench-compare: true`;
+    never require it.
 - The testing standard's jobs, all off until a caller opts in (README.md, "The testing standard's
   jobs"). The tools they run, `cosyte-ratchet` from `@cosyte/script-utils` and `cosyte-mutate` from
   `@cosyte/vitest-config`, are not on npm yet, so a caller opts in only after that release and after

@@ -23,8 +23,12 @@ import {
   judge,
   missingTargets,
   platformProblem,
+  regressedSplitLines,
   run,
   runtimeOf,
+  scalingGateOptions,
+  splitLines,
+  syntheticLines,
 } from './fixtures/ci-caller/tool.mjs';
 
 const FIXTURE = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures/ci-caller');
@@ -268,8 +272,20 @@ test('phi-scan passes the tree and finds the planted SSN shape, removes the plan
 test('an unknown verb is refused with the usage line', async () => {
   assert.deepEqual(await verb('nope', FIXTURE), {
     code: 2,
-    lines: ['usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|build|attw>, not nope'],
+    lines: ['usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|perf|build|attw>, not nope'],
   });
+});
+
+test('perf\'s injected regression computes what its parse computes, or the scaling gate\'s self-check refuses it', async () => {
+  for (const count of [1, 2, 8, 50]) {
+    const raw = syntheticLines(7, count);
+    assert.equal(splitLines(raw).length, count);
+    assert.deepEqual(regressedSplitLines(raw), splitLines(raw));
+  }
+  const options = scalingGateOptions();
+  assert.equal(options.parse, splitLines);
+  assert.equal(options.weigh(splitLines(syntheticLines(0, 3))), 3);
+  assert.equal(options.size.generate(1, 4), syntheticLines(1, 4));
 });
 
 test('coverage runs the test verb, then writes the two reports the coverage ratchet reads', async () => {
