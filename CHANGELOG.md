@@ -32,6 +32,14 @@ so the next change to this file moves those lines under a heading with that name
   `ci.yml` itself against `test/fixtures/ci-caller/` (README.md, "Every system and runtime"). One
   limit it found: the dash checker in `@cosyte/script-utils` cannot run on macOS, where grep has no
   `-P`; it refuses rather than passing, so a caller whose own `lint` runs it reds on macOS.
+- `verify` has a new first step, before the checkout, on every system: it sets git's
+  `core.autocrlf false` and `core.eol lf`, so text files check out with LF line endings. Measured on
+  2026-11-10: without it, `windows-latest` checks out with CRLF every text file whose eol no
+  `.gitattributes` sets. A caller does nothing. On `ubuntu-latest`, the only system a caller runs
+  today, and on `macos-latest`, the same run checked those files out LF without the step, so there
+  it changes no byte. A file whose eol the caller's `.gitattributes` sets keeps that eol, since the
+  attribute overrides both settings, so a caller with `* text=auto eol=lf` gets LF with or without
+  the step.
 - `scripts/docs-content-check.mjs`, which `verify` fetches when `check-docs-content` is on, now runs on
   a Windows runner. Its entry guard compared its own URL's pathname with `argv[1]` as paths, which on
   Windows never matched, so the step exited 0 without checking anything. It compares file URLs now.

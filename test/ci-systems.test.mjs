@@ -181,6 +181,62 @@ test('every multi-line script in verify, bun and deno names bash, so Windows doe
   }
 });
 
+const LINE_ENDINGS = 'Check out text files with LF line endings';
+
+test('verify sets LF line endings before it checks out, on every system, from the workspace', () => {
+  const [first, second] = steps(CI, 'verify');
+  // FIRST, so the checkout reads it; with no `if:`, so every system gets the same bytes; and in the
+  // workspace, because the fixture directory `working-directory` names does not exist before checkout.
+  assert.equal(first, [
+    `      - name: ${LINE_ENDINGS}`,
+    '        shell: bash',
+    '        working-directory: .',
+    '        run: |',
+    '          git config --global core.autocrlf false',
+    '          git config --global core.eol lf',
+  ].join('\n'));
+  assert.match(second, /^ {6}- uses: actions\/checkout@/);
+});
+
+test('the line-ending step turns a CRLF checkout into LF, and leaves a file whose eol is set alone', () => {
+  // A Windows image's git: `core.autocrlf true` in its system config, as the Git for Windows
+  // installer writes by default, and a native line ending of CRLF, stood in for by `core.eol crlf`.
+  const root = mkdtempSync(join(tmpdir(), 'ci-systems-eol-'));
+  const home = join(root, 'home');
+  const source = join(root, 'source');
+  mkdirSync(home);
+  mkdirSync(join(source, 'docs'), { recursive: true });
+  writeFileSync(join(root, 'system.gitconfig'), '[core]\n\tautocrlf = true\n\teol = crlf\n');
+  const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), GIT_CONFIG_SYSTEM: join(root, 'system.gitconfig') };
+  const git = (cwd, ...args) => {
+    const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+    assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+  };
+  // Three kinds of file: no attribute, `text=auto` with no eol, and an eol the repository fixed.
+  writeFileSync(join(source, '.gitattributes'), 'docs/*.md text=auto\n*.bat text eol=crlf\n');
+  writeFileSync(join(source, 'plain.txt'), 'one\ntwo\n');
+  writeFileSync(join(source, 'docs/page.md'), 'one\ntwo\n');
+  writeFileSync(join(source, 'run.bat'), 'one\ntwo\n');
+  git(source, 'init', '-q');
+  git(source, '-c', 'core.autocrlf=false', 'add', '.');
+  git(source, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
+  const checkout = (name) => {
+    git(root, 'clone', '-q', source, name);
+    return Object.fromEntries(['plain.txt', 'docs/page.md', 'run.bat'].map((file) => [file, readFileSync(join(root, name, file), 'utf8')]));
+  };
+  const CRLF = 'one\r\ntwo\r\n';
+  const LF = 'one\ntwo\n';
+
+  // The control: without the step, this git writes every text file with CRLF.
+  assert.deepEqual(checkout('before'), { 'plain.txt': CRLF, 'docs/page.md': CRLF, 'run.bat': CRLF });
+
+  const bash = spawnSync('sh', ['-c', 'command -v bash'], { encoding: 'utf8' }).stdout.trim();
+  const step = spawnSync(bash, ['-c', runScript('verify', LINE_ENDINGS)], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(step.status, 0, step.stderr);
+  // After it: LF, except where the repository's own attributes ask for CRLF.
+  assert.deepEqual(checkout('after'), { 'plain.txt': LF, 'docs/page.md': LF, 'run.bat': CRLF });
+});
+
 test('at the default directory, every job reads the package where it read it before the input existed', () => {
   for (const job of ['verify', 'bun', 'deno']) {
     const body = block(CI, `  ${job}:`);

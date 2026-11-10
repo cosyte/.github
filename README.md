@@ -373,9 +373,18 @@ What it found, on 2026-11-10:
   macOS and turns red the day the checker passes there, so the expectation cannot outlive the fix.
   Callers run the dash checker in the `gate-no-emdash` workflows, which run on `ubuntu-latest`, so
   no caller's `verify` is affected unless its own `lint` runs the checker.
-- **Windows checks out LF.** `actions/checkout` on `windows-latest` wrote every fixture file with LF
-  line endings, so a caller's formatter sees the same bytes it sees on Linux. The fixture's
-  `format:check` is the tripwire if a runner image ever changes that.
+- **Windows checks out CRLF unless told otherwise, so `verify` tells it.** With the fixture's eol
+  left unspecified (its own `.gitattributes` says `* text=auto !eol`), `actions/checkout` on
+  `windows-latest` (image windows-2025-vs2026, git 2.56.0.windows.4) wrote all eleven of its files
+  with CRLF line endings, and `format:check` failed on each one on Node 22, 24 and 26, while the
+  `ubuntu-latest` and `macos-latest` legs of the same run checked them out LF. So `verify`'s
+  first step, before the checkout, sets `core.autocrlf false` and `core.eol lf` on every system:
+  with it, the same legs check the same files out LF and pass. A file whose eol a repository's
+  `.gitattributes` sets keeps that setting, since an eol attribute overrides both. That is also
+  why the first runs here saw LF: this repository's root `.gitattributes` says
+  `* text=auto eol=lf`, which fixed the fixture to LF on every checkout and hid the runner's own
+  behavior, and why the fixture now unsets it. A caller whose `.gitattributes` already says
+  `eol=lf` was never affected; one without it gets LF from the step.
 - **The docs-content checker checked nothing on Windows.** Its entry guard compared paths, and on a
   Windows runner the path it read from its own URL was `/D:/a/_temp/docs-content-check.mjs`, which
   matched nothing, so `main` never ran and the step exited 0. The Windows legs gave it away by

@@ -181,6 +181,23 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
+      # LF LINE ENDINGS ON EVERY SYSTEM, SET BEFORE THE CHECKOUT, SO THE RUNNER IMAGE DOES NOT DECIDE.
+      # Git on `windows-latest` checks text files out with CRLF: on 2026-11-10 (image
+      # windows-2025-vs2026, git 2.56.0.windows.4) every file of the fixture under
+      # `test/fixtures/ci-caller/`, whose eol is left unspecified, came out CRLF, and its
+      # `format:check` failed on all eleven. A caller whose `.gitattributes` says `eol=lf` never saw
+      # it, because an eol attribute overrides both settings below; a caller without one would have
+      # seen its formatter and its tests read different bytes on Windows than on Linux. These two
+      # make a file with no eol attribute come out as committed, LF for text, on every system, and
+      # leave a file whose eol the repository sets to that setting. No `if:`, so all three systems
+      # run the same step; in the workspace, because the directory `working-directory` names does
+      # not exist before the checkout.
+      - name: Check out text files with LF line endings
+        shell: bash
+        working-directory: .
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # At the default "." these two read exactly what they read before `working-directory` existed:
       # `package.json` is the action's own default, and an empty `cache-dependency-path` is unset.
