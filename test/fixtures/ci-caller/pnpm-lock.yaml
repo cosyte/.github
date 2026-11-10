@@ -1,0 +1,24 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      '@cosyte/script-utils':
+        specifier: 0.1.8
+        version: 0.1.8
+
+packages:
+
+  '@cosyte/script-utils@0.1.8':
+    resolution: {integrity: sha512-d5+N2hVp/MqZ+MCAO91sJjFL1mRQU6gFlJOlMKdEF4iUKHWLNY/Vh1CTNSK6ebk9SxtrU+4GC5LGGCJWKoldbA==}
+    engines: {node: '>=22.14'}
+    hasBin: true
+
+snapshots:
+
+  '@cosyte/script-utils@0.1.8': {}

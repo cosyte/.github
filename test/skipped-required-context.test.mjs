@@ -770,7 +770,9 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
 
 /** Every job id of every published reusable, at the pin. */
 const PUBLISHED_JOB_IDS = {
-  'ci.yml': ['verify', 'prepublish', 'actionlint'],
+  // ADDED, NOT RENAMED: `bun` and `deno` are new contexts no caller's ruleset names, each skipped
+  // unless the caller sets its input, and `verify`, `prepublish` and `actionlint` are where they were.
+  'ci.yml': ['verify', 'prepublish', 'actionlint', 'bun', 'deno'],
   'codeql.yml': ['analyze'],
   'drift-check.yml': ['drift'],
   // ADDED, NOT RENAMED, and the distinction is the one this table exists to make legible. Both
@@ -819,7 +821,8 @@ const EVERY_JOB_ID = {
   'no-emdash.yml': ['no-emdash', 'no-emdash-messages'],
   'org-defaults-coverage.yml': ['org-defaults-coverage'],
   'publish-reference.yml': ['publish-reference'],
-  'self-check.yml': ['actionlint', 'scripts', 'package-lists'],
+  // ADDED, NOT RENAMED: `systems` runs `ci.yml` against the fixture on every system and runtime.
+  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems'],
   'self-codeql.yml': ['codeql'],
   'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],

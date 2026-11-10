@@ -33,6 +33,11 @@ on:
         description: "JSON array of Node versions for the matrix."
         type: string
         default: '["22", "24", "26"]'
+      # `verify` runs on each entry. Every shared step in it is proven on `ubuntu-latest`,
+      # `windows-latest` and `macos-latest` by `self-check.yml`'s `systems` job, which runs this
+      # workflow on all three against `test/fixtures/ci-caller/`; README.md, "Every system and
+      # runtime", says what that run proves and what it cannot. A caller widens this with
+      # `os: '["ubuntu-latest", "windows-latest", "macos-latest"]'`.
       os:
         description: "JSON array of runner OSes for the matrix."
         type: string
@@ -123,6 +128,40 @@ on:
         description: "Resolve docs-content/ links, images and sidebar ids (needs docs-content/sidebars.json)."
         type: boolean
         default: false
+      # THE DIRECTORY HOLDING THE PACKAGE, for `verify`, `bun` and `deno`. It exists so
+      # `self-check.yml` can run this workflow against the fixture under `test/`, since this
+      # repository is not a package itself. `prepublish` and `actionlint` do not read it: they read
+      # the repository root, so a caller that moves it off "." turns `prepublish` off too. At "." every
+      # step runs exactly as it did before the input existed.
+      working-directory:
+        description: "The directory holding package.json, relative to the repository root. verify, bun and deno only."
+        type: string
+        default: "."
+      # THE TEST SUITE UNDER BUN, in its own job, `bun`, on ubuntu-latest. OFF BY DEFAULT, so no caller
+      # changes until it opts in by name. The job installs with pnpm from the committed lockfile, as
+      # `verify` does, then runs `bun --bun run test`: the caller's own `test` script, with every
+      # `node` it starts (a bin's `#!/usr/bin/env node`, a literal `node`) run by Bun instead.
+      run-bun:
+        description: "Run the test script under Bun, in the bun job."
+        type: boolean
+        default: false
+      bun-version:
+        description: "The Bun version the bun job installs."
+        type: string
+        default: "1.4.4"
+      # THE TEST SUITE UNDER DENO, in its own job, `deno`, on ubuntu-latest. OFF BY DEFAULT, for the
+      # same reason. The job installs with pnpm, then runs `deno task test` with no `node` on PATH:
+      # Deno's task runner runs a script's literal `node` with the real Node whenever one is on PATH,
+      # and with Deno only when none is, so the step takes Node off PATH and refuses to run the suite
+      # if a `node` is still reachable.
+      run-deno:
+        description: "Run the test script under Deno, in the deno job."
+        type: boolean
+        default: false
+      deno-version:
+        description: "The Deno version the deno job installs."
+        type: string
+        default: "2.9.8"
 
 permissions:
   contents: read
@@ -138,13 +177,21 @@ jobs:
     # A caller cannot bound a job that calls this workflow, so the bound is here: about seven times
     # the slowest leg measured on 2026-11-07 (4 minutes, hl7 on Node 24).
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # At the default "." these two read exactly what they read before `working-directory` existed:
+      # `package.json` is the action's own default, and an empty `cache-dependency-path` is unset.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
       # THE DOCS-CONTENT GATE RUNS HERE, IN `verify`, AS TWO STEPS, AND EVERY PART OF THAT IS
       # DELIBERATE.
       #
@@ -411,3 +458,106 @@ jobs:
           mapfile -t files <<< "${listed}"
           "${RUNNER_TEMP}/actionlint" -color "${files[@]}"
           echo "actionlint clean over ${#files[@]} workflow file(s)."
+
+  # THE TEST SUITE UNDER BUN AND UNDER DENO, each in its own job, `bun` and `deno`, each OFF BY
+  # DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs and no other
+  # change. Each installs exactly what `verify` installs, with pnpm from the committed lockfile, and
+  # then runs the caller's own `test` script under the other runtime. Both run on ubuntu-latest only:
+  # the system matrix is `verify`'s, and one system per runtime keeps each job id a single, stable
+  # check context, `<caller job id> / bun` and `<caller job id> / deno`.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT, so a caller that requires `ci / bun` and later turns
+  # `run-bun` off keeps a green merge button over a context that ran nothing (README.md, "What a
+  # skipped required context does to a merge"). Require these only while the input is on.
+  bun:
+    if: ${{ inputs.run-bun }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - run: pnpm install --frozen-lockfile
+      # `--bun` is what puts the suite on Bun: without it, `bun run` starts a script's
+      # `#!/usr/bin/env node` bins (vitest, tsx, a `cosyte-process` verb) with Node. Measured on
+      # 2026-11-10 with a test that throws `process.versions`: with `--bun` the vitest workers report
+      # Bun, and without it they report Node.
+      - name: The test suite under Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bun: $(bun --version)"
+          bun --bun run test
+
+  deno:
+    if: ${{ inputs.run-deno }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ inputs.deno-version }}
+      - run: pnpm install --frozen-lockfile
+      # NODE COMES OFF PATH FIRST. `deno task` runs a package bin with Deno, but runs a script's
+      # literal `node` with the real Node whenever one is on PATH, and with Deno only when none is:
+      # measured on 2026-11-10, `node tool.mjs test` reported Node with Node on PATH and Deno without
+      # it. So every PATH entry holding a `node` is replaced by a directory of links to everything
+      # else in it, and the step refuses to run the suite while any `node` is still reachable.
+      - name: The test suite under Deno
+        shell: bash
+        run: |
+          set -euo pipefail
+          shadow="${RUNNER_TEMP}/path-without-node"
+          rm -rf "${shadow}"
+          kept=()
+          count=0
+          IFS=':' read -r -a entries <<< "${PATH}"
+          for entry in "${entries[@]}"; do
+            if [ -n "${entry}" ] && [ -e "${entry}/node" ]; then
+              count=$((count + 1))
+              mirror="${shadow}/${count}"
+              mkdir -p "${mirror}"
+              for tool in "${entry}"/*; do
+                if [ "${tool##*/}" != node ]; then ln -s "${tool}" "${mirror}/"; fi
+              done
+              echo "deno: ${entry} holds a node, so PATH names ${mirror} in its place, with everything else in it"
+              entry="${mirror}"
+            fi
+            kept+=("${entry}")
+          done
+          PATH="$(IFS=':'; echo "${kept[*]}")"
+          export PATH
+          if found="$(command -v node)"; then
+            echo "::error::a node is still on PATH at ${found}, so the suite would run under Node rather than Deno"
+            exit 1
+          fi
+          echo "deno: $(deno --version | head -n 1)"
+          deno task test

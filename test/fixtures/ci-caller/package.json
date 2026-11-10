@@ -1,0 +1,28 @@
+{
+  "name": "ci-caller-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A package the shared CI runs against on every system, so a change to ci.yml is proven before a caller adopts it.",
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "typecheck": "node --check src/index.mjs",
+    "lint": "node tool.mjs lint",
+    "format:check": "node tool.mjs format-check",
+    "phi-scan": "node tool.mjs phi-scan",
+    "test": "node tool.mjs test",
+    "test:coverage": "node tool.mjs test",
+    "build": "node tool.mjs build",
+    "attw": "node tool.mjs attw"
+  },
+  "devDependencies": {
+    "@cosyte/script-utils": "0.1.8"
+  }
+}
