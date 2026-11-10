@@ -500,10 +500,12 @@ script these jobs add against a stub `pnpm`: the arguments each hands the tools,
 summary, the seed recording, and that every failure reaches the job's exit status.
 `self-check.yml`'s `systems` job turns both `ci.yml` jobs on, its `nightly-properties` and
 `weekly-mutation` jobs run the two reusables (the weekly one on two shards), its
-`weekly-mutation-incremental` job runs the weekly one again after the first, all against
-`test/fixtures/ci-caller/`, and `quality-artifacts` checks what the scheduled runs kept: the merged
-report, a note from each shard, and, from the second weekly run, that each shard started from the
-first run's cached results. Because the real tools are not on npm,
+`weekly-mutation-incremental` job runs the weekly one again after the first, and its
+`weekly-mutation-one-shard` job runs it on one shard with a tool that does not shard, all against
+`test/fixtures/ci-caller/`. `quality-artifacts` checks what the scheduled runs kept: the merged
+report, a note from each shard, that each shard of the first weekly run started from results an
+earlier run of the workflow saved, that each shard of the second started from the first's, and that
+the one-shard run read the tool's `mutation.json` as its report. Because the real tools are not on npm,
 the fixture links `test/fixtures/quality-stubs/`: stand-ins for `cosyte-mutate` and
 `cosyte-ratchet` that accept only the command lines the real tools accept, refuse `raise`, check that
 the base ref has a merge base and that each report the real tool would read is on disk, and judge
@@ -528,9 +530,21 @@ runner, past what one job may take. So `weekly-mutation.yml` splits it.
   they reach every `cosyte-mutate` a caller's command starts, in a repository with several packages
   too. Each shard's job is bounded at 340 minutes, inside GitHub's 6 hour limit, and every shard runs
   to its end when another fails (`fail-fast: false`).
+- **The tool is checked first.** With more than one shard, each shard runs `<mutate-cmd> --help`
+  right after the install and fails within seconds unless every help it printed names
+  `COSYTE_MUTATE_SHARD`, saying that sharding needs `@cosyte/vitest-config` 0.1.5 or later. Without
+  the check, a tool that does not shard would run the whole suite on every shard, hours each, before
+  failing. The real tool answers `--help` wherever it sits on the line and runs nothing; a
+  `mutate-cmd` that cannot take `--help` at its end fails the check.
+- **One shard needs no sharding tool.** With `shard-count: 1` nothing is checked, and when the tool
+  writes `mutation.json` instead of `shard-1-of-1.json`, that report, written by this run, is the
+  report of shard 1 of 1. So a small library adopts the weekly run with any `cosyte-mutate`, as a full
+  run each time, since a tool that does not shard keeps no incremental results.
 - **The cache.** Before its run each shard restores the newest cache entry for its own shard of the
   same count (key prefix `cosyte-mutation-v1-<working-directory>-<count>-<shard>-`), and after it
-  saves its incremental files under a key unique to the run, even when the run failed. A scheduled
+  saves its incremental files under a key unique to the run, even when its command failed. A shard
+  cancelled at its 340 minute limit saves nothing: GitHub cancels the job, and the save step does not
+  run in a cancelled job, so the next run starts from the newest entry an earlier run saved. A scheduled
   run is on the default branch, so its entries are the default branch's latest results, and a run on
   another branch reads its own branch's entries first and the default branch's after. StrykerJS then
   retests only the mutants whose code or tests changed. Each shard says in its summary whether it
@@ -543,11 +557,13 @@ runner, past what one job may take. So `weekly-mutation.yml` splits it.
   coverage` exactly as the unsharded run did: red below a floor, never a commit. The merged report,
   the ratchet's report and the shard notes are the `mutation-report` artifact.
 
-**What the real tool still needs.** `cosyte-mutate` in `@cosyte/vitest-config` 0.1.4 does not read
-the two variables yet: it runs everything and writes `mutation.json`, and each shard then fails,
-saying that its tool does not shard. The workflow side is done and proved against the stand-in in
-`test/fixtures/quality-stubs/`, which reads them. A library adopts the sharded run once a
-`cosyte-mutate` that shards is released from cosyte/config.
+**What the real tool still needs.** Sharding has landed in cosyte/config: its `cosyte-mutate` reads
+both variables and names them in its `--help`. It ships in the next patch release of
+`@cosyte/vitest-config`, 0.1.5, which is not on npm yet. `cosyte-mutate` in 0.1.4 does not read
+them: it runs everything and writes `mutation.json`, so with more than one shard each shard fails its
+check in seconds, and with `shard-count: 1` the run works as a full run. The workflow side is proved
+against the stand-in in `test/fixtures/quality-stubs/`, which plays both releases. A library adopts
+more than one shard once 0.1.5 is published.
 
 ## The performance standard's jobs
 
@@ -3300,6 +3316,5 @@ review. That is the stopping point, and the reason not to add a fourth rung chas
   character. Assembling it keeps the ban total without exempting the one file that enforces it. **Do
   not answer a red here by adding an exclusion; assemble the spelling instead.**
 
-The standard these enforce is ST8 in the umbrella's `plans/standards.md`, which replaced the deleted
-`documentation/conventions.md`: no em dash and no en dash anywhere, and a sentence that seems to need
-one is rewritten.
+The rule these enforce is our writing standard: no em dash and no en dash anywhere, and a sentence
+that seems to need one is rewritten.

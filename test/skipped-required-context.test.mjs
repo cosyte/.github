@@ -863,7 +863,7 @@ const EVERY_JOB_ID = {
   // ADDED, NOT RENAMED: `performance-artifacts` reads what `systems`' `bench-compare` kept.
   // ADDED, NOT RENAMED: `weekly-mutation-incremental` calls the weekly run again, after the first,
   // and `release-gates` runs the scripts `release.yml` runs before a publish.
-  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'weekly-mutation-incremental', 'quality-artifacts', 'release-gates', 'performance-artifacts'],
+  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'weekly-mutation-incremental', 'weekly-mutation-one-shard', 'quality-artifacts', 'release-gates', 'performance-artifacts'],
   'self-codeql.yml': ['codeql'],
   'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],

@@ -116,6 +116,41 @@ test('cosyte-mutate full reads and writes the incremental file it is handed', ()
   assert.match(second.stdout, /^ {2}incremental: read 1 earlier result\(s\) from reports\/mutation\/incremental\.json$/m);
 });
 
+// THE HELP A SHARD'S PROBE READS. `weekly-mutation.yml` asks `<mutate-cmd> --help` whether the
+// installed tool shards before it runs anything. The real `cosyte-mutate` answers `--help` wherever
+// it sits on the command line, prints its help to stderr and exits 2 under CI, and names
+// COSYTE_MUTATE_SHARD from the release that shards. COSYTE_MUTATE_STUB_AS=0.1.4 makes the stand-in
+// the last release that does not: its help names neither variable and a full run ignores both.
+test('cosyte-mutate --help names the shard variables, under CI on stderr with exit 2, as the real one does', () => {
+  const { root } = repo();
+  const local = stub('cosyte-mutate', ['full', '--help'], root, { CI: '' });
+  assert.equal(local.status, 0, local.stderr);
+  assert.match(local.stdout, /^cosyte-mutate: run StrykerJS with the shared config/m);
+  assert.match(local.stdout, /^COSYTE_MUTATE_SHARD=<k>\/<n>$/m);
+  assert.match(local.stdout, /^COSYTE_MUTATE_INCREMENTAL_FILE=<file>$/m);
+  const ci = stub('cosyte-mutate', ['--help'], root, { CI: 'true' });
+  assert.equal(ci.status, 2);
+  assert.equal(ci.stdout, '');
+  assert.match(ci.stderr, /^COSYTE_MUTATE_SHARD=<k>\/<n>$/m);
+  assert.equal(existsSync(join(root, 'reports')), false, 'help runs nothing');
+});
+
+test('cosyte-mutate as 0.1.4 neither names nor reads the shard variables, and writes mutation.json', () => {
+  const { root } = repo();
+  sources(root, ['a.mjs', 'b.mjs']);
+  const old = { COSYTE_MUTATE_STUB_AS: '0.1.4', CI: '' };
+  const help = stub('cosyte-mutate', ['full', '--help'], root, old);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^cosyte-mutate: run StrykerJS with the shared config/m);
+  assert.doesNotMatch(help.stdout, /COSYTE_MUTATE_/);
+  const run = stub('cosyte-mutate', ['full'], root, { ...old, COSYTE_MUTATE_SHARD: '1/2', COSYTE_MUTATE_INCREMENTAL_FILE: 'reports/mutation/incremental.json' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(existsSync(join(root, 'reports/mutation/mutation.json')));
+  assert.equal(existsSync(join(root, 'reports/mutation/shard-1-of-2.json')), false);
+  assert.equal(existsSync(join(root, 'reports/mutation/incremental.json')), false);
+  assert.equal(stub('cosyte-mutate', ['full'], root, { COSYTE_MUTATE_STUB_AS: '9.9.9' }).status, 2, 'only the one old release is modelled');
+});
+
 test('cosyte-mutate refuses a shard it cannot be', () => {
   const { root } = repo();
   for (const shard of ['0/2', '3/2', '1', 'a/b', '1/0']) {

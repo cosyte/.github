@@ -17,6 +17,23 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `weekly-mutation.yml` can be adopted before the tool that shards is on npm (README.md, "The
+  sharded weekly run"). With more than one shard, each shard has a new step right after the install,
+  "Check that cosyte-mutate can shard", which runs `<mutate-cmd> --help` and fails within seconds
+  unless every help printed names `COSYTE_MUTATE_SHARD`, saying that sharding needs
+  `@cosyte/vitest-config` 0.1.5 or later; before, a tool that does not shard ran the whole suite on
+  every shard, hours each, and only then failed. With `shard-count: 1`, the `mutation.json` a tool
+  that does not shard writes during the run is read as the report of shard 1 of 1, so the run works
+  with 0.1.4 as a full run. The workflow's comment no longer says that a shard stopped at its time
+  limit saves its results: a cancelled job does not run the save step. Inputs and their defaults,
+  job ids, secrets and permissions are unchanged. **Act on:** with more than one shard, a
+  `mutate-cmd` that cannot take `--help` at its end now fails the check; until 0.1.5 is published,
+  run with `shard-count: 1`.
+
+## workflows-2026-11-10-ab87aabbbafc
+
+2026-11-10. Act on: the new job `shard` in `weekly-mutation.yml`, a new check-run context, against `workflows-2026-11-10-0be6757a7738`.
+
 - `release.yml` runs pre-publish gates in its `version` job, after `Verify` and before anything can
   publish (README.md, "The release gates"). It runs no full mutation pass. Eight inputs are added
   after `node-version`, each optional with a default; job ids, secrets and permissions are unchanged,
@@ -42,6 +59,11 @@ so the next change to this file moves those lines under a heading with that name
   needs a `cosyte-mutate` that reads `COSYTE_MUTATE_SHARD`, which `@cosyte/vitest-config` 0.1.4 does
   not, so no caller should adopt it before that release; and schedule it at least every 6 days, so
   each shard's cache entry is read before GitHub evicts it.
+
+## workflows-2026-11-10-0be6757a7738
+
+2026-11-10. Act on: the new jobs `scaling-gate` and `bench-compare` in `ci.yml`, each a new check-run context, against `workflows-2026-11-10-ed625b471274`.
+
 - The performance standard's jobs, both off until a caller opts in (README.md, "The performance
   standard's jobs"). `ci.yml` takes four inputs: `run-scaling-gate` and `run-bench-compare`, both
   `false` by default, and `bench-suites` (default `""`) and `bench-target` (default
@@ -57,6 +79,11 @@ so the next change to this file moves those lines under a heading with that name
     the job summary, and the `results-v1` documents in the `bench-comparison` artifact. It never
     fails: a regression is a warning on the run's page. To opt in, add `run-bench-compare: true`;
     never require it.
+
+## workflows-2026-11-10-ed625b471274
+
+2026-11-10. Act on: the new jobs `coverage-ratchet` and `mutation` in `ci.yml`, each a new check-run context, against `workflows-2026-11-10-4522886e8c1e`.
+
 - The testing standard's jobs, all off until a caller opts in (README.md, "The testing standard's
   jobs"). The tools they run, `cosyte-ratchet` from `@cosyte/script-utils` and `cosyte-mutate` from
   `@cosyte/vitest-config`, are not on npm yet, so a caller opts in only after that release and after
@@ -83,6 +110,11 @@ so the next change to this file moves those lines under a heading with that name
   - The `working-directory` input's description now names every job that reads it; its default and
     behavior are unchanged. Job ids `verify`, `prepublish`, `actionlint`, `bun` and `deno`, every
     other input and default, secrets and permissions are unchanged.
+
+## workflows-2026-11-10-4522886e8c1e
+
+2026-11-10. Act on: the new jobs `bun` and `deno` in `ci.yml`, each a new check-run context, against `workflows-2026-11-09-402d4e1568e7`.
+
 - `ci.yml` takes two opt-in inputs, `run-bun` and `run-deno`, both `false` by default, which add the
   jobs `bun` and `deno`: each installs with pnpm from the committed lockfile, as `verify` does, and
   runs the caller's own `test` script under that runtime, `bun --bun run test` and `deno task test`
@@ -116,15 +148,11 @@ so the next change to this file moves those lines under a heading with that name
   at `"."` every step reads what it read before. `prepublish` and `actionlint` ignore it.
 - Job ids `verify`, `prepublish` and `actionlint`, every existing input and default, secrets and
   permissions are unchanged.
-- `ci.yml`'s and `release.yml`'s `expect-unpublished-deps` default to empty instead of
-  `@cosyte/fhir=blocked`. That entry dates from before `@cosyte/fhir` was on npm; it is published
-  now, so the entry was stale and every caller's install gates printed a notice saying the
-  allowance "is on the registry now". A caller needs to do nothing: a package the registry serves
-  is never absent, so the entry already excused nothing, no verdict changes, and only the notice
-  stops. The reference note lists the changed default under "must act on", because it lists every
-  changed default there. The input stays, in the same grammar, for a caller that has to name a
-  blocked dependency, and a caller that passes it, empty or not, is unaffected. Job ids, the other
-  inputs and their defaults, secrets and permissions are unchanged.
+
+## workflows-2026-11-09-402d4e1568e7
+
+2026-11-09. Act on: nothing, against `workflows-2026-11-08-810a8affe9de`.
+
 - `release.yml` takes an optional `node-version` input, the Node line every job that sets up Node
   runs on: `version`, `release` and `finalize`. It defaults to empty, which keeps each job on the
   line it ran on before the input existed, `version` on 22 and `release` and `finalize` on 24, so a
@@ -135,6 +163,20 @@ so the next change to this file moves those lines under a heading with that name
   Node 22 bundles is below the publish floor: the `version` job refuses anything else, an alias such
   as `lts/*` included, before it sets Node up, installs, tags or publishes. Job ids, the other inputs
   and their defaults, secrets and permissions are unchanged.
+
+## workflows-2026-11-08-810a8affe9de
+
+2026-11-08. Act on: the default of `expect-unpublished-deps` in `ci.yml` and `release.yml`, from `"@cosyte/fhir=blocked"` to `""`, against `workflows-2026-11-08-c0db8d8e5927`.
+
+- `ci.yml`'s and `release.yml`'s `expect-unpublished-deps` default to empty instead of
+  `@cosyte/fhir=blocked`. That entry dates from before `@cosyte/fhir` was on npm; it is published
+  now, so the entry was stale and every caller's install gates printed a notice saying the
+  allowance "is on the registry now". A caller needs to do nothing: a package the registry serves
+  is never absent, so the entry already excused nothing, no verdict changes, and only the notice
+  stops. The reference note lists the changed default under "must act on", because it lists every
+  changed default there. The input stays, in the same grammar, for a caller that has to name a
+  blocked dependency, and a caller that passes it, empty or not, is unaffected. Job ids, the other
+  inputs and their defaults, secrets and permissions are unchanged.
 
 ## workflows-2026-11-08-c0db8d8e5927
 

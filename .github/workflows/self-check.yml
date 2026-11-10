@@ -187,14 +187,31 @@ jobs:
       working-directory: test/fixtures/ci-caller
       shard-count: 2
       report-name: mutation-report-incremental
+  # ONE SHARD, WITH A TOOL THAT DOES NOT SHARD: the stand-in playing @cosyte/vitest-config 0.1.4,
+  # which neither names nor reads the shard variables and writes mutation.json. The run must still be
+  # green, its mutation.json read as the report of shard 1 of 1.
+  weekly-mutation-one-shard:
+    uses: ./.github/workflows/weekly-mutation.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      shard-count: 1
+      mutate-cmd: COSYTE_MUTATE_STUB_AS=0.1.4 pnpm exec cosyte-mutate full
+      report-name: mutation-report-one-shard
 
   # What the runs kept. The fixture's `test:properties` requires COSYTE_PROPERTY_RUNS to be a whole
   # number and prints a planted failure report in colour, so the nightly artifact must hold its seed,
   # once, at the depth the reusable set. The weekly artifact must hold the merged report, the
   # ratchet's own report beside it, and a note from each of its two shards; the second weekly run's
-  # notes must each say the shard started from the first run's results.
+  # notes must each say the shard started from the first run's results; and the one-shard run's
+  # merged report must be the stand-in's mutation.json.
+  #
+  # ACROSS RUNS, NOT ONLY WITHIN ONE: each shard of the first weekly call must have restored an
+  # entry an earlier run of this workflow saved, which the run id in the restored key tells apart
+  # from this run's. A pull request reads its own branch's entries and then the default branch's,
+  # and the nightly run keeps them read. With no earlier entry at all (a fresh fork, or entries
+  # GitHub evicted) that step is red once, and the run after it, which finds this one's, is green.
   quality-artifacts:
-    needs: [nightly-properties, weekly-mutation, weekly-mutation-incremental]
+    needs: [nightly-properties, weekly-mutation, weekly-mutation-incremental, weekly-mutation-one-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -220,6 +237,40 @@ jobs:
           cat "${artifacts}/mutation-report-incremental/shards.txt"
           test "$(grep -c ': incremental, ' "${artifacts}/mutation-report-incremental/shards.txt")" -eq 2
           test -s "${artifacts}/mutation-report-incremental/mutation.json"
+          test -s "${artifacts}/mutation-report-one-shard/mutation.json"
+          cat "${artifacts}/mutation-report-one-shard/shards.txt"
+          test "$(wc -l < "${artifacts}/mutation-report-one-shard/shards.txt")" -eq 1
+          grep -F 'read as the report of shard 1 of 1' "${artifacts}/mutation-report-one-shard/shards.txt"
+      - name: The first weekly run started from an earlier run's results
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="${RUNNER_TEMP}/artifacts/mutation-report/shards.txt"
+          across=0
+          while IFS= read -r line; do
+            shard="${line%%:*}"
+            case "${line}" in
+              *": incremental, "*" restored from "*) ;;
+              *)
+                echo "::error::${shard} started from no earlier run's results: ${line}"
+                exit 1
+                ;;
+            esac
+            key="${line##* restored from }"
+            attempt="${key##*-}"
+            rest="${key%-*}"
+            run="${rest##*-}"
+            if [ "${run}" = "${GITHUB_RUN_ID}" ] && [ "${attempt}" -ge "${GITHUB_RUN_ATTEMPT}" ]; then
+              echo "::error::${shard} restored results this run saved (${key}), not an earlier run's"
+              exit 1
+            fi
+            echo "${shard}: restored the results of run ${run}, attempt ${attempt}"
+            across=$((across + 1))
+          done < "${notes}"
+          if [ "${across}" -ne 2 ]; then
+            echo "::error::${across} of the 2 shards restored an earlier run's results"
+            exit 1
+          fi
 
   # THE RELEASE GATES' SCRIPTS, run for real, none of them able to publish: `release.yml` itself cannot
   # run here (it needs a protected environment and publishes), so each script it runs before the
