@@ -554,7 +554,6 @@ jobs:
             kept+=("${entry}")
           done
           PATH="$(IFS=':'; echo "${kept[*]}")"
-          export PATH
           if found="$(command -v node)"; then
             echo "::error::a node is still on PATH at ${found}, so the suite would run under Node rather than Deno"
             exit 1

@@ -54,11 +54,11 @@ function inputNames() {
     .map((line) => line.trim().slice(0, -1));
 }
 
-/** One input's `type`, `default` and `required`, as written. */
+/** One input's `description`, `type`, `default` and `required`, as written. */
 function inputOf(name) {
   const body = block(CI, `      ${name}:`);
   const value = (key) => body.find((line) => line.startsWith(`        ${key}: `))?.slice(10 + key.length);
-  return { type: value('type'), default: value('default'), required: value('required') };
+  return { description: value('description'), type: value('type'), default: value('default'), required: value('required') };
 }
 
 /** A job's steps, one string each, with the step's own lines joined. */
@@ -111,11 +111,17 @@ test('the new inputs come after every existing one, and each is off or inert by 
   ]);
   // THE DEFAULTS ARE WHAT KEEP A MERGE FROM CHANGING ANY CALLER: both runtimes off, and the
   // directory at the repository root, where every step reads what it read before.
-  assert.deepEqual(inputOf('working-directory'), { type: 'string', default: '"."', required: undefined });
-  assert.deepEqual(inputOf('run-bun'), { type: 'boolean', default: 'false', required: undefined });
-  assert.deepEqual(inputOf('run-deno'), { type: 'boolean', default: 'false', required: undefined });
-  assert.deepEqual(inputOf('bun-version'), { type: 'string', default: '"1.4.4"', required: undefined });
-  assert.deepEqual(inputOf('deno-version'), { type: 'string', default: '"2.9.8"', required: undefined });
+  // The description is what a caller reads on the reference's page, so each one says what it does.
+  assert.deepEqual(inputOf('working-directory'), {
+    description: '"The directory holding package.json, relative to the repository root. verify, bun and deno only."',
+    type: 'string',
+    default: '"."',
+    required: undefined,
+  });
+  assert.deepEqual(inputOf('run-bun'), { description: '"Run the test script under Bun, in the bun job."', type: 'boolean', default: 'false', required: undefined });
+  assert.deepEqual(inputOf('run-deno'), { description: '"Run the test script under Deno, in the deno job."', type: 'boolean', default: 'false', required: undefined });
+  assert.deepEqual(inputOf('bun-version'), { description: '"The Bun version the bun job installs."', type: 'string', default: '"1.4.4"', required: undefined });
+  assert.deepEqual(inputOf('deno-version'), { description: '"The Deno version the deno job installs."', type: 'string', default: '"2.9.8"', required: undefined });
 });
 
 test('bun and deno are added after the existing jobs, each behind its own input, and nothing depends on them', () => {
@@ -143,8 +149,21 @@ test('each runtime job installs what verify installs, then runs the caller\'s ow
     assert.ok(list.some((step) => step.includes('node-version: ${{ fromJSON(inputs.node-versions)[0] }}')), `${name} installs on the lowest Node line`);
     assert.ok(list.every((step) => !step.includes('continue-on-error')), `${name} swallows no failure`);
   }
+  // The first three steps of each runtime job, exactly: a checkout that keeps no credential for the
+  // caller's suite to find, pnpm from the package's own manifest, and Node with verify's cache.
+  for (const [name, list] of [['bun', bun], ['deno', deno]]) {
+    assert.deepEqual(list.slice(0, 3), [
+      '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false',
+      "      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9\n        with:\n          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}",
+      "      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n        with:\n          node-version: ${{ fromJSON(inputs.node-versions)[0] }}\n          cache: pnpm\n          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}",
+    ], `${name}'s setup steps`);
+  }
   assert.ok(bun.some((step) => /oven-sh\/setup-bun@[0-9a-f]{40} # v2\.2\.0\n {8}with:\n {10}bun-version: \$\{\{ inputs\.bun-version \}\}/.test(step)));
   assert.ok(deno.some((step) => /denoland\/setup-deno@[0-9a-f]{40} # v2\.0\.5\n {8}with:\n {10}deno-version: \$\{\{ inputs\.deno-version \}\}/.test(step)));
+  // Both scripts stop at the first failure and on an unset variable, beyond the `-e -o pipefail`
+  // the runner's own bash already has.
+  assert.match(runScript('bun', 'The test suite under Bun'), /^set -euo pipefail\n/);
+  assert.match(runScript('deno', 'The test suite under Deno'), /^set -euo pipefail\n/);
   // `--bun` is the flag that moves a script's `node` onto Bun; `bun run test` alone runs it on Node.
   assert.match(runScript('bun', 'The test suite under Bun'), /^bun --bun run test$/m);
   assert.match(runScript('deno', 'The test suite under Deno'), /^deno task test$/m);
@@ -194,17 +213,17 @@ function executable(path, body) {
  * Run the deno step's script with PATH = `extra` dirs + a dir of real tools + a dir with a stub deno.
  * The stub records what `node` and `helper` resolve to when it runs, and its arguments.
  */
-function runDenoStep({ withNodeDir = true, emptyEntry = false, denoExit = 0 } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'ci-systems-'));
+function runDenoStep({ withNodeDir = true, emptyEntry = false, denoExit = 0, root: reuse, temp: reuseTemp, env = {} } = {}) {
+  const root = reuse ?? mkdtempSync(join(tmpdir(), 'ci-systems-'));
   const tools = join(root, 'tools');
   const withNode = join(root, 'with-node');
   const denoDir = join(root, 'deno-bin');
   const cwd = join(root, 'cwd');
-  const temp = join(root, 'runner-temp');
-  for (const dir of [tools, withNode, denoDir, cwd, temp]) mkdirSync(dir);
+  const temp = reuseTemp ?? join(root, 'runner-temp');
+  for (const dir of [tools, withNode, denoDir, cwd, temp]) mkdirSync(dir, { recursive: true });
   for (const tool of ['rm', 'mkdir', 'ln', 'head', 'cat', 'sh']) {
     const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    symlinkSync(found, join(tools, tool));
+    if (!existsSync(join(tools, tool))) symlinkSync(found, join(tools, tool));
   }
   executable(join(withNode, 'node'), 'echo real-node');
   executable(join(withNode, 'helper'), 'echo helper');
@@ -216,6 +235,7 @@ function runDenoStep({ withNodeDir = true, emptyEntry = false, denoExit = 0 } = 
       `echo "args=$*" >> '${record}'`,
       `echo "node=$(command -v node || echo none)" >> '${record}'`,
       `echo "helper=$(command -v helper || echo none)" >> '${record}'`,
+      `echo "$PATH" > '${record}.path'`,
       'if [ "$1" = "--version" ]; then echo "deno 0.0.0-stub"; exit 0; fi',
       `exit ${denoExit}`,
     ].join('\n'),
@@ -224,11 +244,12 @@ function runDenoStep({ withNodeDir = true, emptyEntry = false, denoExit = 0 } = 
   const bash = spawnSync('sh', ['-c', 'command -v bash'], { encoding: 'utf8' }).stdout.trim();
   const result = spawnSync(bash, ['-c', runScript('deno', 'The test suite under Deno')], {
     cwd,
-    env: { PATH: entries.join(':'), RUNNER_TEMP: temp },
+    env: { ...env, PATH: entries.join(':'), RUNNER_TEMP: temp },
     encoding: 'utf8',
   });
   const recorded = existsSync(record) ? readFileSync(record, 'utf8') : '';
-  return { ...result, recorded, temp, withNode };
+  const path = existsSync(`${record}.path`) ? readFileSync(`${record}.path`, 'utf8').trim() : '';
+  return { ...result, recorded, path, root, temp, tools, denoDir, withNode };
 }
 
 test('the deno step takes node off PATH, keeps everything beside it, and runs the suite with deno task', () => {
@@ -271,6 +292,38 @@ test('the deno step fails when the suite fails', () => {
   const run = runDenoStep({ denoExit: 3 });
   assert.equal(run.status, 3);
   assert.match(run.recorded, /^args=task test$/m);
+});
+
+test('the deno step can run twice in one RUNNER_TEMP, replacing what the first run left', () => {
+  const first = runDenoStep();
+  assert.equal(first.status, 0, first.stderr);
+  const second = runDenoStep({ temp: first.temp, root: first.root });
+  assert.equal(second.status, 0, second.stderr);
+});
+
+test('the deno step builds PATH from PATH alone, never from a variable it inherits', () => {
+  const run = runDenoStep({ env: { kept: '/inherited/bin' } });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.path, [join(run.temp, 'path-without-node', '1'), run.tools, run.denoDir].join(':'));
+});
+
+test('the bun step prints the Bun it runs, runs the test script with --bun, and fails when it fails', () => {
+  for (const exit of [0, 4]) {
+    const root = mkdtempSync(join(tmpdir(), 'ci-systems-bun-'));
+    const record = join(root, 'record');
+    executable(
+      join(root, 'bun'),
+      [`echo "args=$*" >> '${record}'`, 'if [ "$1" = "--version" ]; then echo 0.0.0-stub; exit 0; fi', `exit ${exit}`].join('\n'),
+    );
+    const bash = spawnSync('sh', ['-c', 'command -v bash'], { encoding: 'utf8' }).stdout.trim();
+    const result = spawnSync(bash, ['-c', runScript('bun', 'The test suite under Bun')], {
+      env: { PATH: `${root}:${dirname(bash)}` },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, exit, result.stderr);
+    assert.match(result.stdout, /^bun: 0\.0\.0-stub$/m);
+    assert.equal(readFileSync(record, 'utf8'), 'args=--version\nargs=--bun run test\n');
+  }
 });
 
 // ---------------------------------------------------------------------------
