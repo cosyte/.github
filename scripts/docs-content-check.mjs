@@ -65,6 +65,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 /** The one directory this gate reads, at the caller's repository root. */
 export const DOCS_ROOT = 'docs-content';
@@ -1754,6 +1755,25 @@ export function main(argv) {
   return 0;
 }
 
-if (process.argv[1] && toPosix(resolve(process.argv[1])) === toPosix(resolve(new URL(import.meta.url).pathname))) {
+/**
+ * Whether the file at `moduleUrl` is the script node was started with (`argv1`), compared as file URLs.
+ *
+ * As URLs, never as paths: this spelling used to compare `resolve(argv1)` with
+ * `resolve(new URL(moduleUrl).pathname)`, and on a Windows runner that pathname is
+ * `/D:/a/_temp/docs-content-check.mjs`, which resolves to no path `argv1` can name. So on Windows
+ * `main` never ran, and the step exited 0 having checked nothing: found by `self-check.yml`'s
+ * `systems` job, whose Windows legs printed no summary line.
+ *
+ * @param {string | undefined} argv1
+ * @param {string} moduleUrl
+ * @param {(path: string) => string} [toUrl] how a path becomes a file URL, resolved against the working
+ *   directory; the platform's own by default. No argument at all is the working directory, which is
+ *   never a module, so it never matches.
+ */
+export function invokedDirectly(argv1, moduleUrl, toUrl = (path) => pathToFileURL(path).href) {
+  return toUrl(argv1 ?? '') === moduleUrl;
+}
+
+if (invokedDirectly(process.argv[1], import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }

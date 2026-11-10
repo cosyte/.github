@@ -375,6 +375,12 @@ What it found, on 2026-11-10:
 - **Windows checks out LF.** `actions/checkout` on `windows-latest` wrote every fixture file with LF
   line endings, so a caller's formatter sees the same bytes it sees on Linux. The fixture's
   `format:check` is the tripwire if a runner image ever changes that.
+- **The docs-content checker checked nothing on Windows.** Its entry guard compared paths, and on a
+  Windows runner the path it read from its own URL was `/D:/a/_temp/docs-content-check.mjs`, which
+  matched nothing, so `main` never ran and the step exited 0. The Windows legs gave it away by
+  printing no "Checked N file(s)" line. The guard now compares file URLs
+  (`test/docs-content-entry.test.mjs` asks it the Windows question with Node's win32 rules), and the
+  Windows legs print the summary. No caller was affected: none runs `verify` on Windows yet.
 - **The PHI scanner and the dash checker run on Windows**, where the dash checker starts `bash` and
   finds Git's.
 

@@ -32,6 +32,11 @@ so the next change to this file moves those lines under a heading with that name
   `ci.yml` itself against `test/fixtures/ci-caller/` (README.md, "Every system and runtime"). One
   limit it found: the dash checker in `@cosyte/script-utils` cannot run on macOS, where grep has no
   `-P`; it refuses rather than passing, so a caller whose own `lint` runs it reds on macOS.
+- `scripts/docs-content-check.mjs`, which `verify` fetches when `check-docs-content` is on, now runs on
+  a Windows runner. Its entry guard compared its own URL's pathname with `argv[1]` as paths, which on
+  Windows never matched, so the step exited 0 without checking anything. It compares file URLs now.
+  A caller does nothing: no caller runs `verify` on Windows yet, and on Linux and macOS the checker
+  runs as before.
 - `ci.yml` takes a `working-directory` input, `"."` by default, naming where `verify`, `bun` and
   `deno` find `package.json`. It exists so this repository can run the workflow against its fixture;
   at `"."` every step reads what it read before. `prepublish` and `actionlint` ignore it.
