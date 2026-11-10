@@ -10,9 +10,11 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 | Workflow | Purpose | Used by |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
+| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers** · [the test suite under Bun] · [under Deno] · [the coverage ratchet] · [mutation of a pull request's changed files], on every system the caller lists ([Every system and runtime](#every-system-and-runtime), [The testing standard's jobs](#the-testing-standards-jobs)). Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → derive the release notes → **tag the version commit, before anything is published** → verify → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a version published without its release (a staged version **promoted after its own run stopped waiting**, or a direct publish whose release step never finished), at the tag on the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
+| [`nightly-properties.yml`](.github/workflows/nightly-properties.yml) | **one job**, `properties`: the caller's test suite with `COSYTE_PROPERTY_RUNS=10000`, and the replay seed of every property that fails kept in the job summary and the `property-run` artifact ([The testing standard's jobs](#the-testing-standards-jobs)) | no repository calls it yet |
+| [`weekly-mutation.yml`](.github/workflows/weekly-mutation.yml) | **one job**, `mutation`: the full mutation run, then each package's mutation score against its floor in `quality-floor.json`, in the job summary. A score below its floor is red. It never commits; raising a floor is a pull request | no repository calls it yet |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | no repository calls it today |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
@@ -59,6 +61,7 @@ jobs:
     with:
       package-name: "@cosyte/hl7"
       # publish-mode: staged # optional; the default, direct, is live when the run ends. See below
+      # node-version: "24" # optional, 24 or later; empty keeps version on 22, release and finalize on 24
     # npm authenticates by trusted publishing (OIDC), so there is no npm token to pass. The package's
     # trusted-publisher entry on npmjs.com names THIS repository and `release.yml` (this file),
     # never cosyte/.github. See "How a release authenticates to npm".
@@ -94,6 +97,9 @@ jobs:
     # with:
     #   files-command: pnpm check:no-emdash
     #   messages-command: pnpm check:no-emdash --stdin
+    # `node-version` defaults to "22". A package whose `engines.node` starts above that, with
+    # `engine-strict`, passes its floor, since pnpm refuses to run on a lower line:
+    #   node-version: "24"
 ```
 
 That caller reports two check-run contexts, `no-emdash / tracked-files` and `no-emdash / messages`,
@@ -120,7 +126,8 @@ jobs:
     # Copy a real one from the releases page; this placeholder resolves to nothing.
     uses: cosyte/.github/.github/workflows/gate-no-internal-refs.yml@workflows-YYYY-MM-DD-COMMIT
     # `command` defaults to `pnpm check:no-internal-refs`, so a caller that names it that way
-    # passes no inputs at all.
+    # passes no inputs at all. `node-version` defaults to "22"; a package that needs a later line
+    # passes it (`node-version: "24"`), as the em-dash gate's caller does.
 ```
 
 Its one context is `no-internal-refs / public-surface`.
@@ -293,6 +300,274 @@ only way to know is to look at the setting.
 It does not move a single caller. Thirteen `uses:` lines live in thirteen other repositories, and
 this repository has no way to edit them and no policy that can force them. Until each one moves, the
 `@main` fan-out is exactly what it was, and this is an offer rather than an enforcement.
+
+## Every system and runtime
+
+`ci.yml`'s `verify` job runs on every entry of the `os` input, and two opt-in jobs run the caller's
+test script under Bun and under Deno. A caller that passes nothing gets what it got before: `verify`
+on `ubuntu-latest`, and `bun` and `deno` skipped.
+
+```yaml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
+      run-bun: true # adds the `ci / bun` check
+      run-deno: true # adds the `ci / deno` check
+```
+
+| Input | Default | What it does |
+|---|---|---|
+| `os` | `'["ubuntu-latest"]'` | the systems `verify` runs on, one leg per system and Node line |
+| `run-bun` | `false` | the `bun` job: install with pnpm from the lockfile, then `bun --bun run test` |
+| `bun-version` | `"1.4.4"` | the Bun the `bun` job installs |
+| `run-deno` | `false` | the `deno` job: install with pnpm from the lockfile, take `node` off PATH, then `deno task test` |
+| `deno-version` | `"2.9.8"` | the Deno the `deno` job installs |
+| `working-directory` | `"."` | where `verify`, `bun`, `deno`, `coverage-ratchet`, `mutation`, `scaling-gate` and `bench-compare` find `package.json`; `prepublish` and `actionlint` ignore it |
+
+Both runtime jobs run on `ubuntu-latest` only, so each is one stable check context. A skipped job
+satisfies a required context, so require `ci / bun` or `ci / deno` only while its input is on
+([What a skipped required context does to a merge](#what-a-skipped-required-context-does-to-a-merge)).
+
+### How each runtime is made to run the suite
+
+Both jobs run the caller's own `test` script, so a library opts in without writing a second one.
+What decides the runtime is how the script's `node` is started, and we measured it with a test that
+throws `process.versions` from inside a vitest worker:
+
+- `bun run test` starts a `#!/usr/bin/env node` bin (vitest, tsx, a `cosyte-process` verb) with
+  Node. `bun --bun run test` starts it with Bun, so the job uses `--bun`.
+- `deno task test` starts a package bin with Deno, but a script's literal `node` with the real Node
+  whenever one is on PATH, and with Deno only when none is. So the `deno` step replaces each PATH
+  entry that holds a `node` with a directory of links to everything else in it, and refuses to run
+  the suite while any `node` is still reachable. On `ubuntu-latest` that is two entries: the Node
+  `setup-node` installed and `/usr/local/bin`.
+
+Installing stays with pnpm and the committed lockfile in both jobs, so the suite runs against the
+exact dependency tree `verify` tested.
+
+### The proof: `self-check.yml` runs `ci.yml` itself on every system
+
+This repository is not a package, so its `systems` job runs `ci.yml` against
+[`test/fixtures/ci-caller/`](test/fixtures/ci-caller), with `os` set to all three systems, every
+default Node line, and both runtime jobs on. Every script of the fixture fails on the hazard it
+stands for, and `test/ci-caller-fixture.test.mjs` shows each one failing:
+
+| Script | Fails when |
+|---|---|
+| `format:check` | any file holds a carriage return, which is what a CRLF checkout on Windows produces |
+| `lint` | the dash checker callers run (`cosyte-no-emdash`) does not pass the fixture's text, or does not find a planted em dash |
+| `phi-scan` | the PHI scanner callers run (`cosyte-phi-scan`) does not pass the fixture, or does not find a planted, synthetic SSN shape |
+| `test` | the system is not the one `RUNNER_OS` names, or the source module does not load; it prints the runtime |
+| `build`, `attw` | `dist/` is not written, or an export target has no file, before the shared ESM and CJS smoke step loads it |
+
+So a green `systems` run shows, on each system: every shared step of `verify` (checkout, pnpm,
+`setup-node` and its cache, the docs-content delivery and checker, the install, each script started
+through the system's default shell, the ESM and CJS smoke step), and the real dash and PHI checkers
+from `@cosyte/script-utils` passing clean input and finding planted input.
+
+What it found, on 2026-11-10:
+
+- **macOS cannot run the dash checker.** `cosyte-no-emdash` needs GNU grep's `-P`, and the macOS
+  runner's BSD grep has none: the checker refuses every input with "the scanner cannot match a known
+  em dash", which is it failing closed, as it must. The fixture's `lint` requires that refusal on
+  macOS and turns red the day the checker passes there, so the expectation cannot outlive the fix.
+  Callers run the dash checker in the `gate-no-emdash` workflows, which run on `ubuntu-latest`, so
+  no caller's `verify` is affected unless its own `lint` runs the checker.
+- **Windows checks out CRLF unless told otherwise, so `verify` tells it.** With the fixture's eol
+  left unspecified (its own `.gitattributes` says `* text=auto !eol`), `actions/checkout` on
+  `windows-latest` (image windows-2025-vs2026, git 2.56.0.windows.4) wrote all eleven of its files
+  with CRLF line endings, and `format:check` failed on each one on Node 22, 24 and 26, while the
+  `ubuntu-latest` and `macos-latest` legs of the same run checked them out LF. So `verify`'s
+  first step, before the checkout, sets `core.autocrlf false` and `core.eol lf` on every system:
+  with it, the same legs check the same files out LF and pass. A file whose eol a repository's
+  `.gitattributes` sets keeps that setting, since an eol attribute overrides both. That is also
+  why the first runs here saw LF: this repository's root `.gitattributes` says
+  `* text=auto eol=lf`, which fixed the fixture to LF on every checkout and hid the runner's own
+  behavior, and why the fixture now unsets it. A caller whose `.gitattributes` already says
+  `eol=lf` was never affected; one without it gets LF from the step.
+- **The docs-content checker checked nothing on Windows.** Its entry guard compared paths, and on a
+  Windows runner the path it read from its own URL was `/D:/a/_temp/docs-content-check.mjs`, which
+  matched nothing, so `main` never ran and the step exited 0. The Windows legs gave it away by
+  printing no "Checked N file(s)" line. The guard now compares file URLs
+  (`test/docs-content-entry.test.mjs` asks it the Windows question with Node's win32 rules), and the
+  Windows legs print the summary. No caller was affected: none runs `verify` on Windows yet.
+- **The PHI scanner and the dash checker run on Windows**, where the dash checker starts `bash` and
+  finds Git's.
+
+What it cannot show: that a caller's own tools work on another system. The fixture's scripts are
+small stand-ins for vitest, eslint, prettier, tsup, attw and a repository's own PHI scanner. A
+caller learns that the first time its own `os` list runs on its own tree. Likewise the runtime jobs
+prove that the suite is started under Bun or Deno, not that a caller's suite passes there: on
+2026-11-10, `hl7`'s suite (4,114 tests) passed under Deno 2.9.8 and failed one test under Bun 1.4.4:
+a test whose premise is that a file copied outside the package cannot resolve an installed
+dependency, which under Bun it can.
+
+## The testing standard's jobs
+
+The testing standard (cosyte/config,
+[decision 0004](https://github.com/cosyte/config/blob/main/documentation/decisions/0004-the-testing-standard.md))
+holds each package's coverage and mutation score to a floor file, `quality-floor.json`, that only
+rises, and holds a pull request's own code to 100. Four jobs here run it. Each is off until a caller
+opts in, so a caller that changes nothing sees two new skipped checks, `ci / coverage-ratchet` and
+`ci / mutation`, and nothing else.
+
+| Where | Job | When | What it runs |
+|---|---|---|---|
+| `ci.yml`, `run-coverage-ratchet: true` | `coverage-ratchet` | every event | `pnpm test:coverage`, then `cosyte-ratchet check --skip mutation`, with `--base origin/<base branch>` on a pull request |
+| `ci.yml`, `run-mutation: true` | `mutation` | a pull request | `cosyte-mutate changed --base origin/<base branch>`, then `cosyte-ratchet check --skip coverage --base origin/<base branch>` |
+| `nightly-properties.yml` | `properties` | the caller's schedule | the caller's `test-cmd` (default `pnpm test`) with `COSYTE_PROPERTY_RUNS` set to `property-runs` (default `10000`) |
+| `weekly-mutation.yml` | `mutation` | the caller's schedule | the caller's `mutate-cmd` (default `pnpm exec cosyte-mutate full`), then `cosyte-ratchet check --skip coverage` |
+
+The tools are not on npm yet: `cosyte-ratchet` ships in `@cosyte/script-utils` and `cosyte-mutate`
+in `@cosyte/vitest-config`, both released from cosyte/config once the owner approves the release.
+So no library can turn these on today. After that release, a library adopts the standard in its own
+repository (decision 0004, "How a repository adopts it"): it adds both packages and StrykerJS to its
+devDependencies, adds a `stryker.config.mjs`, runs a full mutation run, writes `quality-floor.json`
+with `cosyte-ratchet raise`, and then opts in here:
+
+```yaml
+# <parser>/.github/workflows/ci.yml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      run-coverage-ratchet: true # adds the `ci / coverage-ratchet` check
+      run-mutation: true # adds the `ci / mutation` check, on pull requests
+```
+
+```yaml
+# <parser>/.github/workflows/nightly-properties.yml
+on:
+  schedule: [{ cron: "17 6 * * *" }]
+  workflow_dispatch: {}
+jobs:
+  properties:
+    uses: cosyte/.github/.github/workflows/nightly-properties.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+```yaml
+# <parser>/.github/workflows/weekly-mutation.yml
+on:
+  schedule: [{ cron: "43 4 * * 0" }]
+  workflow_dispatch: {}
+jobs:
+  mutation:
+    uses: cosyte/.github/.github/workflows/weekly-mutation.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+How they run:
+
+- **Beside `verify`, never after it.** Neither `ci.yml` job has a `needs:`, so a pull request waits
+  for the slowest of the three, not their sum. Both run on `ubuntu-latest` at the first entry of
+  `node-versions`, so a floor is judged on one system and one Node line.
+- **With the whole history.** Both check out with `fetch-depth: 0`, because both diff against the
+  merge base of the base branch and HEAD, and a shallow clone has none.
+- **On the run's page.** Each judging step writes the ratchet's report to the job summary, including
+  the list of inline exceptions in the changed code that the pull request has to carry. The `ci.yml`
+  `mutation` job keeps `reports/mutation/` as the `mutation-changed` artifact, and the weekly run as
+  `mutation-report`.
+- **The nightly seeds.** The property runners print `Replay exactly: COSYTE_PROPERTY_SEED=<seed>
+  COSYTE_PROPERTY_PATH=<path>` on a failure. The nightly job strips colour codes from the log, keeps
+  each printed pair once with the test and the property that printed it, writes them to the summary
+  and to `seeds.txt`, and keeps the log and `seeds.txt` as the `property-run` artifact for 30 days. A
+  depth that is not a whole number of cases is refused before the suite starts.
+- **Never a commit.** The weekly run has `contents: read` and keeps no credential. A score below its
+  floor turns it red; a score above it changes nothing. Raising a floor is a pull request a person or
+  an agent opens after `cosyte-ratchet raise --skip coverage`.
+- **A skipped job satisfies a required context.** Require `ci / coverage-ratchet` or `ci / mutation`
+  only while its input is on. `ci / mutation` is skipped on every event but a pull request, which is
+  the one event a ruleset gates.
+
+What we proved here, and what we could not. `test/testing-standard-jobs.test.mjs` runs every shell
+script these jobs add against a stub `pnpm`: the arguments each hands the tools, the base ref, the
+summary, the seed recording, and that every failure reaches the job's exit status.
+`self-check.yml`'s `systems` job turns both `ci.yml` jobs on, its `nightly-properties` and
+`weekly-mutation` jobs run the two reusables, all against `test/fixtures/ci-caller/`, and
+`quality-artifacts` checks what the two scheduled runs kept. Because the real tools are not on npm,
+the fixture links `test/fixtures/quality-stubs/`: stand-ins for `cosyte-mutate` and
+`cosyte-ratchet` that accept only the command lines the real tools accept, refuse `raise`, check that
+the base ref has a merge base and that each report the real tool would read is on disk, and judge
+nothing. So a green run proves the wiring (the history, the order of the steps, the directory, the
+summary, the artifacts), not the tools. Three things a caller learns only by adopting: whether the
+real tools pass its tree on a hosted runner, whether a changed-files mutation run fits the 15 minute
+budget for a pull request (a large changed file is mutated whole), and whether a full mutation score
+is steady enough week to week for an exact comparison (decision 0004 measured it moving 0.36
+points between two runs of unchanged code, and leaves a tolerance to the owner).
+
+## The performance standard's jobs
+
+The performance standard (cosyte/config,
+[decision 0005](https://github.com/cosyte/config/blob/main/documentation/decisions/0005-the-performance-standard.md))
+has two instruments, and `ci.yml` runs each in its own job. Both are off until a caller opts in, so
+a caller that changes nothing sees two new skipped checks, `ci / scaling-gate` and
+`ci / bench-compare`, and nothing else.
+
+| Input | Default | Job | When | What it runs |
+|---|---|---|---|---|
+| `run-scaling-gate` | `false` | `scaling-gate` | every event | `pnpm test:perf`: the caller's non-instrumented run of the scaling gate from `@cosyte/test-utils/perf` and its self-check. Red when it fails |
+| `run-bench-compare` | `false` | `bench-compare` | a pull request | builds the head and, in a worktree, the base, then `cosyte-bench compare` from `@cosyte/bench` for each suite. **Never red** |
+| `bench-suites` | `""` | `bench-compare` | | the suites to compare, separated by spaces or new lines, relative to `working-directory`; empty runs every `bench/*.bench.mjs` and `bench/*.bench.ts` |
+| `bench-target` | `"dist/index.mjs"` | `bench-compare` | | the built entry timed on each side, relative to `working-directory` |
+
+A library adopts the standard in its own repository (decision 0005, "How a repository adopts it"):
+it adds `@cosyte/test-utils` and a `test:perf` script with its own non-instrumented Vitest config,
+adds `@cosyte/bench` and a suite under `bench/`, and opts in here:
+
+```yaml
+# <parser>/.github/workflows/ci.yml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      run-scaling-gate: true # adds the `ci / scaling-gate` check
+      run-bench-compare: true # adds the `ci / bench-compare` check, on pull requests, never red
+```
+
+How they run:
+
+- **Beside `verify`, never after it.** Neither job has a `needs:`. Both run on `ubuntu-latest` at
+  the first entry of `node-versions`: one stable check context each, on the runner class the
+  standard's calibration was taken on.
+- **The scaling gate is the required one.** `scaling-gate` ends with `pnpm test:perf`'s exit
+  status, so a caller may require `ci / scaling-gate` while its input is on. It has a 15 minute
+  bound.
+- **The comparison is advisory, and the step makes sure of it.** `bench-compare` runs as one step
+  that ends 0 whatever happens. `cosyte-bench compare` runs 12 rounds; in each, every case runs once
+  on the base build and once on the head build, each in a fresh process, back to back, so the
+  runner's noise lands on both sides. A `regression` verdict (exit 1) becomes a warning on the run's
+  page, a case it could not measure (exit 2) a notice, and a base that does not install or build, a
+  named suite that is not a file, or a run with no suite ends the step with a note in the summary.
+  The comparisons share a 600 second budget: a suite that starts after it is spent is reported and
+  skipped, and one still running when it ends is stopped and reported. The job's own bound, 20
+  minutes, is for an install or a build that hangs.
+- **On the run's page and in an artifact.** Each suite's Markdown goes in the job summary. Its
+  results document, in the `results-v1` shape `@cosyte/bench` writes and checked with
+  `cosyte-bench check`, goes in the `bench-comparison` artifact with the Markdown, for 30 days, so a
+  later results repository can keep it. The documents are named after the suite path, with `/` as
+  `-`: `bench/parse.bench.mjs` is `bench-parse.json`.
+- **The suite is the head's.** `cosyte-bench compare` hands one suite file both builds, so the
+  suites are read from the pull request's tree. A suite that measures something the base does not
+  have yet cannot time the base, and the comparison says it could not measure that case.
+- **Never require `ci / bench-compare`.** It is green whatever it measured, and decision 0005 makes
+  it a required check on a runner class only once an A/A calibration of the caller's own suite there
+  shows false alarms, and comparisons with a skipped case, each under 1% with 95% confidence. When
+  that is met, failing on a regression is a change to this job that every caller would act on.
+- **A skipped job satisfies a required context.** Require `ci / scaling-gate` only while its input
+  is on. `ci / bench-compare` is skipped on every event but a pull request.
+
+What we proved here, and what we could not. `test/performance-jobs.test.mjs` runs the comparison's
+script against a real git repository and a stub `pnpm`: the base it checks out, the builds it makes,
+the arguments it hands `cosyte-bench`, the summary, the kept files, and that a regression, a skip, a
+crash, an unbuilt base, a missing suite and a spent budget each end the step 0. `self-check.yml`'s
+`systems` job turns both jobs on against `test/fixtures/ci-caller/` with the real tools from npm:
+the fixture's `test:perf` runs the scaling gate and its self-check on a synthetic line splitter, and
+`bench/greeting.bench.mjs` is timed on the pull request's base and head. `performance-artifacts`
+then requires the kept document to be a `results-v1` comparison with at least one case. What a
+caller learns only by adopting: whether its own fixtures clear the scaling gate's
+`MIN_PHASE_MS` on a hosted runner, how long its own suite's comparison takes (decision 0005 measured
+about two minutes for six cases), and its own suite's false alarm rate, which is the calibration.
 
 ## The docs-content gate
 
@@ -1188,6 +1463,10 @@ registry-absent dependency **name** either of them carries, and the default allo
 it. That is the whole of what the allowance has to cover for them, which is not the same claim as
 nothing else being wrong with them. See `blocked-peer` below.
 
+**The default allowance is empty since 2026-11-08.** `@cosyte/fhir` is on the registry now, so the
+`@cosyte/fhir=blocked` default went stale as designed and every caller's gate printed a notice
+saying so. The default names nothing, and a caller that does not pass the input needs no change.
+
 A caller that cannot pay the cost (layer 2 is a full install per run and touches the network on
 every pull request) opts **out**:
 
@@ -1207,19 +1486,19 @@ Read what `blocked-peer` does and does not establish before treating those two a
 
 `expect-unpublished-deps` is the same input `release.yml` takes, in the same grammar. A repo names its
 known-unpublished consumer dependencies and the gate asserts **exactly that set**: a named absence is
-the expected state and warns, an absence nobody named still fails. Without it, layer 2 reds
-`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`), which nobody can fix from those repos,
-and a permanently red gate is one people learn to ignore, which is the same failure as a step that
+the expected state and warns, an absence nobody named still fails. Without it, layer 2 red
+`transform` and `synth` for `@cosyte/fhir` (`FHIR-NPM-NAME`) until that package published, which
+nobody could fix from those repos, and a permanently red gate is one people learn to ignore, which is the same failure as a step that
 never runs. With an open-ended one you get a mute, which is worse than no gate because it reads as a
 gate.
 
-**`@cosyte/assets` and `@cosyte/docs` are `E404` on the registry exactly like `@cosyte/fhir` is, and
+**`@cosyte/assets` and `@cosyte/docs` are `E404` on the registry exactly like `@cosyte/fhir` was, and
 they are `private: true` on purpose.** A deliberate absence and an unexplained block must not share
 words, so an entry carries a kind:
 
 | Entry | Meaning | Excuses an install failure? |
 |---|---|---|
-| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear**. `@cosyte/fhir` is the only one today | **yes**, and it is self-clearing |
+| `name=blocked` | absent for a reason outside this repo's control, and **expected to clear**. `@cosyte/fhir` was one until it published; none is named by default now | **yes**, and it is self-clearing |
 | `name=private` | absent **by design**, `private: true`, never going to clear | **no, anywhere.** A published package whose dependency will never exist is a permanent defect wearing the same 404 as a temporary one |
 | `name` | untagged: the spelling `release.yml` shipped with in `#31` | **yes**, read as `blocked`, and reported as untagged in the step summary so it can be tightened |
 
@@ -1670,7 +1949,7 @@ A manifest can be valid locally and meaningless remotely, and this org has shipp
 | Package | What the registry serves | What a consumer gets |
 |---|---|---|
 | `@cosyte/cli` `0.0.1` and `0.0.2` | four `file:vendor/*.tgz` dependencies plus six more in `optionalDependencies` | `ENOENT` on `node_modules/@cosyte/cli/vendor/cosyte-fhir-0.0.0.tgz`. Both versions are permanent and stay broken forever (ADR 0001) |
-| `@cosyte/transform` `0.0.5` | a required peer on `@cosyte/fhir` | `E404`, because `@cosyte/fhir` is not on the registry (`FHIR-NPM-NAME`) |
+| `@cosyte/transform` `0.0.5` | a required peer on `@cosyte/fhir` | `E404`, because `@cosyte/fhir` was not on the registry then (`FHIR-NPM-NAME`) |
 | `@cosyte/synth` `0.0.6` | the same peer, marked **optional** in `peerDependenciesMeta` | `ERESOLVE`. An optional peer whose packument 404s still fails the tree. **Optionality is not protection** |
 
 [`scripts/install-check.mjs`](scripts/install-check.mjs) closes it, unit-tested in
@@ -1867,14 +2146,19 @@ the offline lint always gets one bounded shot.
 
 ### The allowance is a dated exception, not a setting
 
-`expect-unpublished-deps` defaults to `@cosyte/fhir` and exists so that `transform` and `synth` do not
-red on a condition nobody can fix from those repos. A permanently red gate is one people learn to
-ignore, which is the same failure as a step that never runs.
+`expect-unpublished-deps` exists so that a package whose dependency npm refuses, for a reason nobody
+can fix from that repo, does not red on it. A permanently red gate is one people learn to ignore,
+which is the same failure as a step that never runs.
 
 It is an **exact** allowance, not a mute: any absent dependency **not** named in it still fails, so a
-new unpublished dependency is still caught. And it is self-clearing. The moment `@cosyte/fhir`
+new unpublished dependency is still caught. And it is self-clearing. The moment a named package
 publishes, nothing is absent, the installs simply pass, and the gate reports the entry as **stale** in
-the step summary so it gets deleted. **Delete it then; it is not load-bearing.**
+the step summary so it gets deleted.
+
+That is what happened to the only entry it ever had by default. `expect-unpublished-deps` defaulted to
+`@cosyte/fhir` so that `transform` and `synth` did not red while npm refused that package
+(`FHIR-NPM-NAME`). `@cosyte/fhir` is on the registry now, the entry went stale, and the default has
+been empty since 2026-11-08.
 
 ## Release notes
 

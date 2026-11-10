@@ -175,4 +175,4 @@ For `cosyte/.github` itself, the terms are the MIT License at
 
 Questions? Start a discussion in
 [Discussions](https://github.com/cosyte/.github/discussions). Want an integration
-built? See [our integration services](https://cosyte.com/integration-services).
+built, or hosted and run? See [our integration services](https://cosyte.com/integration-services).

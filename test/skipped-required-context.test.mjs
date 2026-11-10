@@ -537,9 +537,11 @@ const PUBLISHED_REUSABLES = [
   'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  'nightly-properties.yml',
   'pr-title.yml',
   'release.yml',
   'scorecard.yml',
+  'weekly-mutation.yml',
 ];
 
 /**
@@ -736,7 +738,14 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
   // That is safe for it rather than merely compliant: it only cuts a GitHub release for a version npm
   // already serves, and the output its condition reads is written below the protection gate, so a
   // refused gate still leaves it skipped (`test/environment-gate.test.mjs`, AC9, pins that chain).
-  assert.deepEqual(withDependencies, ['release.yml:release', 'release.yml:finalize']);
+  //
+  // THE THIRD MEMBER, `self-check.yml:quality-artifacts`, IS NO CALLER'S CONTEXT. `self-check.yml` has
+  // no `workflow_call`, so the rule above does not reach it: it reads the artifacts the two scheduled
+  // reusables kept, and has nothing to read when either of them failed, which is already red.
+  //
+  // THE FOURTH, `self-check.yml:performance-artifacts`, IS NO CALLER'S CONTEXT EITHER, for the same
+  // reason: it reads what `systems`' `bench-compare` kept, on a pull request.
+  assert.deepEqual(withDependencies, ['release.yml:release', 'release.yml:finalize', 'self-check.yml:quality-artifacts', 'self-check.yml:performance-artifacts']);
   const finalize = under(parseWorkflow('release.yml', read(join(WORKFLOWS, 'release.yml'))).jobs, 'finalize');
   assert.equal(holdsAnEnvironment(finalize), false, 'finalize must not hold an environment');
   assert.equal(survives(scalar(finalize, 'if') ?? ''), true, 'a dependent job without an environment must survive a failed dependency');
@@ -770,7 +779,17 @@ test('AC-9: the tree as this change leaves it passes, and every job that declare
 
 /** Every job id of every published reusable, at the pin. */
 const PUBLISHED_JOB_IDS = {
-  'ci.yml': ['verify', 'prepublish', 'actionlint'],
+  // ADDED, NOT RENAMED: `bun` and `deno` are new contexts no caller's ruleset names, each skipped
+  // unless the caller sets its input, and `verify`, `prepublish` and `actionlint` are where they were.
+  //
+  // ADDED, NOT RENAMED, AGAIN: `coverage-ratchet` and `mutation` are new contexts no caller's
+  // ruleset names, each skipped unless the caller sets its input (and `mutation` on every event but
+  // a pull request), and every id before them is where it was.
+  //
+  // ADDED, NOT RENAMED, A THIRD TIME: `scaling-gate` and `bench-compare` are new contexts no
+  // caller's ruleset names, each skipped unless the caller sets its input (and `bench-compare` on
+  // every event but a pull request), and every id before them is where it was.
+  'ci.yml': ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation', 'scaling-gate', 'bench-compare'],
   'codeql.yml': ['analyze'],
   'drift-check.yml': ['drift'],
   // ADDED, NOT RENAMED, and the distinction is the one this table exists to make legible. Both
@@ -789,6 +808,10 @@ const PUBLISHED_JOB_IDS = {
   'gate-no-emdash-install.yml': ['tracked-files', 'messages'],
   'gate-no-internal-refs-install.yml': ['public-surface'],
   'nightly-fuzz.yml': ['fuzz'],
+  // TWO FILES ADDED, so `properties` and `mutation` are new contexts. Each runs on a schedule the
+  // caller writes, never on a pull request, so no ruleset has a reason to require either.
+  'nightly-properties.yml': ['properties'],
+  'weekly-mutation.yml': ['mutation'],
   // ADDED, NOT RENAMED. A new file, so `conventional-commits` is a new context no caller's ruleset
   // names yet. It carries no condition and no `needs:`, so a caller may require it.
   'pr-title.yml': ['conventional-commits'],
@@ -819,7 +842,11 @@ const EVERY_JOB_ID = {
   'no-emdash.yml': ['no-emdash', 'no-emdash-messages'],
   'org-defaults-coverage.yml': ['org-defaults-coverage'],
   'publish-reference.yml': ['publish-reference'],
-  'self-check.yml': ['actionlint', 'scripts', 'package-lists'],
+  // ADDED, NOT RENAMED: `systems` runs `ci.yml` against the fixture on every system and runtime.
+  // ADDED, NOT RENAMED: the two scheduled reusables run against the fixture, and `quality-artifacts`
+  // reads what they kept.
+  // ADDED, NOT RENAMED: `performance-artifacts` reads what `systems`' `bench-compare` kept.
+  'self-check.yml': ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'quality-artifacts', 'performance-artifacts'],
   'self-codeql.yml': ['codeql'],
   'self-pr-title.yml': ['pr-title'],
   'self-scorecard.yml': ['scorecard'],

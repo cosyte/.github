@@ -872,12 +872,14 @@ test("ci.yml wires both layers the way the script expects", async () => {
   assert.match(yml, /^ {6}run-prepublish-manifest-lint:[\s\S]{0,400}?default: true$/m);
   assert.match(yml, /^ {6}run-prepublish-install:[\s\S]{0,400}?default: true$/m);
 
-  // And the default allowance must parse, in the grammar this script owns.
+  // And the default allowance must parse, in the grammar this script owns. It is empty since
+  // `@cosyte/fhir` reached the registry and its `=blocked` entry went stale: a caller that passes
+  // nothing names nothing, so every absence it meets fails.
   const declaredDefault = yml.match(/expect-unpublished-deps:[\s\S]{0,600}?default: "([^"]*)"/)?.[1];
-  assert.equal(declaredDefault, "@cosyte/fhir=blocked");
+  assert.equal(declaredDefault, "");
   const { entries, malformed } = parseDeclaredAllowance(declaredDefault);
   assert.deepEqual(malformed, []);
-  assert.deepEqual(entries, [{ name: "@cosyte/fhir", kind: "blocked", tagged: true }]);
+  assert.deepEqual(entries, []);
 
   // Layer 2 packs what layer 2 built. Reversed, every opted-in caller reports `not-built`.
   //

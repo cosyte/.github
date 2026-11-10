@@ -1,0 +1,63 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      '@cosyte/bench':
+        specifier: 0.1.1
+        version: 0.1.1
+      '@cosyte/script-utils':
+        specifier: 0.1.8
+        version: 0.1.8
+      '@cosyte/test-utils':
+        specifier: 0.1.4
+        version: 0.1.4(fast-check@4.10.2)
+      cosyte-quality-stubs:
+        specifier: link:../quality-stubs
+        version: link:../quality-stubs
+
+packages:
+
+  '@cosyte/bench@0.1.1':
+    resolution: {integrity: sha512-wHd1lwEI0fao8w9ToJQSKIy28nbzYUumZ1+mkgXyIFjRHuwZFDA1O1DdjxmqIhxjQHzgDPNVDzeQPpkrGRAi1A==}
+    engines: {node: '>=22.15.0'}
+    hasBin: true
+
+  '@cosyte/script-utils@0.1.8':
+    resolution: {integrity: sha512-d5+N2hVp/MqZ+MCAO91sJjFL1mRQU6gFlJOlMKdEF4iUKHWLNY/Vh1CTNSK6ebk9SxtrU+4GC5LGGCJWKoldbA==}
+    engines: {node: '>=22.14'}
+    hasBin: true
+
+  '@cosyte/test-utils@0.1.4':
+    resolution: {integrity: sha512-HPn9orWg6PvUJNdRjyOWvnuzUQ2wB2Z5PZuec0263BdA2tToC71dSakbSv0+H5CVhF6FZqVVjoM71i3Q5hgByg==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      fast-check: ^3.0.0 || ^4.0.0
+
+  fast-check@4.10.2:
+    resolution: {integrity: sha512-iK2f+YrcmoeGqk6fA0ea2bptcu/itMIm4NfEozq6N25+aG6h7s5HZbB/k1aV7b5w5sFLMCbbtRUsTVR+BgC3xw==}
+    engines: {node: '>=12.17.0'}
+
+  pure-rand@8.4.2:
+    resolution: {integrity: sha512-vvuOGgcuPJAirlHvuQw1TrOiw7ptaIXXmIbNuiNOY6lNGJJH49PQ1Kj4nd783nPdQhQdicgOjVI2yI/9BD6/Ng==}
+
+snapshots:
+
+  '@cosyte/bench@0.1.1': {}
+
+  '@cosyte/script-utils@0.1.8': {}
+
+  '@cosyte/test-utils@0.1.4(fast-check@4.10.2)':
+    dependencies:
+      fast-check: 4.10.2
+
+  fast-check@4.10.2:
+    dependencies:
+      pure-rand: 8.4.2
+
+  pure-rand@8.4.2: {}

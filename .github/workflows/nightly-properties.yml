@@ -1,0 +1,157 @@
+name: Nightly properties
+
+# Reusable deep property run: the caller's test suite with every property at 10,000 cases, and the
+# replay seed of every property that fails kept in the job summary and in an artifact.
+# Caller (each package's .github/workflows/nightly-properties.yml):
+#   on:
+#     schedule: [{ cron: "17 6 * * *" }]
+#     workflow_dispatch: {}
+#   jobs:
+#     properties:
+#       uses: cosyte/.github/.github/workflows/nightly-properties.yml@workflows-YYYY-MM-DD-COMMIT
+# The property runners in @cosyte/test-utils read COSYTE_PROPERTY_RUNS, which wins over each runner's
+# own depth, and print `Replay exactly: COSYTE_PROPERTY_SEED=<seed> COSYTE_PROPERTY_PATH=<path>` on a
+# failure. Setting that pair and running the one test again replays the failing case, already shrunk.
+#
+# ▶ NAME A PUBLISHED REFERENCE, NOT `@main`. A reference at the default branch delivers every later
+#   change made here on THIS repository's clock rather than yours, reviewed by nobody in your
+#   repository; a published reference names one commit and never moves. Take the newest from
+#   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
+#   README.md, "The published reference", owns the rest.
+
+on:
+  workflow_call:
+    inputs:
+      test-cmd:
+        description: "The command that runs the test suite."
+        type: string
+        default: "pnpm test"
+      # The standard asks for 10,000 or more a night (cosyte/config, decision 0004). A value that is
+      # not a whole number of cases is refused before the suite starts, so a typo cannot quietly run
+      # the default 100.
+      property-runs:
+        description: "Cases a property, set as COSYTE_PROPERTY_RUNS for the whole run."
+        type: string
+        default: "10000"
+      node-version:
+        description: "The Node version the job runs on."
+        type: string
+        default: "22"
+      # It exists so `self-check.yml` can run this workflow against the fixture under `test/`.
+      working-directory:
+        description: "The directory holding package.json, relative to the repository root."
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  properties:
+    runs-on: ubuntu-latest
+    # A caller cannot bound a job that calls this workflow, so the bound is here.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      # The suite's own exit status decides the job: `pipefail` carries it through `tee`, which keeps
+      # the whole log for the step below and for the artifact.
+      - name: The test suite at the nightly property depth
+        id: suite
+        shell: bash
+        env:
+          COSYTE_PROPERTY_RUNS: ${{ inputs.property-runs }}
+          TEST_CMD: ${{ inputs.test-cmd }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${COSYTE_PROPERTY_RUNS}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::property-runs must be a whole number of cases, not \"${COSYTE_PROPERTY_RUNS}\""
+            exit 2
+          fi
+          out="${RUNNER_TEMP}/property-run"
+          rm -rf "${out}"
+          mkdir -p "${out}"
+          echo "properties: COSYTE_PROPERTY_RUNS=${COSYTE_PROPERTY_RUNS}"
+          bash -c "${TEST_CMD}" 2>&1 | tee "${out}/test.log"
+      # EVERY PRINTED SEED, ONCE, with the test that printed it and the property's own line. Colour
+      # codes are stripped first: test runners colour their output under CI. It runs whatever the
+      # suite did, since a failed suite is when the seeds matter, and it never changes the job's
+      # verdict: it exits 0, and the suite's step has already decided.
+      - name: Record the replay seeds
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          PROPERTY_RUNS: ${{ inputs.property-runs }}
+          SUITE: ${{ steps.suite.outcome }}
+          TEST_CMD: ${{ inputs.test-cmd }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/property-run"
+          log="${out}/test.log"
+          summary() { printf '%s\n' "$@" >> "${GITHUB_STEP_SUMMARY}"; }
+          summary "### Nightly property run" ""
+          if [ ! -f "${log}" ]; then
+            summary "The suite did not run (its step was ${SUITE}), so no property printed a seed."
+            exit 0
+          fi
+          sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' "${log}" > "${out}/test.plain.log"
+          awk -v OFS='\t' '
+            /^[[:space:]]*FAIL[[:space:]]/ { where = $0; sub(/^[[:space:]]*FAIL[[:space:]]+/, "", where) }
+            /property failed after [0-9]+ case/ { what = $0; sub(/^[[:space:]]*([A-Za-z]*Error: )?/, "", what) }
+            /Replay exactly: COSYTE_PROPERTY_SEED=/ {
+              replay = $0
+              sub(/^.*Replay exactly: /, "", replay)
+              sub(/[[:space:]]+$/, "", replay)
+              key = what SUBSEP replay
+              if (!(key in seen)) {
+                seen[key] = 1
+                print (where == "" ? "(no test name in the log)" : where), (what == "" ? "(no property line in the log)" : what), replay
+              }
+            }
+          ' "${out}/test.plain.log" > "${out}/seeds.tsv"
+          count="$(wc -l < "${out}/seeds.tsv" | tr -d ' ')"
+          {
+            echo "Nightly property run at COSYTE_PROPERTY_RUNS=${PROPERTY_RUNS}: ${count} replay seed(s)."
+            while IFS=$'\t' read -r where what replay; do
+              echo
+              echo "${where}"
+              echo "  ${what}"
+              echo "  replay: ${replay}"
+            done < "${out}/seeds.tsv"
+          } > "${out}/seeds.txt"
+          cat "${out}/seeds.txt"
+          summary "Depth: \`COSYTE_PROPERTY_RUNS=${PROPERTY_RUNS}\` cases a property. The suite: ${SUITE}." ""
+          if [ "${count}" -eq 0 ]; then
+            if [ "${SUITE}" = success ]; then
+              summary "No property failed, so no replay seed was printed."
+            else
+              summary "No property printed a replay seed, so the suite failed for another reason: the log is in the \`property-run\` artifact."
+            fi
+          else
+            summary "${count} property failure(s) printed a replay seed. Set the pair beside one and run that test again (the suite runs with \`${TEST_CMD}\`) to replay it, already shrunk:" ""
+            while IFS=$'\t' read -r where what replay; do
+              summary "- ${where}: ${what}" "  \`${replay}\`"
+            done < "${out}/seeds.tsv"
+          fi
+          summary "" "The full log and \`seeds.txt\` are in the \`property-run\` artifact."
+      - name: Keep the log and the seeds
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: property-run
+          path: ${{ runner.temp }}/property-run/
+          if-no-files-found: warn
+          retention-days: 30

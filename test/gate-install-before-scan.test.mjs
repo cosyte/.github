@@ -13,8 +13,9 @@
 //
 // ▶ THE SET THIS FILE QUANTIFIES OVER IS ENUMERATED, NEVER GLOBBED. A "gate reusable" is a
 //   `workflow_call` file whose job runs a caller-supplied scan command and whose conclusion is that
-//   command's exit status. `.github/workflows/` also holds six reusables that are not gates
-//   (`ci.yml`, `codeql.yml`, `drift-check.yml`, `nightly-fuzz.yml`, `release.yml`, `scorecard.yml`)
+//   command's exit status. `.github/workflows/` also holds reusables that are not gates
+//   (`ci.yml`, `codeql.yml`, `drift-check.yml`, `nightly-fuzz.yml`, `nightly-properties.yml`,
+//   `release.yml`, `scorecard.yml`, `weekly-mutation.yml`)
 //   and this repository's own `no-emdash.yml`, which no caller resolves. A sweep over
 //   `.github/workflows/*.yml` would refuse `ci.yml` for declaring a job id outside the three
 //   contexts below and go red on arrival, so the four files are named here and a fifth gate is
@@ -74,21 +75,21 @@ const GATES = [
     file: 'gate-no-internal-refs.yml',
     installs: false,
     sibling: 'gate-no-internal-refs-install.yml',
-    inputs: { command: 'pnpm check:no-internal-refs' },
+    inputs: { command: 'pnpm check:no-internal-refs', 'node-version': '22' },
     jobs: [{ id: 'public-surface', condition: null, variable: 'SURFACE_COMMAND', scan: SURFACE_STEP }],
   },
   {
     file: 'gate-no-internal-refs-install.yml',
     installs: true,
     sibling: 'gate-no-internal-refs.yml',
-    inputs: { command: 'pnpm check:no-internal-refs' },
+    inputs: { command: 'pnpm check:no-internal-refs', 'node-version': '22' },
     jobs: [{ id: 'public-surface', condition: null, variable: 'SURFACE_COMMAND', scan: SURFACE_STEP }],
   },
   {
     file: 'gate-no-emdash.yml',
     installs: false,
     sibling: 'gate-no-emdash-install.yml',
-    inputs: { 'files-command': 'pnpm check:no-emdash', 'messages-command': 'pnpm check:no-emdash --stdin' },
+    inputs: { 'files-command': 'pnpm check:no-emdash', 'messages-command': 'pnpm check:no-emdash --stdin', 'node-version': '22' },
     jobs: [
       { id: 'tracked-files', condition: null, variable: 'FILES_COMMAND', scan: TRACKED_STEP },
       { id: 'messages', condition: MESSAGES_CONDITION, variable: 'MESSAGES_COMMAND', scan: MESSAGES_STEP },
@@ -98,7 +99,7 @@ const GATES = [
     file: 'gate-no-emdash-install.yml',
     installs: true,
     sibling: 'gate-no-emdash.yml',
-    inputs: { 'files-command': 'pnpm check:no-emdash', 'messages-command': 'pnpm check:no-emdash --stdin' },
+    inputs: { 'files-command': 'pnpm check:no-emdash', 'messages-command': 'pnpm check:no-emdash --stdin', 'node-version': '22' },
     jobs: [
       { id: 'tracked-files', condition: null, variable: 'FILES_COMMAND', scan: TRACKED_STEP },
       { id: 'messages', condition: MESSAGES_CONDITION, variable: 'MESSAGES_COMMAND', scan: MESSAGES_STEP },
@@ -278,6 +279,22 @@ test('AC-2: no gate reusable makes a caller write a `with:`, and the two forms t
     // The installing form is selected by its `uses:` line ALONE, so its interface has to be the one
     // the caller already passes nothing to.
     assert.deepEqual(Object.keys(declared.inputs).sort(), Object.keys(gate(entry.sibling).inputs).sort());
+  }
+});
+
+// The Node line is the caller's: every `actions/setup-node` step in every job of every gate reads the
+// `node-version` input, whose default is the line every gate ran on before the input existed. A
+// step left on a literal would hand a caller whose package refuses that line (`engines.node` with
+// `engine-strict`) a gate that fails before it scans, whatever the caller passes.
+test('every gate sets Node up from the `node-version` input, which defaults to 22', () => {
+  for (const entry of GATES) {
+    assert.equal(interfaceOf(entry.file, read(entry.file)).inputs['node-version'].default.value, '22', entry.file);
+    const byId = jobsOf(entry.file, read(entry.file));
+    for (const { id } of entry.jobs) {
+      const setups = byId[id].steps.filter((step) => (step.fields.uses ?? '').startsWith('actions/setup-node@'));
+      assert.equal(setups.length, 1, `${entry.file}: job \`${id}\` sets Node up once`);
+      assert.equal(setups[0].with['node-version'], '${{ inputs.node-version }}', `${entry.file}: job \`${id}\``);
+    }
   }
 });
 
@@ -690,20 +707,33 @@ test('AC-6: a comment saying the shape is absent is not the shape, so the rule r
 
 const EXPRESSION = /\$\{\{/;
 
+/**
+ * The one expression a gate may hold outside an `env:` block: the caller's Node line, handed to
+ * `actions/setup-node` as an action input under `with:`. An action input is not a shell script, so
+ * nothing interpolated into it is executed. Exactly this line and only under `with:`: the same text in
+ * a `run:` body, or any other expression under `with:`, is still a finding.
+ */
+const NODE_VERSION_INPUT = 'node-version: ${{ inputs.node-version }}';
+
 /** Every expression in this file that is not on a child line of an `env:` block. */
 function interpolationFindings(file, text) {
   const findings = [];
   let envIndent = null;
+  let withIndent = null;
   for (const [index, line] of decomment(text).entries()) {
     if (line.trim() === '') continue;
     const indent = indentOf(line);
     if (envIndent !== null && indent <= envIndent) envIndent = null;
+    if (withIndent !== null && indent <= withIndent) withIndent = null;
     const opensEnv = /^\s*(?:-\s+)?env:\s*$/.test(line);
+    const opensWith = /^\s*(?:-\s+)?with:\s*$/.test(line);
     const insideEnv = envIndent !== null && indent > envIndent;
-    if (EXPRESSION.test(line) && !insideEnv) {
+    const nodeVersion = withIndent !== null && indent > withIndent && line.trim() === NODE_VERSION_INPUT;
+    if (EXPRESSION.test(line) && !insideEnv && !nodeVersion) {
       findings.push(`${WORKFLOWS}/${file}:${index + 1}: ${line.trim()} is an expression outside an \`env:\` block`);
     }
     if (opensEnv) envIndent = indent;
+    if (opensWith) withIndent = indent;
   }
   return findings;
 }

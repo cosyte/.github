@@ -33,6 +33,11 @@ on:
         description: "JSON array of Node versions for the matrix."
         type: string
         default: '["22", "24", "26"]'
+      # `verify` runs on each entry. Every shared step in it is proven on `ubuntu-latest`,
+      # `windows-latest` and `macos-latest` by `self-check.yml`'s `systems` job, which runs this
+      # workflow on all three against `test/fixtures/ci-caller/`; README.md, "Every system and
+      # runtime", says what that run proves and what it cannot. A caller widens this with
+      # `os: '["ubuntu-latest", "windows-latest", "macos-latest"]'`.
       os:
         description: "JSON array of runner OSes for the matrix."
         type: string
@@ -87,21 +92,27 @@ on:
         default: true
       # THE DECLARED ALLOWANCE, and the same input `release.yml` takes, in the same grammar. A repo
       # names its known-unpublished consumer dependencies and the gate asserts EXACTLY that set: a
-      # named absence is the expected state and warns, an absence nobody named still fails. Without
-      # it layer 2 reds `transform` and `synth` for `@cosyte/fhir` (FHIR-NPM-NAME), which nobody can
-      # fix from those repos, and a permanently red gate is one people learn to ignore: the same
-      # failure as a step that never runs.
+      # named absence is the expected state and warns, an absence nobody named still fails. It exists
+      # so that a dependency npm refuses for a reason no caller can fix does not red that caller's
+      # gate, because a permanently red gate is one people learn to ignore: the same failure as a
+      # step that never runs.
+      #
+      # EMPTY BY DEFAULT SINCE 2026-11-08. It defaulted to `@cosyte/fhir=blocked` while npm refused
+      # `@cosyte/fhir` (FHIR-NPM-NAME), so that `transform` and `synth` did not red on it. That
+      # package is on the registry now, and the entry did what this allowance is built to do: it went
+      # stale, and every caller's gate printed a notice saying so. A caller that names a new blocked
+      # dependency passes it here; a caller that passes nothing names nothing, and any absence fails.
       #
       # THE `=blocked` TAG IS LOAD-BEARING, AND IT IS THE ONLY KIND THAT EXCUSES ANYTHING.
-      # `@cosyte/assets` and `@cosyte/docs` are `E404` exactly like `@cosyte/fhir` is, and they are
+      # `@cosyte/assets` and `@cosyte/docs` are `E404` exactly like `@cosyte/fhir` was, and they are
       # `private: true` by design. A deliberate absence and an unexplained block must not share
       # words, so `=private` names the first and excuses nothing, in either gate: a package that
       # publishes must not depend on one that never will. Untagged is accepted and read as `blocked`,
       # which is the spelling `release.yml` shipped with, and is reported so it can be tightened.
       expect-unpublished-deps:
-        description: "Known-absent consumer deps, e.g. \"@cosyte/fhir=blocked\". See FHIR-NPM-NAME."
+        description: "Known-absent consumer deps, comma separated, e.g. \"@scope/a=blocked\". Empty names none."
         type: string
-        default: "@cosyte/fhir=blocked"
+        default: ""
       # THE DOCS-CONTENT GATE. OFF BY DEFAULT, AND THAT DEFAULT IS LOAD-BEARING: every caller tracks
       # `@main` and picks this up the moment it lands, so it must change nothing for any of the
       # thirteen until that caller opts in BY NAME. A repo that publishes `docs-content/` can today
@@ -117,6 +128,90 @@ on:
         description: "Resolve docs-content/ links, images and sidebar ids (needs docs-content/sidebars.json)."
         type: boolean
         default: false
+      # THE DIRECTORY HOLDING THE PACKAGE, for every job but `prepublish` and `actionlint`. It exists so
+      # `self-check.yml` can run this workflow against the fixture under `test/`, since this
+      # repository is not a package itself. `prepublish` and `actionlint` do not read it: they read
+      # the repository root, so a caller that moves it off "." turns `prepublish` off too. At "." every
+      # step runs exactly as it did before the input existed.
+      working-directory:
+        description: "The directory holding package.json, relative to the repository root. Not read by prepublish or actionlint."
+        type: string
+        default: "."
+      # THE TEST SUITE UNDER BUN, in its own job, `bun`, on ubuntu-latest. OFF BY DEFAULT, so no caller
+      # changes until it opts in by name. The job installs with pnpm from the committed lockfile, as
+      # `verify` does, then runs `bun --bun run test`: the caller's own `test` script, with every
+      # `node` it starts (a bin's `#!/usr/bin/env node`, a literal `node`) run by Bun instead.
+      run-bun:
+        description: "Run the test script under Bun, in the bun job."
+        type: boolean
+        default: false
+      bun-version:
+        description: "The Bun version the bun job installs."
+        type: string
+        default: "1.4.4"
+      # THE TEST SUITE UNDER DENO, in its own job, `deno`, on ubuntu-latest. OFF BY DEFAULT, for the
+      # same reason. The job installs with pnpm, then runs `deno task test` with no `node` on PATH:
+      # Deno's task runner runs a script's literal `node` with the real Node whenever one is on PATH,
+      # and with Deno only when none is, so the step takes Node off PATH and refuses to run the suite
+      # if a `node` is still reachable.
+      run-deno:
+        description: "Run the test script under Deno, in the deno job."
+        type: boolean
+        default: false
+      deno-version:
+        description: "The Deno version the deno job installs."
+        type: string
+        default: "2.9.8"
+      # THE TESTING STANDARD'S TWO PULL REQUEST JOBS, each OFF BY DEFAULT behind its own input, so no
+      # caller changes until it opts in by name. The standard is cosyte/config's
+      # documentation/decisions/0004-the-testing-standard.md; the tools are `cosyte-ratchet` from
+      # `@cosyte/script-utils` and `cosyte-mutate` from `@cosyte/vitest-config`, which a caller adds
+      # to its own devDependencies, and the floor file is `quality-floor.json` beside `package.json`.
+      #
+      # `coverage-ratchet` runs the caller's `test:coverage` and then holds coverage to the floor
+      # file: on a pull request against the base branch too, so every changed line coverage counts
+      # must have run and no floor may be lowered or removed; on any other event against the floor
+      # file alone.
+      run-coverage-ratchet:
+        description: "Hold coverage to quality-floor.json with cosyte-ratchet, in the coverage-ratchet job."
+        type: boolean
+        default: false
+      # `mutation` runs on a pull request only: it mutates the source files the change touched and
+      # requires every mutant in the changed lines to be killed. Both jobs run beside `verify`, never
+      # after it, so a pull request waits for the slowest of them rather than for their sum.
+      run-mutation:
+        description: "On a pull request, mutate the changed files and judge their mutants, in the mutation job."
+        type: boolean
+        default: false
+      # THE PERFORMANCE STANDARD'S TWO PULL REQUEST JOBS, each OFF BY DEFAULT behind its own input, so
+      # no caller changes until it opts in by name. The standard is cosyte/config's
+      # documentation/decisions/0005-the-performance-standard.md; the tools are the scaling gate in
+      # `@cosyte/test-utils/perf` and `cosyte-bench` from `@cosyte/bench`, which a caller adds to its
+      # own devDependencies.
+      #
+      # `scaling-gate` runs the caller's `test:perf`, the non-instrumented run that holds the scaling
+      # gate and its self-check. It is the standard's required check for complexity regressions.
+      run-scaling-gate:
+        description: "Run the test:perf script, the scaling gate from @cosyte/test-utils/perf, in the scaling-gate job."
+        type: boolean
+        default: false
+      # `bench-compare` runs on a pull request only: it builds the base beside the head and times both,
+      # interleaved, on one runner, with `cosyte-bench compare`. IT IS ADVISORY AND NEVER FAILS: it
+      # posts its numbers in the job summary and keeps the results as an artifact, and stays that way
+      # until an A/A calibration of the caller's suite on this runner class shows false alarms under
+      # 1% (the standard's section 4). A regression is a warning on the run's page, not a red check.
+      run-bench-compare:
+        description: "On a pull request, time the base build against the head build with @cosyte/bench, in the bench-compare job. Advisory: it never fails."
+        type: boolean
+        default: false
+      bench-suites:
+        description: "The suites bench-compare runs, separated by spaces or new lines, relative to working-directory. Empty runs every bench/*.bench.mjs and bench/*.bench.ts."
+        type: string
+        default: ""
+      bench-target:
+        description: "The built entry bench-compare times on each side, relative to working-directory."
+        type: string
+        default: "dist/index.mjs"
 
 permissions:
   contents: read
@@ -132,13 +227,38 @@ jobs:
     # A caller cannot bound a job that calls this workflow, so the bound is here: about seven times
     # the slowest leg measured on 2026-11-07 (4 minutes, hl7 on Node 24).
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
     steps:
+      # LF LINE ENDINGS ON EVERY SYSTEM, SET BEFORE THE CHECKOUT, SO THE RUNNER IMAGE DOES NOT DECIDE.
+      # Git on `windows-latest` checks text files out with CRLF: on 2026-11-10 (image
+      # windows-2025-vs2026, git 2.56.0.windows.4) every file of the fixture under
+      # `test/fixtures/ci-caller/`, whose eol is left unspecified, came out CRLF, and its
+      # `format:check` failed on all eleven. A caller whose `.gitattributes` says `eol=lf` never saw
+      # it, because an eol attribute overrides both settings below; a caller without one would have
+      # seen its formatter and its tests read different bytes on Windows than on Linux. These two
+      # make a file with no eol attribute come out as committed, LF for text, on every system, and
+      # leave a file whose eol the repository sets to that setting. No `if:`, so all three systems
+      # run the same step; in the workspace, because the directory `working-directory` names does
+      # not exist before the checkout.
+      - name: Check out text files with LF line endings
+        shell: bash
+        working-directory: .
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # At the default "." these two read exactly what they read before `working-directory` existed:
+      # `package.json` is the action's own default, and an empty `cache-dependency-path` is unset.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
       # THE DOCS-CONTENT GATE RUNS HERE, IN `verify`, AS TWO STEPS, AND EVERY PART OF THAT IS
       # DELIBERATE.
       #
@@ -332,6 +452,10 @@ jobs:
   # findings on lines a pull request changed. Every caller was measured clean that way before this
   # landed. shellcheck is preinstalled on the hosted runner, and actionlint silently skips its shell
   # checks without it, so the install step refuses to continue when it is missing.
+  #
+  # THE TARBALL IS CACHED IN THE CALLER'S OWN ACTIONS CACHE, keyed on the version and the SHA-256, so
+  # a release-download outage fails only a run that has no cached copy. The cache steps use the
+  # runner's own cache token, so a caller grants no permission for them and passes no input.
   actionlint:
     if: ${{ inputs.run-actionlint }}
     runs-on: ubuntu-latest
@@ -343,17 +467,52 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # THE RELEASE TARBALL IS CACHED, keyed on the version and the SHA-256, so a run that finds it
+      # never asks GitHub's release downloads, which answered 504 for hours on 2026-11-08 and failed
+      # this job everywhere. The cache is only where the bytes come from: the install step checks the
+      # SHA-256 of whatever it unpacks, cached or downloaded, so a cache entry is trusted no further
+      # than a download. A cache that cannot be reached is a miss with a warning, never a failure.
+      - name: Restore the actionlint release from the cache
+        id: actionlint-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/actionlint-cache
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}-linux-amd64-${{ env.ACTIONLINT_SHA256 }}
+      # A cached tarball whose hash matches is unpacked as it is. Anything else (no cached copy, or
+      # one that does not match) is downloaded, with bounded retries and curl's own backoff, and the
+      # download is checked against the same SHA-256 before it is unpacked.
       - name: Install actionlint at the pinned version and checksum
         shell: bash
         run: |
           set -euo pipefail
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${tarball}" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
-          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
-          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          cache_dir="${RUNNER_TEMP}/actionlint-cache"
+          if [ -f "${cache_dir}/${tarball}" ] \
+            && echo "${ACTIONLINT_SHA256}  ${cache_dir}/${tarball}" | sha256sum -c --status -; then
+            echo "actionlint ${ACTIONLINT_VERSION}: the cached release matches the pinned SHA-256."
+          else
+            if [ -f "${cache_dir}/${tarball}" ]; then
+              echo "::warning::the cached actionlint release does not match the pinned SHA-256, so it is downloaded again"
+            fi
+            mkdir -p "${cache_dir}"
+            curl -fsSL --retry 5 --retry-connrefused --retry-max-time 120 --connect-timeout 20 \
+              -o "${cache_dir}/${tarball}" \
+              "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          fi
+          echo "${ACTIONLINT_SHA256}  ${cache_dir}/${tarball}" | sha256sum -c -
+          tar -xzf "${cache_dir}/${tarball}" -C "${RUNNER_TEMP}" actionlint
           "${RUNNER_TEMP}/actionlint" --version
           shellcheck --version
+      # Saved straight after the checked install and before the lint, so a pull request whose lint
+      # finds something still seeds the cache. Only on a miss: an entry is never rewritten, and a
+      # failed save is a warning. This step runs only after the install step passed, so what it
+      # saves is a tarball whose SHA-256 was just checked.
+      - name: Save the actionlint release to the cache
+        if: ${{ steps.actionlint-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/actionlint-cache
+          key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
       - name: actionlint over .github/workflows/
         shell: bash
         run: |
@@ -366,3 +525,390 @@ jobs:
           mapfile -t files <<< "${listed}"
           "${RUNNER_TEMP}/actionlint" -color "${files[@]}"
           echo "actionlint clean over ${#files[@]} workflow file(s)."
+
+  # THE TEST SUITE UNDER BUN AND UNDER DENO, each in its own job, `bun` and `deno`, each OFF BY
+  # DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs and no other
+  # change. Each installs exactly what `verify` installs, with pnpm from the committed lockfile, and
+  # then runs the caller's own `test` script under the other runtime. Both run on ubuntu-latest only:
+  # the system matrix is `verify`'s, and one system per runtime keeps each job id a single, stable
+  # check context, `<caller job id> / bun` and `<caller job id> / deno`.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT, so a caller that requires `ci / bun` and later turns
+  # `run-bun` off keeps a green merge button over a context that ran nothing (README.md, "What a
+  # skipped required context does to a merge"). Require these only while the input is on.
+  bun:
+    if: ${{ inputs.run-bun }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - run: pnpm install --frozen-lockfile
+      # `--bun` is what puts the suite on Bun: without it, `bun run` starts a script's
+      # `#!/usr/bin/env node` bins (vitest, tsx, a `cosyte-process` verb) with Node. Measured on
+      # 2026-11-10 with a test that throws `process.versions`: with `--bun` the vitest workers report
+      # Bun, and without it they report Node.
+      - name: The test suite under Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bun: $(bun --version)"
+          bun --bun run test
+
+  deno:
+    if: ${{ inputs.run-deno }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ inputs.deno-version }}
+      - run: pnpm install --frozen-lockfile
+      # NODE COMES OFF PATH FIRST. `deno task` runs a package bin with Deno, but runs a script's
+      # literal `node` with the real Node whenever one is on PATH, and with Deno only when none is:
+      # measured on 2026-11-10, `node tool.mjs test` reported Node with Node on PATH and Deno without
+      # it. So every PATH entry holding a `node` is replaced by a directory of links to everything
+      # else in it, and the step refuses to run the suite while any `node` is still reachable.
+      - name: The test suite under Deno
+        shell: bash
+        run: |
+          set -euo pipefail
+          shadow="${RUNNER_TEMP}/path-without-node"
+          rm -rf "${shadow}"
+          kept=()
+          count=0
+          IFS=':' read -r -a entries <<< "${PATH}"
+          for entry in "${entries[@]}"; do
+            if [ -n "${entry}" ] && [ -e "${entry}/node" ]; then
+              count=$((count + 1))
+              mirror="${shadow}/${count}"
+              mkdir -p "${mirror}"
+              for tool in "${entry}"/*; do
+                if [ "${tool##*/}" != node ]; then ln -s "${tool}" "${mirror}/"; fi
+              done
+              echo "deno: ${entry} holds a node, so PATH names ${mirror} in its place, with everything else in it"
+              entry="${mirror}"
+            fi
+            kept+=("${entry}")
+          done
+          PATH="$(IFS=':'; echo "${kept[*]}")"
+          if found="$(command -v node)"; then
+            echo "::error::a node is still on PATH at ${found}, so the suite would run under Node rather than Deno"
+            exit 1
+          fi
+          echo "deno: $(deno --version | head -n 1)"
+          deno task test
+
+  # THE TESTING STANDARD ON A PULL REQUEST, in two jobs, `coverage-ratchet` and `mutation`, each OFF
+  # BY DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs and no
+  # other change. Each runs on ubuntu-latest at the lowest Node line, so a floor is judged on one
+  # system and one Node and each job id is one stable check context: `<caller job id> /
+  # coverage-ratchet` and `<caller job id> / mutation`. Neither has a `needs:`, so both run beside
+  # `verify` and the slowest of the three sets how long a pull request waits.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT. `mutation` is skipped on every event but a pull
+  # request, and both are skipped while their input is off, so require either one only while its
+  # input is on (README.md, "What a skipped required context does to a merge").
+  #
+  # The checkout fetches the whole history: the ratchet and the changed-files run both diff against
+  # the merge base of the base branch and HEAD, and a shallow clone has no merge base. Each judging
+  # step writes the ratchet's own report to the job summary, so the exceptions it lists for the
+  # changed code are on the run's page for the pull request to carry.
+  coverage-ratchet:
+    if: ${{ inputs.run-coverage-ratchet }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:coverage
+      # `--skip mutation`: the mutants are judged in the `mutation` job. On a pull request
+      # `github.base_ref` names the base branch; on a push it is empty and the ratchet compares the
+      # measurements with the floor file as it stands.
+      - name: The coverage ratchet
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          args=(check --skip mutation)
+          if [ -n "${BASE_REF}" ]; then args+=(--base "origin/${BASE_REF}"); fi
+          report="${RUNNER_TEMP}/coverage-ratchet.txt"
+          status=0
+          pnpm exec cosyte-ratchet "${args[@]}" > "${report}" 2>&1 || status=$?
+          cat "${report}"
+          {
+            echo "### Coverage against the floor"
+            echo
+            echo '```text'
+            cat "${report}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+
+  mutation:
+    if: ${{ inputs.run-mutation && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    # A large changed file is mutated whole: the PHI-scan engine took 10 to 13 minutes on 16 cores
+    # (cosyte/config, decision 0004). The bound is the job's; the 15 minute budget for a pull request
+    # is the caller's to watch.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      # A change with no changed source file starts no mutation run: `cosyte-mutate` writes an empty
+      # report and exits 0, so the ratchet can tell "ran, nothing to mutate" from "never ran". An
+      # empty base is refused rather than read as "nothing changed".
+      - name: Mutate the changed files
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_REF}" ]; then
+            echo "::error::the mutation job judges a pull request's changed files, and this run has no base branch"
+            exit 1
+          fi
+          pnpm exec cosyte-mutate changed --base "origin/${BASE_REF}"
+      # `--skip coverage`: coverage is judged in the `coverage-ratchet` job.
+      - name: The mutation ratchet over the changed code
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_REF}" ]; then
+            echo "::error::the mutation job judges a pull request's changed files, and this run has no base branch"
+            exit 1
+          fi
+          report="${RUNNER_TEMP}/mutation-ratchet.txt"
+          status=0
+          pnpm exec cosyte-ratchet check --skip coverage --base "origin/${BASE_REF}" > "${report}" 2>&1 || status=$?
+          cat "${report}"
+          {
+            echo "### Mutants in the changed code"
+            echo
+            echo '```text'
+            cat "${report}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+      # The JSON and HTML reports, so a reviewer can read each surviving mutant. `!cancelled()` keeps
+      # them when a step above failed, which is when they are read; the job's verdict is still the
+      # failed step's.
+      - name: Keep the mutation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-changed
+          path: ${{ inputs.working-directory }}/reports/mutation/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # THE PERFORMANCE STANDARD ON A PULL REQUEST, in two jobs, `scaling-gate` and `bench-compare`,
+  # each OFF BY DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs
+  # and no other change. Each runs on ubuntu-latest at the lowest Node line, so each job id is one
+  # stable check context, `<caller job id> / scaling-gate` and `<caller job id> / bench-compare`, and
+  # the runner class is the one the standard's calibration was taken on. Neither has a `needs:`, so
+  # both run beside `verify` and the slowest job sets how long a pull request waits.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT, so require `scaling-gate` only while its input is on
+  # (README.md, "What a skipped required context does to a merge"). Never require `bench-compare`:
+  # it ends green whatever it measured, by design, until the calibration rule is met.
+  scaling-gate:
+    if: ${{ inputs.run-scaling-gate }}
+    runs-on: ubuntu-latest
+    # The gate times each phase for well under a second and its self-check about as long again; the
+    # bound is for an install and a suite that hang, inside the 15 minute budget for a pull request.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:perf
+
+  bench-compare:
+    if: ${{ inputs.run-bench-compare && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    # The comparisons stop themselves at BENCH_BUDGET_SECONDS below and report it; this bound is for
+    # an install or a build that hangs, which would otherwise hold a runner for the default six hours.
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      # The whole history, so the base commit is on disk for a worktree beside the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      # ONE STEP, AND IT ENDS 0 WHATEVER HAPPENS. The head is installed and built here, the base is
+      # checked out in a worktree under RUNNER_TEMP and installed and built there, and each suite (the
+      # head's, which is handed either build) runs `cosyte-bench compare`: 12 rounds, each running
+      # every case once on each side in a fresh process, back to back, so the runner's noise lands on
+      # both. The tool's exit (1 a regression, 2 a case it could not measure) becomes an annotation on
+      # the run's page, never a red check; a base that does not build, a suite that is not there, or
+      # a spent budget ends the step with a note. Each suite's results document (results-v1, checked
+      # with `cosyte-bench check`) and its Markdown are kept in the `bench-comparison` artifact.
+      - name: Compare the base build with the head build
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BENCH_SUITES: ${{ inputs.bench-suites }}
+          BENCH_TARGET: ${{ inputs.bench-target }}
+          BENCH_BUDGET_SECONDS: "600"
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/bench-comparison"
+          mkdir -p "${out}"
+          {
+            echo "### Base against head timing (advisory)"
+            echo
+            echo "This comparison does not fail the pull request. It becomes a required check only once an A/A calibration of this suite on this runner class shows false alarms under 1% (cosyte/config, documentation/decisions/0005-the-performance-standard.md, section 4)."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          stop() {
+            echo "::warning::bench-compare: $1; nothing was compared, and the pull request is not failed for it"
+            { echo; echo "Not run: $1."; } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          }
+          if [ -z "${BASE_SHA}" ]; then stop "this run names no base commit"; fi
+          suites=()
+          if [ -n "${BENCH_SUITES//[[:space:]]/}" ]; then
+            read -r -d '' -a suites <<< "${BENCH_SUITES}" || true
+          else
+            shopt -s nullglob
+            suites=(bench/*.bench.mjs bench/*.bench.ts)
+            shopt -u nullglob
+          fi
+          if [ "${#suites[@]}" -eq 0 ]; then stop "no suite to run: name one in bench-suites, or add bench/<name>.bench.mjs"; fi
+          if ! pnpm install --frozen-lockfile || ! pnpm build; then stop "the head did not install or build"; fi
+          head_sha="$(git rev-parse HEAD)"
+          prefix="$(git rev-parse --show-prefix)"
+          base_root="${RUNNER_TEMP}/bench-base"
+          base_dir="${base_root}"
+          if [ -n "${prefix}" ]; then base_dir="${base_root}/${prefix%/}"; fi
+          if ! git worktree add --quiet --detach "${base_root}" "${BASE_SHA}"; then stop "the base commit ${BASE_SHA} could not be checked out"; fi
+          if ! (cd "${base_dir}" && pnpm install --frozen-lockfile && pnpm build); then stop "the base did not install or build"; fi
+          deadline=$((SECONDS + BENCH_BUDGET_SECONDS))
+          for suite in "${suites[@]}"; do
+            if [ ! -f "${suite}" ]; then
+              echo "::warning::bench-compare: ${suite} is not a file, so it was not compared"
+              continue
+            fi
+            name="${suite%.bench.*}"
+            name="${name//\//-}"
+            left=$((deadline - SECONDS))
+            if [ "${left}" -le 0 ]; then
+              echo "::warning::bench-compare: ${suite}: not compared, the ${BENCH_BUDGET_SECONDS} second budget was spent"
+              { echo; echo "Not compared: ${suite}, the ${BENCH_BUDGET_SECONDS} second budget was spent."; } >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            status=0
+            timeout --kill-after=10 "${left}" pnpm exec cosyte-bench compare --suite "${suite}" \
+              --base "${base_dir}/${BENCH_TARGET}" --head "${BENCH_TARGET}" \
+              --base-commit "${BASE_SHA}" --head-commit "${head_sha}" \
+              --out "${out}/${name}.json" --summary "${out}/${name}.md" || status=$?
+            case "${status}" in
+              0) ;;
+              1) echo "::warning::bench-compare: ${suite}: the head is slower than the base beyond the threshold in at least one case. Advisory: this does not fail the pull request" ;;
+              2) echo "::notice::bench-compare: ${suite}: could not measure every case (a skip, or a process that died), and a skip is not a pass" ;;
+              124 | 137) echo "::warning::bench-compare: ${suite}: stopped at the end of the ${BENCH_BUDGET_SECONDS} second budget" ;;
+              *) echo "::warning::bench-compare: ${suite}: cosyte-bench exited ${status}" ;;
+            esac
+            if [ -f "${out}/${name}.md" ]; then
+              { echo; cat "${out}/${name}.md"; } >> "${GITHUB_STEP_SUMMARY}"
+            else
+              { echo; echo "No results for ${suite}: cosyte-bench exited ${status}."; } >> "${GITHUB_STEP_SUMMARY}"
+            fi
+            if [ -f "${out}/${name}.json" ] && ! pnpm exec cosyte-bench check "${out}/${name}.json"; then
+              echo "::warning::bench-compare: ${out}/${name}.json does not match the results schema"
+            fi
+          done
+          exit 0
+      # The results documents, in the results-v1 shape `@cosyte/bench` writes, and their Markdown.
+      # `!cancelled()` keeps whatever was written before a timeout or a failed setup step.
+      - name: Keep the comparison
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-comparison
+          path: ${{ runner.temp }}/bench-comparison/
+          if-no-files-found: warn
+          retention-days: 30

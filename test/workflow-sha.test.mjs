@@ -471,7 +471,9 @@ test('THE JOB IDS OF BOTH PUBLISHED WORKFLOWS ARE UNCHANGED, in the file and thr
   // reads `<caller job id> / <inner job id>`, so renaming one here detaches that entry on thirteen
   // repositories with no error anywhere and no re-run that undoes it. Nothing in this change may
   // move one, and both files are read because both are required contexts somewhere.
-  assert.deepEqual(jobIds(CI, read(CI)), ['verify', 'prepublish', 'actionlint']);
+  // `bun` and `deno` are ADDED, not renamed: new contexts, each skipped unless the caller opts in.
+  // So are `coverage-ratchet` and `mutation`, after them.
+  assert.deepEqual(jobIds(CI, read(CI)), ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation', 'scaling-gate', 'bench-compare']);
   // `finalize` is ADDED, not renamed: a new context no caller's ruleset names yet.
   assert.deepEqual(jobIds(RELEASE, read(RELEASE)), ['version', 'release', 'finalize']);
   assert.deepEqual(

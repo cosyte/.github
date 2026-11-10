@@ -33,9 +33,11 @@ const REUSABLES = [
   'gate-no-emdash.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  'nightly-properties.yml',
   'pr-title.yml',
   'release.yml',
   'scorecard.yml',
+  'weekly-mutation.yml',
 ];
 
 /** The form that does not move: a published reference, named after the commit it carries. */

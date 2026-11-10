@@ -17,6 +17,127 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- The performance standard's jobs, both off until a caller opts in (README.md, "The performance
+  standard's jobs"). `ci.yml` takes four inputs: `run-scaling-gate` and `run-bench-compare`, both
+  `false` by default, and `bench-suites` (default `""`) and `bench-target` (default
+  `"dist/index.mjs"`), which only `bench-compare` reads. A caller that passes nothing sees two
+  skipped checks, `ci / scaling-gate` and `ci / bench-compare`, and no other change. Job ids before
+  them, every other input and default, secrets and permissions are unchanged.
+  - `scaling-gate` runs `pnpm test:perf`, the caller's run of the scaling gate from
+    `@cosyte/test-utils/perf`, and is red when it fails. To opt in, add `run-scaling-gate: true`
+    under `with:`; require it only while that input is on.
+  - `bench-compare` runs on a pull request only. It builds the head and, in a worktree, the base,
+    and times both with `cosyte-bench compare` from `@cosyte/bench` for each suite (every
+    `bench/*.bench.mjs` and `bench/*.bench.ts`, or those `bench-suites` names). The Markdown goes in
+    the job summary, and the `results-v1` documents in the `bench-comparison` artifact. It never
+    fails: a regression is a warning on the run's page. To opt in, add `run-bench-compare: true`;
+    never require it.
+- The testing standard's jobs, all off until a caller opts in (README.md, "The testing standard's
+  jobs"). The tools they run, `cosyte-ratchet` from `@cosyte/script-utils` and `cosyte-mutate` from
+  `@cosyte/vitest-config`, are not on npm yet, so a caller opts in only after that release and after
+  it has added both packages, a `stryker.config.mjs` and a `quality-floor.json`.
+  - `ci.yml` takes two inputs, `run-coverage-ratchet` and `run-mutation`, both `false` by default,
+    which add the jobs `coverage-ratchet` and `mutation`. A caller that passes nothing sees two
+    skipped checks, `ci / coverage-ratchet` and `ci / mutation`, and no other change. To opt in, add
+    `run-coverage-ratchet: true` and `run-mutation: true` under `with:`. `coverage-ratchet` runs
+    `pnpm test:coverage` and then `cosyte-ratchet check --skip mutation`, against
+    `origin/<base branch>` on a pull request; `mutation` runs on a pull request only,
+    `cosyte-mutate changed` and then `cosyte-ratchet check --skip coverage`, both against
+    `origin/<base branch>`. Both run beside `verify`, on `ubuntu-latest` at the first Node line,
+    with the whole history checked out, and write the ratchet's report to the job summary. Require
+    either check only while its input is on, since a skipped job satisfies a required context.
+  - A new reusable, `nightly-properties.yml`, job `properties`: the caller's `test-cmd` (default
+    `pnpm test`) with `COSYTE_PROPERTY_RUNS` at `property-runs` (default `"10000"`), and every
+    replay seed a failing property prints kept in the job summary and the `property-run` artifact.
+    To opt in, call it from a scheduled workflow of the caller's own.
+  - A new reusable, `weekly-mutation.yml`, job `mutation`: the caller's `mutate-cmd` (default
+    `pnpm exec cosyte-mutate full`), then `cosyte-ratchet check --skip coverage`, with each
+    package's score against its floor in the job summary and `reports/mutation/` in the
+    `mutation-report` artifact. A score below its floor is red. It never commits. To opt in, call
+    it from a scheduled workflow of the caller's own.
+  - The `working-directory` input's description now names every job that reads it; its default and
+    behavior are unchanged. Job ids `verify`, `prepublish`, `actionlint`, `bun` and `deno`, every
+    other input and default, secrets and permissions are unchanged.
+- `ci.yml` takes two opt-in inputs, `run-bun` and `run-deno`, both `false` by default, which add the
+  jobs `bun` and `deno`: each installs with pnpm from the committed lockfile, as `verify` does, and
+  runs the caller's own `test` script under that runtime, `bun --bun run test` and `deno task test`
+  (with `node` taken off PATH, so a script's literal `node` runs on Deno too). A caller that passes
+  nothing sees two skipped checks, `ci / bun` and `ci / deno`, and no other change. To opt in, add
+  `run-bun: true` and `run-deno: true` under `with:`; `bun-version` (default `"1.4.4"`) and
+  `deno-version` (default `"2.9.8"`) pick the runtime. Require `ci / bun` or `ci / deno` in a ruleset
+  only while its input is on, since a skipped job satisfies a required context.
+- To run `verify` on every system, pass
+  `os: '["ubuntu-latest", "windows-latest", "macos-latest"]'`; the default is still
+  `'["ubuntu-latest"]'`. Each new leg is a new check, `ci / verify (<node>, <os>)`. Every shared step of
+  `verify` is now proven on all three systems by `self-check.yml`'s new `systems` job, which runs
+  `ci.yml` itself against `test/fixtures/ci-caller/` (README.md, "Every system and runtime"). One
+  limit it found: the dash checker in `@cosyte/script-utils` cannot run on macOS, where grep has no
+  `-P`; it refuses rather than passing, so a caller whose own `lint` runs it reds on macOS.
+- `verify` has a new first step, before the checkout, on every system: it sets git's
+  `core.autocrlf false` and `core.eol lf`, so text files check out with LF line endings. Measured on
+  2026-11-10: without it, `windows-latest` checks out with CRLF every text file whose eol no
+  `.gitattributes` sets. A caller does nothing. On `ubuntu-latest`, the only system a caller runs
+  today, and on `macos-latest`, the same run checked those files out LF without the step, so there
+  it changes no byte. A file whose eol the caller's `.gitattributes` sets keeps that eol, since the
+  attribute overrides both settings, so a caller with `* text=auto eol=lf` gets LF with or without
+  the step.
+- `scripts/docs-content-check.mjs`, which `verify` fetches when `check-docs-content` is on, now runs on
+  a Windows runner. Its entry guard compared its own URL's pathname with `argv[1]` as paths, which on
+  Windows never matched, so the step exited 0 without checking anything. It compares file URLs now.
+  A caller does nothing: no caller runs `verify` on Windows yet, and on Linux and macOS the checker
+  runs as before.
+- `ci.yml` takes a `working-directory` input, `"."` by default, naming where `verify`, `bun` and
+  `deno` find `package.json`. It exists so this repository can run the workflow against its fixture;
+  at `"."` every step reads what it read before. `prepublish` and `actionlint` ignore it.
+- Job ids `verify`, `prepublish` and `actionlint`, every existing input and default, secrets and
+  permissions are unchanged.
+- `ci.yml`'s and `release.yml`'s `expect-unpublished-deps` default to empty instead of
+  `@cosyte/fhir=blocked`. That entry dates from before `@cosyte/fhir` was on npm; it is published
+  now, so the entry was stale and every caller's install gates printed a notice saying the
+  allowance "is on the registry now". A caller needs to do nothing: a package the registry serves
+  is never absent, so the entry already excused nothing, no verdict changes, and only the notice
+  stops. The reference note lists the changed default under "must act on", because it lists every
+  changed default there. The input stays, in the same grammar, for a caller that has to name a
+  blocked dependency, and a caller that passes it, empty or not, is unaffected. Job ids, the other
+  inputs and their defaults, secrets and permissions are unchanged.
+- `release.yml` takes an optional `node-version` input, the Node line every job that sets up Node
+  runs on: `version`, `release` and `finalize`. It defaults to empty, which keeps each job on the
+  line it ran on before the input existed, `version` on 22 and `release` and `finalize` on 24, so a
+  caller passing nothing runs exactly as it did. A package whose `engines.node` starts above 22, whose
+  `version` job pnpm refuses to install on 22 (`ERR_PNPM_UNSUPPORTED_ENGINE`), passes its floor with
+  `with: { node-version: "24" }`, and all three jobs then install, build and publish on it. The value
+  must be a version of Node 24 or later, because the `release` job publishes on it and the npm that
+  Node 22 bundles is below the publish floor: the `version` job refuses anything else, an alias such
+  as `lts/*` included, before it sets Node up, installs, tags or publishes. Job ids, the other inputs
+  and their defaults, secrets and permissions are unchanged.
+
+## workflows-2026-11-08-c0db8d8e5927
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-08-ebece960a9ac`.
+
+- `ci.yml`'s `actionlint` job restores rhysd/actionlint's release tarball from the caller's own
+  Actions cache with `actions/cache/restore` and `actions/cache/save` at v6.1.0, keyed on the
+  actionlint version and its SHA-256, and downloads it only when the cache holds no copy that
+  matches. GitHub's release downloads answered 504 for hours on 2026-11-08 and failed this job in
+  every caller. The SHA-256 is checked on whatever is unpacked, cached or downloaded; a cached copy
+  that does not match is downloaded again with a warning; a download retries up to five times with
+  curl's own backoff; and the tarball is saved on a miss, before the lint, so a pull request whose
+  lint finds something still seeds the cache. A cache that cannot be reached is a miss with a
+  warning. The cache steps use the runner's own cache token, so a caller grants nothing new: inputs,
+  secrets, permissions and job ids are unchanged. A run on the caller's default branch seeds the
+  entry every pull request can read. `self-check.yml`, this repository's own check, does the same
+  (#111).
+- `gate-no-emdash.yml`, `gate-no-emdash-install.yml`, `gate-no-internal-refs.yml` and
+  `gate-no-internal-refs-install.yml` take an optional `node-version` input, defaulting to `"22"`,
+  the line every job in them ran on before. A caller passing nothing runs exactly as it did. A
+  package whose `engines.node` starts above 22 with `engine-strict`, where pnpm refuses to install or
+  run a script on 22, passes its floor with `with: { node-version: "24" }`. Job ids, the other inputs
+  and their defaults, secrets and permissions are unchanged (#111).
+
+## workflows-2026-11-08-ebece960a9ac
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-08-a3be6a780b17`.
+
 - `release.yml` tags the version commit in the `version` job, seconds after the merge and before
   anything is published, with the new `scripts/release-tag.mjs`, and creates every GitHub release
   at that existing tag with `--verify-tag` and no `--target`. GitHub refuses a `GITHUB_TOKEN` any ref
@@ -37,6 +158,18 @@ so the next change to this file moves those lines under a heading with that name
   version commit, and every run asks the GitHub release, and when that is missing the registry, what
   a tagged version is owed. Inputs, secrets, permissions and job ids are unchanged (#110).
 
+## workflows-2026-11-08-a3be6a780b17
+
+2026-11-08. Act on: nothing, against `workflows-2026-11-07-0d5dbc3a9a72`.
+
+- The caller examples in the headers of `pr-title.yml`, `gate-no-emdash.yml` and
+  `gate-no-emdash-install.yml`, and the em-dash and PR title callers in README.md, no longer show a
+  `concurrency:` block. Those callers run on `edited`, so a push and an edit can arrive together,
+  and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
+  cancelled run in the newer check suite counts as a failing required context and blocks the merge
+  until someone re-runs it. A caller that copied the old example should remove its block. Comments
+  only: no job, input, secret, permission or step changes (#109).
+
 ## workflows-2026-11-07-0d5dbc3a9a72
 
 2026-11-07. Act on: nothing, against `workflows-2026-11-07-e3a24dad0713`.
@@ -47,13 +180,6 @@ so the next change to this file moves those lines under a heading with that name
   A job added later without a block of its own runs read-only. The reference note now compares what
   a caller must grant, every job's block together at its strongest, rather than the workflow-level
   block alone, so this move reports no permission change (#103).
-- The caller examples in the headers of `pr-title.yml`, `gate-no-emdash.yml` and
-  `gate-no-emdash-install.yml`, and the em-dash and PR title callers in README.md, no longer show a
-  `concurrency:` block. Those callers run on `edited`, so a push and an edit can arrive together,
-  and a group cancels one of the two runs, even a queued one under `cancel-in-progress: false`; a
-  cancelled run in the newer check suite counts as a failing required context and blocks the merge
-  until someone re-runs it. A caller that copied the old example should remove its block. Comments
-  only: no job, input, secret, permission or step changes (#109).
 
 ## workflows-2026-11-07-e3a24dad0713
 

@@ -37,17 +37,52 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # THE RELEASE TARBALL IS CACHED, keyed on the version and the SHA-256, so a run that finds it
+      # never asks GitHub's release downloads, which answered 504 for hours on 2026-11-08 and failed
+      # this job everywhere. The cache is only where the bytes come from: the install step checks the
+      # SHA-256 of whatever it unpacks, cached or downloaded, so a cache entry is trusted no further
+      # than a download. A cache that cannot be reached is a miss with a warning, never a failure.
+      - name: Restore the actionlint release from the cache
+        id: actionlint-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/actionlint-cache
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}-linux-amd64-${{ env.ACTIONLINT_SHA256 }}
+      # A cached tarball whose hash matches is unpacked as it is. Anything else (no cached copy, or
+      # one that does not match) is downloaded, with bounded retries and curl's own backoff, and the
+      # download is checked against the same SHA-256 before it is unpacked.
       - name: Install actionlint at the pinned version and checksum
         shell: bash
         run: |
           set -euo pipefail
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${tarball}" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
-          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
-          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          cache_dir="${RUNNER_TEMP}/actionlint-cache"
+          if [ -f "${cache_dir}/${tarball}" ] \
+            && echo "${ACTIONLINT_SHA256}  ${cache_dir}/${tarball}" | sha256sum -c --status -; then
+            echo "actionlint ${ACTIONLINT_VERSION}: the cached release matches the pinned SHA-256."
+          else
+            if [ -f "${cache_dir}/${tarball}" ]; then
+              echo "::warning::the cached actionlint release does not match the pinned SHA-256, so it is downloaded again"
+            fi
+            mkdir -p "${cache_dir}"
+            curl -fsSL --retry 5 --retry-connrefused --retry-max-time 120 --connect-timeout 20 \
+              -o "${cache_dir}/${tarball}" \
+              "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          fi
+          echo "${ACTIONLINT_SHA256}  ${cache_dir}/${tarball}" | sha256sum -c -
+          tar -xzf "${cache_dir}/${tarball}" -C "${RUNNER_TEMP}" actionlint
           "${RUNNER_TEMP}/actionlint" --version
           shellcheck --version
+      # Saved straight after the checked install and before the lint, so a pull request whose lint
+      # finds something still seeds the cache. Only on a miss: an entry is never rewritten, and a
+      # failed save is a warning. This step runs only after the install step passed, so what it
+      # saves is a tarball whose SHA-256 was just checked.
+      - name: Save the actionlint release to the cache
+        if: ${{ steps.actionlint-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/actionlint-cache
+          key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
       - name: actionlint over .github/workflows/
         shell: bash
         run: |
@@ -92,3 +127,104 @@ jobs:
           node-version: "22"
       - name: The package lists follow the catalog
         run: node test/package-lists.mjs
+
+  # `ci.yml` ITSELF, on every system and runtime, against `test/fixtures/ci-caller/`: a package whose
+  # scripts each fail on the hazard they stand for (a carriage return from a Windows checkout, a
+  # dash or PHI checker that cannot run or finds nothing, a run on the wrong system, a missing
+  # export target). `verify` runs on Linux, Windows and macOS at every default Node line, and `bun`
+  # and `deno` run the fixture's test script under Bun and Deno, so a change to a shared step is
+  # proven on all three systems here, before a caller adopts it. `prepublish` and `actionlint` are
+  # off: they read the repository root, which is not a package, and this repository's own
+  # `actionlint` job above already lints every workflow file.
+  #
+  # `scaling-gate` and `bench-compare` run here with the REAL tools, `@cosyte/test-utils` and
+  # `@cosyte/bench`, from the fixture's lockfile: the fixture's `test:perf` runs the scaling gate and
+  # its self-check on a synthetic split, and `bench/greeting.bench.mjs` is the suite the comparison
+  # times on this pull request's base and head. `performance-artifacts` below reads what it kept.
+  systems:
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
+      run-phi-scan: true
+      check-docs-content: true
+      run-bun: true
+      run-deno: true
+      run-coverage-ratchet: true
+      run-mutation: true
+      run-scaling-gate: true
+      run-bench-compare: true
+      run-actionlint: false
+      run-prepublish-manifest-lint: false
+      run-prepublish-install: false
+
+  # THE TESTING STANDARD'S JOBS, against the same fixture. `systems` above turns on `ci.yml`'s
+  # `coverage-ratchet` and `mutation` jobs; these two run the scheduled reusables. The fixture's
+  # `cosyte-mutate` and `cosyte-ratchet` are the stand-ins in `test/fixtures/quality-stubs/`, because
+  # the real tools are not on npm yet: each accepts only the command lines the real tool accepts,
+  # checks that the base ref has a merge base and that the reports it would read are on disk, refuses
+  # `raise`, and judges nothing. So a green run here proves the wiring (the checkout's history, the
+  # order of the steps, the directory, the summary, the artifacts), not the tools.
+  nightly-properties:
+    uses: ./.github/workflows/nightly-properties.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      test-cmd: pnpm run test:properties
+  weekly-mutation:
+    uses: ./.github/workflows/weekly-mutation.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+
+  # What the two runs kept. The fixture's `test:properties` requires COSYTE_PROPERTY_RUNS to be a
+  # whole number and prints a planted failure report in colour, so the nightly artifact must hold its
+  # seed, once, at the depth the reusable set; the weekly artifact must hold the full run's report and
+  # the ratchet's own report beside it.
+  quality-artifacts:
+    needs: [nightly-properties, weekly-mutation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/artifacts
+      - name: The seeds and the reports reached their artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="${RUNNER_TEMP}/artifacts"
+          cat "${artifacts}/property-run/seeds.txt"
+          grep -F 'Nightly property run at COSYTE_PROPERTY_RUNS=10000: 1 replay seed(s).' "${artifacts}/property-run/seeds.txt"
+          grep -F 'replay: COSYTE_PROPERTY_SEED=20261110 COSYTE_PROPERTY_PATH=0:1' "${artifacts}/property-run/seeds.txt"
+          test -s "${artifacts}/property-run/test.log"
+          test -s "${artifacts}/mutation-report/mutation.json"
+          cat "${artifacts}/mutation-report/ratchet.txt"
+          grep -F 'cosyte-ratchet check (a stand-in)' "${artifacts}/mutation-report/ratchet.txt"
+          grep -F '  read reports/mutation/mutation.json' "${artifacts}/mutation-report/ratchet.txt"
+
+  # What `bench-compare` kept, on a pull request (the only event it runs on). The comparison ends
+  # green whatever it measured, so this is what turns a comparison that wrote nothing, or wrote a
+  # document of another kind, into a red check here: the artifact must hold the fixture suite's
+  # results document, a results-v1 `comparison`, and its Markdown.
+  performance-artifacts:
+    needs: [systems]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bench-comparison
+          path: ${{ runner.temp }}/bench-comparison
+      - name: The comparison kept a results-v1 document
+        shell: bash
+        run: |
+          set -euo pipefail
+          kept="${RUNNER_TEMP}/bench-comparison"
+          ls -l "${kept}"
+          test -s "${kept}/bench-greeting.md"
+          results="${kept}/bench-greeting.json"
+          jq -r '.comparison.cases[] | "\(.benchmark) \(.size): \(.verdict), \(.ratios | length) round(s)"' "${results}"
+          if ! jq -e '.schemaVersion == 1 and .kind == "comparison" and (.comparison.cases | length) > 0' "${results}"; then
+            echo "::error::${results} is not a results-v1 comparison with at least one case"
+            exit 1
+          fi
