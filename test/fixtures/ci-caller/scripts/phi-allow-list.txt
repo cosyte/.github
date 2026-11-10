@@ -1,0 +1,1 @@
+# Synthetic values this fixture declares. It declares none.

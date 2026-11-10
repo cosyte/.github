@@ -10,7 +10,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 | Workflow | Purpose | Used by |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers**. Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
+| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers** · [the test suite under Bun] · [under Deno], on every system the caller lists ([Every system and runtime](#every-system-and-runtime)). Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → derive the release notes → **tag the version commit, before anything is published** → verify → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a version published without its release (a staged version **promoted after its own run stopped waiting**, or a direct publish whose release step never finished), at the tag on the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | no repository calls it today |
@@ -298,6 +298,109 @@ only way to know is to look at the setting.
 It does not move a single caller. Thirteen `uses:` lines live in thirteen other repositories, and
 this repository has no way to edit them and no policy that can force them. Until each one moves, the
 `@main` fan-out is exactly what it was, and this is an offer rather than an enforcement.
+
+## Every system and runtime
+
+`ci.yml`'s `verify` job runs on every entry of the `os` input, and two opt-in jobs run the caller's
+test script under Bun and under Deno. A caller that passes nothing gets what it got before: `verify`
+on `ubuntu-latest`, and `bun` and `deno` skipped.
+
+```yaml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
+      run-bun: true # adds the `ci / bun` check
+      run-deno: true # adds the `ci / deno` check
+```
+
+| Input | Default | What it does |
+|---|---|---|
+| `os` | `'["ubuntu-latest"]'` | the systems `verify` runs on, one leg per system and Node line |
+| `run-bun` | `false` | the `bun` job: install with pnpm from the lockfile, then `bun --bun run test` |
+| `bun-version` | `"1.4.4"` | the Bun the `bun` job installs |
+| `run-deno` | `false` | the `deno` job: install with pnpm from the lockfile, take `node` off PATH, then `deno task test` |
+| `deno-version` | `"2.9.8"` | the Deno the `deno` job installs |
+| `working-directory` | `"."` | where `verify`, `bun` and `deno` find `package.json`; `prepublish` and `actionlint` ignore it |
+
+Both runtime jobs run on `ubuntu-latest` only, so each is one stable check context. A skipped job
+satisfies a required context, so require `ci / bun` or `ci / deno` only while its input is on
+([What a skipped required context does to a merge](#what-a-skipped-required-context-does-to-a-merge)).
+
+### How each runtime is made to run the suite
+
+Both jobs run the caller's own `test` script, so a library opts in without writing a second one.
+What decides the runtime is how the script's `node` is started, and we measured it with a test that
+throws `process.versions` from inside a vitest worker:
+
+- `bun run test` starts a `#!/usr/bin/env node` bin (vitest, tsx, a `cosyte-process` verb) with
+  Node. `bun --bun run test` starts it with Bun, so the job uses `--bun`.
+- `deno task test` starts a package bin with Deno, but a script's literal `node` with the real Node
+  whenever one is on PATH, and with Deno only when none is. So the `deno` step replaces each PATH
+  entry that holds a `node` with a directory of links to everything else in it, and refuses to run
+  the suite while any `node` is still reachable. On `ubuntu-latest` that is two entries: the Node
+  `setup-node` installed and `/usr/local/bin`.
+
+Installing stays with pnpm and the committed lockfile in both jobs, so the suite runs against the
+exact dependency tree `verify` tested.
+
+### The proof: `self-check.yml` runs `ci.yml` itself on every system
+
+This repository is not a package, so its `systems` job runs `ci.yml` against
+[`test/fixtures/ci-caller/`](test/fixtures/ci-caller), with `os` set to all three systems, every
+default Node line, and both runtime jobs on. Every script of the fixture fails on the hazard it
+stands for, and `test/ci-caller-fixture.test.mjs` shows each one failing:
+
+| Script | Fails when |
+|---|---|
+| `format:check` | any file holds a carriage return, which is what a CRLF checkout on Windows produces |
+| `lint` | the dash checker callers run (`cosyte-no-emdash`) does not pass the fixture's text, or does not find a planted em dash |
+| `phi-scan` | the PHI scanner callers run (`cosyte-phi-scan`) does not pass the fixture, or does not find a planted, synthetic SSN shape |
+| `test` | the system is not the one `RUNNER_OS` names, or the source module does not load; it prints the runtime |
+| `build`, `attw` | `dist/` is not written, or an export target has no file, before the shared ESM and CJS smoke step loads it |
+
+So a green `systems` run shows, on each system: every shared step of `verify` (checkout, pnpm,
+`setup-node` and its cache, the docs-content delivery and checker, the install, each script started
+through the system's default shell, the ESM and CJS smoke step), and the real dash and PHI checkers
+from `@cosyte/script-utils` passing clean input and finding planted input.
+
+What it found, on 2026-11-10:
+
+- **macOS cannot run the dash checker.** `cosyte-no-emdash` needs GNU grep's `-P`, and the macOS
+  runner's BSD grep has none: the checker refuses every input with "the scanner cannot match a known
+  em dash", which is it failing closed, as it must. The fixture's `lint` requires that refusal on
+  macOS and turns red the day the checker passes there, so the expectation cannot outlive the fix.
+  Callers run the dash checker in the `gate-no-emdash` workflows, which run on `ubuntu-latest`, so
+  no caller's `verify` is affected unless its own `lint` runs the checker.
+- **Windows checks out CRLF unless told otherwise, so `verify` tells it.** With the fixture's eol
+  left unspecified (its own `.gitattributes` says `* text=auto !eol`), `actions/checkout` on
+  `windows-latest` (image windows-2025-vs2026, git 2.56.0.windows.4) wrote all eleven of its files
+  with CRLF line endings, and `format:check` failed on each one on Node 22, 24 and 26, while the
+  `ubuntu-latest` and `macos-latest` legs of the same run checked them out LF. So `verify`'s
+  first step, before the checkout, sets `core.autocrlf false` and `core.eol lf` on every system:
+  with it, the same legs check the same files out LF and pass. A file whose eol a repository's
+  `.gitattributes` sets keeps that setting, since an eol attribute overrides both. That is also
+  why the first runs here saw LF: this repository's root `.gitattributes` says
+  `* text=auto eol=lf`, which fixed the fixture to LF on every checkout and hid the runner's own
+  behavior, and why the fixture now unsets it. A caller whose `.gitattributes` already says
+  `eol=lf` was never affected; one without it gets LF from the step.
+- **The docs-content checker checked nothing on Windows.** Its entry guard compared paths, and on a
+  Windows runner the path it read from its own URL was `/D:/a/_temp/docs-content-check.mjs`, which
+  matched nothing, so `main` never ran and the step exited 0. The Windows legs gave it away by
+  printing no "Checked N file(s)" line. The guard now compares file URLs
+  (`test/docs-content-entry.test.mjs` asks it the Windows question with Node's win32 rules), and the
+  Windows legs print the summary. No caller was affected: none runs `verify` on Windows yet.
+- **The PHI scanner and the dash checker run on Windows**, where the dash checker starts `bash` and
+  finds Git's.
+
+What it cannot show: that a caller's own tools work on another system. The fixture's scripts are
+small stand-ins for vitest, eslint, prettier, tsup, attw and a repository's own PHI scanner. A
+caller learns that the first time its own `os` list runs on its own tree. Likewise the runtime jobs
+prove that the suite is started under Bun or Deno, not that a caller's suite passes there: on
+2026-11-10, `hl7`'s suite (4,114 tests) passed under Deno 2.9.8 and failed one test under Bun 1.4.4:
+a test whose premise is that a file copied outside the package cannot resolve an installed
+dependency, which under Bun it can.
 
 ## The docs-content gate
 

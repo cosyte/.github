@@ -37,6 +37,12 @@ const EXISTING_INPUTS = [
   'expect-unpublished-deps',
 ];
 
+/**
+ * The inputs added after this change, by their own change, all after this one and none re-defaulting
+ * anything: `test/ci-systems.test.mjs` owns them.
+ */
+const LATER_INPUTS = ['working-directory', 'run-bun', 'bun-version', 'run-deno', 'deno-version'];
+
 const indentOf = (line) => /^ */.exec(line)[0].length;
 
 /** The index of the first line matching `pattern`. */
@@ -96,7 +102,9 @@ test('the job set is unchanged, so this change adds no status check context', ()
   const jobs = block(lineIndex(/^jobs:$/))
     .filter((line) => /^  [a-z][\w-]*:$/.test(line))
     .map((line) => line.trim().replace(':', ''));
-  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint']);
+  // `bun` and `deno` were ADDED later, by their own change, after these three, and both are skipped
+  // unless a caller opts in: `test/ci-systems.test.mjs` owns them. This change added none.
+  assert.deepEqual(jobs, ['verify', 'prepublish', 'actionlint', 'bun', 'deno']);
 });
 
 test('every job-level condition is unchanged, and no job gains `continue-on-error`', () => {
@@ -143,7 +151,7 @@ test('EXACTLY ONE input is added, and its default is false', () => {
   const inputs = block(lineIndex(/^    inputs:$/))
     .filter((line) => /^      [a-z][\w-]*:$/.test(line))
     .map((line) => line.trim().replace(':', ''));
-  assert.deepEqual(inputs, [...EXISTING_INPUTS, INPUT], 'no input removed, renamed, or added beyond one');
+  assert.deepEqual(inputs, [...EXISTING_INPUTS, INPUT, ...LATER_INPUTS], 'no input removed, renamed, or added beyond one');
 
   const definition = block(lineIndex(new RegExp(`^      ${INPUT}:$`))).join('\n');
   assert.match(definition, /^\s+type: boolean$/m);

@@ -127,3 +127,24 @@ jobs:
           node-version: "22"
       - name: The package lists follow the catalog
         run: node test/package-lists.mjs
+
+  # `ci.yml` ITSELF, on every system and runtime, against `test/fixtures/ci-caller/`: a package whose
+  # scripts each fail on the hazard they stand for (a carriage return from a Windows checkout, a
+  # dash or PHI checker that cannot run or finds nothing, a run on the wrong system, a missing
+  # export target). `verify` runs on Linux, Windows and macOS at every default Node line, and `bun`
+  # and `deno` run the fixture's test script under Bun and Deno, so a change to a shared step is
+  # proven on all three systems here, before a caller adopts it. `prepublish` and `actionlint` are
+  # off: they read the repository root, which is not a package, and this repository's own
+  # `actionlint` job above already lints every workflow file.
+  systems:
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
+      run-phi-scan: true
+      check-docs-content: true
+      run-bun: true
+      run-deno: true
+      run-actionlint: false
+      run-prepublish-manifest-lint: false
+      run-prepublish-install: false
