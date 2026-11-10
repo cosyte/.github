@@ -105,11 +105,15 @@ export const REUSABLE_WORKFLOWS = Object.freeze([
   'gate-no-internal-refs-install.yml',
   'gate-no-internal-refs.yml',
   'nightly-fuzz.yml',
+  // The testing standard's two scheduled runs: properties at depth every night, the full mutation
+  // run every week. A caller names each in its own `uses:` line, under its own `schedule:`.
+  'nightly-properties.yml',
   // The title rule, written once for every repository. Unlike the gates above it runs no command a
   // caller supplies, and a caller adopts it with a `uses:` line and no input.
   'pr-title.yml',
   'release.yml',
   'scorecard.yml',
+  'weekly-mutation.yml',
 ]);
 
 /** Every published reference starts with this, so `git tag --list` can find them all. */

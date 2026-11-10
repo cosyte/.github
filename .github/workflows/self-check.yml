@@ -145,6 +145,51 @@ jobs:
       check-docs-content: true
       run-bun: true
       run-deno: true
+      run-coverage-ratchet: true
+      run-mutation: true
       run-actionlint: false
       run-prepublish-manifest-lint: false
       run-prepublish-install: false
+
+  # THE TESTING STANDARD'S JOBS, against the same fixture. `systems` above turns on `ci.yml`'s
+  # `coverage-ratchet` and `mutation` jobs; these two run the scheduled reusables. The fixture's
+  # `cosyte-mutate` and `cosyte-ratchet` are the stand-ins in `test/fixtures/quality-stubs/`, because
+  # the real tools are not on npm yet: each accepts only the command lines the real tool accepts,
+  # checks that the base ref has a merge base and that the reports it would read are on disk, refuses
+  # `raise`, and judges nothing. So a green run here proves the wiring (the checkout's history, the
+  # order of the steps, the directory, the summary, the artifacts), not the tools.
+  nightly-properties:
+    uses: ./.github/workflows/nightly-properties.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+      test-cmd: pnpm run test:properties
+  weekly-mutation:
+    uses: ./.github/workflows/weekly-mutation.yml
+    with:
+      working-directory: test/fixtures/ci-caller
+
+  # What the two runs kept. The fixture's `test:properties` requires COSYTE_PROPERTY_RUNS to be a
+  # whole number and prints a planted failure report in colour, so the nightly artifact must hold its
+  # seed, once, at the depth the reusable set; the weekly artifact must hold the full run's report and
+  # the ratchet's own report beside it.
+  quality-artifacts:
+    needs: [nightly-properties, weekly-mutation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/artifacts
+      - name: The seeds and the reports reached their artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="${RUNNER_TEMP}/artifacts"
+          cat "${artifacts}/property-run/seeds.txt"
+          grep -F 'Nightly property run at COSYTE_PROPERTY_RUNS=10000: 1 replay seed(s).' "${artifacts}/property-run/seeds.txt"
+          grep -F 'replay: COSYTE_PROPERTY_SEED=20261110 COSYTE_PROPERTY_PATH=0:1' "${artifacts}/property-run/seeds.txt"
+          test -s "${artifacts}/property-run/test.log"
+          test -s "${artifacts}/mutation-report/mutation.json"
+          cat "${artifacts}/mutation-report/ratchet.txt"
+          grep -F 'cosyte-ratchet check (a stand-in)' "${artifacts}/mutation-report/ratchet.txt"
+          grep -F '  read reports/mutation/mutation.json' "${artifacts}/mutation-report/ratchet.txt"

@@ -128,13 +128,13 @@ on:
         description: "Resolve docs-content/ links, images and sidebar ids (needs docs-content/sidebars.json)."
         type: boolean
         default: false
-      # THE DIRECTORY HOLDING THE PACKAGE, for `verify`, `bun` and `deno`. It exists so
+      # THE DIRECTORY HOLDING THE PACKAGE, for every job but `prepublish` and `actionlint`. It exists so
       # `self-check.yml` can run this workflow against the fixture under `test/`, since this
       # repository is not a package itself. `prepublish` and `actionlint` do not read it: they read
       # the repository root, so a caller that moves it off "." turns `prepublish` off too. At "." every
       # step runs exactly as it did before the input existed.
       working-directory:
-        description: "The directory holding package.json, relative to the repository root. verify, bun and deno only."
+        description: "The directory holding package.json, relative to the repository root. Not read by prepublish or actionlint."
         type: string
         default: "."
       # THE TEST SUITE UNDER BUN, in its own job, `bun`, on ubuntu-latest. OFF BY DEFAULT, so no caller
@@ -162,6 +162,27 @@ on:
         description: "The Deno version the deno job installs."
         type: string
         default: "2.9.8"
+      # THE TESTING STANDARD'S TWO PULL REQUEST JOBS, each OFF BY DEFAULT behind its own input, so no
+      # caller changes until it opts in by name. The standard is cosyte/config's
+      # documentation/decisions/0004-the-testing-standard.md; the tools are `cosyte-ratchet` from
+      # `@cosyte/script-utils` and `cosyte-mutate` from `@cosyte/vitest-config`, which a caller adds
+      # to its own devDependencies, and the floor file is `quality-floor.json` beside `package.json`.
+      #
+      # `coverage-ratchet` runs the caller's `test:coverage` and then holds coverage to the floor
+      # file: on a pull request against the base branch too, so every changed line coverage counts
+      # must have run and no floor may be lowered or removed; on any other event against the floor
+      # file alone.
+      run-coverage-ratchet:
+        description: "Hold coverage to quality-floor.json with cosyte-ratchet, in the coverage-ratchet job."
+        type: boolean
+        default: false
+      # `mutation` runs on a pull request only: it mutates the source files the change touched and
+      # requires every mutant in the changed lines to be killed. Both jobs run beside `verify`, never
+      # after it, so a pull request waits for the slowest of them rather than for their sum.
+      run-mutation:
+        description: "On a pull request, mutate the changed files and judge their mutants, in the mutation job."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -577,3 +598,137 @@ jobs:
           fi
           echo "deno: $(deno --version | head -n 1)"
           deno task test
+
+  # THE TESTING STANDARD ON A PULL REQUEST, in two jobs, `coverage-ratchet` and `mutation`, each OFF
+  # BY DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs and no
+  # other change. Each runs on ubuntu-latest at the lowest Node line, so a floor is judged on one
+  # system and one Node and each job id is one stable check context: `<caller job id> /
+  # coverage-ratchet` and `<caller job id> / mutation`. Neither has a `needs:`, so both run beside
+  # `verify` and the slowest of the three sets how long a pull request waits.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT. `mutation` is skipped on every event but a pull
+  # request, and both are skipped while their input is off, so require either one only while its
+  # input is on (README.md, "What a skipped required context does to a merge").
+  #
+  # The checkout fetches the whole history: the ratchet and the changed-files run both diff against
+  # the merge base of the base branch and HEAD, and a shallow clone has no merge base. Each judging
+  # step writes the ratchet's own report to the job summary, so the exceptions it lists for the
+  # changed code are on the run's page for the pull request to carry.
+  coverage-ratchet:
+    if: ${{ inputs.run-coverage-ratchet }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:coverage
+      # `--skip mutation`: the mutants are judged in the `mutation` job. On a pull request
+      # `github.base_ref` names the base branch; on a push it is empty and the ratchet compares the
+      # measurements with the floor file as it stands.
+      - name: The coverage ratchet
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          args=(check --skip mutation)
+          if [ -n "${BASE_REF}" ]; then args+=(--base "origin/${BASE_REF}"); fi
+          report="${RUNNER_TEMP}/coverage-ratchet.txt"
+          status=0
+          pnpm exec cosyte-ratchet "${args[@]}" > "${report}" 2>&1 || status=$?
+          cat "${report}"
+          {
+            echo "### Coverage against the floor"
+            echo
+            echo '```text'
+            cat "${report}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+
+  mutation:
+    if: ${{ inputs.run-mutation && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    # A large changed file is mutated whole: the PHI-scan engine took 10 to 13 minutes on 16 cores
+    # (cosyte/config, decision 0004). The bound is the job's; the 15 minute budget for a pull request
+    # is the caller's to watch.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      # A change with no changed source file starts no mutation run: `cosyte-mutate` writes an empty
+      # report and exits 0, so the ratchet can tell "ran, nothing to mutate" from "never ran". An
+      # empty base is refused rather than read as "nothing changed".
+      - name: Mutate the changed files
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_REF}" ]; then
+            echo "::error::the mutation job judges a pull request's changed files, and this run has no base branch"
+            exit 1
+          fi
+          pnpm exec cosyte-mutate changed --base "origin/${BASE_REF}"
+      # `--skip coverage`: coverage is judged in the `coverage-ratchet` job.
+      - name: The mutation ratchet over the changed code
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_REF}" ]; then
+            echo "::error::the mutation job judges a pull request's changed files, and this run has no base branch"
+            exit 1
+          fi
+          report="${RUNNER_TEMP}/mutation-ratchet.txt"
+          status=0
+          pnpm exec cosyte-ratchet check --skip coverage --base "origin/${BASE_REF}" > "${report}" 2>&1 || status=$?
+          cat "${report}"
+          {
+            echo "### Mutants in the changed code"
+            echo
+            echo '```text'
+            cat "${report}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+      # The JSON and HTML reports, so a reviewer can read each surviving mutant. `!cancelled()` keeps
+      # them when a step above failed, which is when they are read; the job's verdict is still the
+      # failed step's.
+      - name: Keep the mutation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-changed
+          path: ${{ inputs.working-directory }}/reports/mutation/
+          if-no-files-found: warn
+          retention-days: 14

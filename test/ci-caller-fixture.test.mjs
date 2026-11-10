@@ -89,12 +89,14 @@ function stubs({ brokenDash = false, refusingDash = false, brokenPhi = false } =
   return dir;
 }
 
-test('filesUnder lists every file with forward slashes, and skips what an install, a build or a plant writes', () => {
+test('filesUnder lists every file with forward slashes, and skips what an install, a build, a coverage or mutation run, or a plant writes', () => {
   const root = tree({
     'a.txt': 'a',
     'src/b.mjs': 'b',
     'node_modules/x/index.js': 'x',
     'dist/index.mjs': 'd',
+    'coverage/coverage-summary.json': 'c',
+    'reports/mutation/mutation.json': 'r',
     [`${PLANTED}/phi.txt`]: 'p',
   });
   assert.deepEqual(filesUnder(root), ['a.txt', 'src/b.mjs']);
@@ -264,7 +266,42 @@ test('phi-scan passes the tree and finds the planted SSN shape, removes the plan
 });
 
 test('an unknown verb is refused with the usage line', async () => {
-  assert.deepEqual(await verb('nope', FIXTURE), { code: 2, lines: ['usage: node tool.mjs <format-check|lint|phi-scan|test|build|attw>, not nope'] });
+  assert.deepEqual(await verb('nope', FIXTURE), {
+    code: 2,
+    lines: ['usage: node tool.mjs <format-check|lint|phi-scan|test|coverage|properties|build|attw>, not nope'],
+  });
+});
+
+test('coverage runs the test verb, then writes the two reports the coverage ratchet reads', async () => {
+  const root = tree({ 'src/index.mjs': GREETING });
+  const { code, lines } = await verb('coverage', root);
+  assert.equal(code, 0, lines.join('\n'));
+  assert.deepEqual(lines.slice(-1), ['coverage: wrote coverage/coverage-summary.json and coverage/lcov.info']);
+  const summary = JSON.parse(readFileSync(join(root, 'coverage/coverage-summary.json'), 'utf8'));
+  assert.deepEqual(Object.keys(summary.total), ['lines', 'branches', 'functions', 'statements']);
+  assert.match(readFileSync(join(root, 'coverage/lcov.info'), 'utf8'), /^SF:src\/index\.mjs$/m);
+
+  const broken = tree({ 'src/index.mjs': 'export const greeting = "something else";\n' });
+  assert.equal((await verb('coverage', broken)).code, 1);
+  assert.equal(existsSync(join(broken, 'coverage')), false, 'a failed test run writes no report');
+});
+
+test('properties needs a whole-number depth, and prints a planted failure report for the seed recorder', async () => {
+  const { code, lines } = await verb('properties', FIXTURE, { env: { COSYTE_PROPERTY_RUNS: '10000' } });
+  assert.equal(code, 0, lines.join('\n'));
+  assert.equal(lines[0], 'properties: 10000 cases a property');
+  const plain = lines.join('\n').replace(/\u001b\[[0-9;]*m/g, '');
+  assert.match(plain, /^ +FAIL  test\/planted\.test\.mjs > a planted property$/m);
+  assert.match(plain, /^Error: a planted property: property failed after 1 case\(s\), shrunk 0 time\(s\)\.$/m);
+  assert.match(plain, /^Replay exactly: COSYTE_PROPERTY_SEED=20261110 COSYTE_PROPERTY_PATH=0:1$/m);
+  assert.ok(lines.some((line) => line.includes('\u001b[')), 'with colour, as vitest prints it, so the recorder must strip it');
+
+  for (const value of [undefined, '', 'many', '0', '100.5']) {
+    const env = value === undefined ? {} : { COSYTE_PROPERTY_RUNS: value };
+    const refused = await verb('properties', FIXTURE, { env });
+    assert.equal(refused.code, 1, JSON.stringify(value));
+    assert.match(refused.lines[0], /^properties: COSYTE_PROPERTY_RUNS is .*, not a whole number of cases$/);
+  }
 });
 
 test('run from the command line, the fixture passes its own test and its own format check', () => {

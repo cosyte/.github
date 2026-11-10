@@ -10,9 +10,11 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 
 | Workflow | Purpose | Used by |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers** · [the test suite under Bun] · [under Deno], on every system the caller lists ([Every system and runtime](#every-system-and-runtime)). Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
+| [`ci.yml`](.github/workflows/ci.yml) | typecheck · lint(`--max-warnings=0`) · format:check · [PHI scan] · [docs-content] · test · coverage (gating) · build · `attw` · dual ESM/CJS smoke · actionlint · **the two pre-publish layers** · [the test suite under Bun] · [under Deno] · [the coverage ratchet] · [mutation of a pull request's changed files], on every system the caller lists ([Every system and runtime](#every-system-and-runtime), [The testing standard's jobs](#the-testing-standards-jobs)). Everything before those reads the working tree, where the monorepo's own resolution is in scope; the pre-publish layers ask the consumer's question **before** anything is published, which is the only place it can be prevented | every parser |
 | [`release.yml`](.github/workflows/release.yml) | **three jobs.** `version` (no environment): **the release environment gate** → derive the release notes → **tag the version commit, before anything is published** → verify → open or refresh the "Version Packages" PR, with **no publish command and no npm credential**. `release` (`environment: release`, `needs: version`, runs only on a version commit): **the publish-path floor gate** → npm publish **through npm trusted publishing (OIDC), with no npm token**, and with provenance, **directly by default**, or **staged** for a maintainer to promote when the caller sets `publish-mode: staged` and the package already exists → docs artifacts → GitHub release **with derived notes** → `repository_dispatch` to `cosyte/docs` → **post-publish install gate**. On the staged arm the release and the dispatch wait, in the same run, for a maintainer to promote the version (`promotion-window-minutes`, default 120). `finalize` (no environment, `contents: write` only): on a later run, the GitHub release and the dispatch for a version published without its release (a staged version **promoted after its own run stopped waiting**, or a direct publish whose release step never finished), at the tag on the commit that released it, with no npm credential. **Each package's trusted-publisher entry on npmjs.com names the package's own repository and `release.yml`, the caller, never `cosyte/.github`**, because npm validates the calling workflow ([How a release authenticates to npm](#how-a-release-authenticates-to-npm)). The environment gate runs first in the **un-gated** job, so it runs on every path, and refuses the run before any caller tree is checked out unless the caller's `release` environment really carries a required reviewer and a default-branch-only deployment policy. **One approval per release, on the half that cannot be undone**, rather than one per merge. The floor gate then reads which arm the caller asked for and resolves which tool will perform *this* caller's publish, refusing before anything is packed in the job that publishes if that tool cannot be identified or cannot make the OIDC exchange, and printing the tool and its version; on the staged arm it also refuses if that tool is below staging's floor or if the registry will not say whether the package exists. By default a release is **live when its run ends**, with nobody asked to promote it. With `publish-mode: staged`, a version of an existing package is **staged rather than published**, so a maintainer inspects the exact tarball and approves it with 2FA before any consumer can resolve it; an unapproved stage leaves the live registry unchanged. On failure, uploads the redacted npm debug log as a run artifact. The docs dispatch **warns rather than failing the run**, because it happens after the publish is permanent and the artifact itself is fine. The install gate is the one post-publish check that **can** fail the run, because a positive finding means the artifact is not fine | every published parser |
 | [`nightly-fuzz.yml`](.github/workflows/nightly-fuzz.yml) | run the fuzz target; malformed bytes must never crash/hang/OOM | byte parsers (`dicom`, `mllp`) |
+| [`nightly-properties.yml`](.github/workflows/nightly-properties.yml) | **one job**, `properties`: the caller's test suite with `COSYTE_PROPERTY_RUNS=10000`, and the replay seed of every property that fails kept in the job summary and the `property-run` artifact ([The testing standard's jobs](#the-testing-standards-jobs)) | no repository calls it yet |
+| [`weekly-mutation.yml`](.github/workflows/weekly-mutation.yml) | **one job**, `mutation`: the full mutation run, then each package's mutation score against its floor in `quality-floor.json`, in the job summary. A score below its floor is red. It never commits; raising a floor is a pull request | no repository calls it yet |
 | [`drift-check.yml`](.github/workflows/drift-check.yml) | fail when a repo diverges from `config/drift-manifest.json` | no repository calls it today |
 | [`gate-no-emdash.yml`](.github/workflows/gate-no-emdash.yml) | **two jobs.** `tracked-files` runs the caller's em-dash scan over what is committed; `messages` collects the pull request title, the body and every commit message in `base..head` into one file and feeds it to the caller's scanner on stdin. It carries **no pattern, no allow-list and no verdict of its own**: it prepares the tree, runs the command the caller names, and the command's exit status is the job. `tracked-files` is the requirable half. `messages` **must never be a required context**, because Dependabot composes a body out of upstream release notes | any repo whose em-dash gate is a thin caller |
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
@@ -322,7 +324,7 @@ jobs:
 | `bun-version` | `"1.4.4"` | the Bun the `bun` job installs |
 | `run-deno` | `false` | the `deno` job: install with pnpm from the lockfile, take `node` off PATH, then `deno task test` |
 | `deno-version` | `"2.9.8"` | the Deno the `deno` job installs |
-| `working-directory` | `"."` | where `verify`, `bun` and `deno` find `package.json`; `prepublish` and `actionlint` ignore it |
+| `working-directory` | `"."` | where `verify`, `bun`, `deno`, `coverage-ratchet` and `mutation` find `package.json`; `prepublish` and `actionlint` ignore it |
 
 Both runtime jobs run on `ubuntu-latest` only, so each is one stable check context. A skipped job
 satisfies a required context, so require `ci / bun` or `ci / deno` only while its input is on
@@ -401,6 +403,98 @@ prove that the suite is started under Bun or Deno, not that a caller's suite pas
 2026-11-10, `hl7`'s suite (4,114 tests) passed under Deno 2.9.8 and failed one test under Bun 1.4.4:
 a test whose premise is that a file copied outside the package cannot resolve an installed
 dependency, which under Bun it can.
+
+## The testing standard's jobs
+
+The testing standard (cosyte/config,
+[decision 0004](https://github.com/cosyte/config/blob/main/documentation/decisions/0004-the-testing-standard.md))
+holds each package's coverage and mutation score to a floor file, `quality-floor.json`, that only
+rises, and holds a pull request's own code to 100. Four jobs here run it. Each is off until a caller
+opts in, so a caller that changes nothing sees two new skipped checks, `ci / coverage-ratchet` and
+`ci / mutation`, and nothing else.
+
+| Where | Job | When | What it runs |
+|---|---|---|---|
+| `ci.yml`, `run-coverage-ratchet: true` | `coverage-ratchet` | every event | `pnpm test:coverage`, then `cosyte-ratchet check --skip mutation`, with `--base origin/<base branch>` on a pull request |
+| `ci.yml`, `run-mutation: true` | `mutation` | a pull request | `cosyte-mutate changed --base origin/<base branch>`, then `cosyte-ratchet check --skip coverage --base origin/<base branch>` |
+| `nightly-properties.yml` | `properties` | the caller's schedule | the caller's `test-cmd` (default `pnpm test`) with `COSYTE_PROPERTY_RUNS` set to `property-runs` (default `10000`) |
+| `weekly-mutation.yml` | `mutation` | the caller's schedule | the caller's `mutate-cmd` (default `pnpm exec cosyte-mutate full`), then `cosyte-ratchet check --skip coverage` |
+
+The tools are not on npm yet: `cosyte-ratchet` ships in `@cosyte/script-utils` and `cosyte-mutate`
+in `@cosyte/vitest-config`, both released from cosyte/config once the owner approves the release.
+So no library can turn these on today. After that release, a library adopts the standard in its own
+repository (decision 0004, "How a repository adopts it"): it adds both packages and StrykerJS to its
+devDependencies, adds a `stryker.config.mjs`, runs a full mutation run, writes `quality-floor.json`
+with `cosyte-ratchet raise`, and then opts in here:
+
+```yaml
+# <parser>/.github/workflows/ci.yml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      run-coverage-ratchet: true # adds the `ci / coverage-ratchet` check
+      run-mutation: true # adds the `ci / mutation` check, on pull requests
+```
+
+```yaml
+# <parser>/.github/workflows/nightly-properties.yml
+on:
+  schedule: [{ cron: "17 6 * * *" }]
+  workflow_dispatch: {}
+jobs:
+  properties:
+    uses: cosyte/.github/.github/workflows/nightly-properties.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+```yaml
+# <parser>/.github/workflows/weekly-mutation.yml
+on:
+  schedule: [{ cron: "43 4 * * 0" }]
+  workflow_dispatch: {}
+jobs:
+  mutation:
+    uses: cosyte/.github/.github/workflows/weekly-mutation.yml@workflows-YYYY-MM-DD-COMMIT
+```
+
+How they run:
+
+- **Beside `verify`, never after it.** Neither `ci.yml` job has a `needs:`, so a pull request waits
+  for the slowest of the three, not their sum. Both run on `ubuntu-latest` at the first entry of
+  `node-versions`, so a floor is judged on one system and one Node line.
+- **With the whole history.** Both check out with `fetch-depth: 0`, because both diff against the
+  merge base of the base branch and HEAD, and a shallow clone has none.
+- **On the run's page.** Each judging step writes the ratchet's report to the job summary, including
+  the list of inline exceptions in the changed code that the pull request has to carry. The `ci.yml`
+  `mutation` job keeps `reports/mutation/` as the `mutation-changed` artifact, and the weekly run as
+  `mutation-report`.
+- **The nightly seeds.** The property runners print `Replay exactly: COSYTE_PROPERTY_SEED=<seed>
+  COSYTE_PROPERTY_PATH=<path>` on a failure. The nightly job strips colour codes from the log, keeps
+  each printed pair once with the test and the property that printed it, writes them to the summary
+  and to `seeds.txt`, and keeps the log and `seeds.txt` as the `property-run` artifact for 30 days. A
+  depth that is not a whole number of cases is refused before the suite starts.
+- **Never a commit.** The weekly run has `contents: read` and keeps no credential. A score below its
+  floor turns it red; a score above it changes nothing. Raising a floor is a pull request a person or
+  an agent opens after `cosyte-ratchet raise --skip coverage`.
+- **A skipped job satisfies a required context.** Require `ci / coverage-ratchet` or `ci / mutation`
+  only while its input is on. `ci / mutation` is skipped on every event but a pull request, which is
+  the one event a ruleset gates.
+
+What we proved here, and what we could not. `test/testing-standard-jobs.test.mjs` runs every shell
+script these jobs add against a stub `pnpm`: the arguments each hands the tools, the base ref, the
+summary, the seed recording, and that every failure reaches the job's exit status.
+`self-check.yml`'s `systems` job turns both `ci.yml` jobs on, its `nightly-properties` and
+`weekly-mutation` jobs run the two reusables, all against `test/fixtures/ci-caller/`, and
+`quality-artifacts` checks what the two scheduled runs kept. Because the real tools are not on npm,
+the fixture links `test/fixtures/quality-stubs/`: stand-ins for `cosyte-mutate` and
+`cosyte-ratchet` that accept only the command lines the real tools accept, refuse `raise`, check that
+the base ref has a merge base and that each report the real tool would read is on disk, and judge
+nothing. So a green run proves the wiring (the history, the order of the steps, the directory, the
+summary, the artifacts), not the tools. Three things a caller learns only by adopting: whether the
+real tools pass its tree on a hosted runner, whether a changed-files mutation run fits the 15 minute
+budget for a pull request (a large changed file is mutated whole), and whether a full mutation score
+is steady enough week to week for an exact comparison (decision 0004 measured it moving 0.36
+points between two runs of unchanged code, and leaves a tolerance to the owner).
 
 ## The docs-content gate
 
