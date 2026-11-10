@@ -31,6 +31,7 @@ const SELF_CHECK = read('.github/workflows/self-check.yml');
 const NIGHTLY_FILE = '.github/workflows/nightly-properties.yml';
 const WEEKLY_FILE = '.github/workflows/weekly-mutation.yml';
 const NIGHTLY = existsSync(join(REPO, NIGHTLY_FILE)) ? read(NIGHTLY_FILE) : '';
+const PROBE_STEP = 'Check that cosyte-mutate can shard';
 const WEEKLY = existsSync(join(REPO, WEEKLY_FILE)) ? read(WEEKLY_FILE) : '';
 
 const indentOf = (line) => /^ */.exec(line)[0].length;
@@ -506,6 +507,8 @@ test('weekly-mutation.yml is a published reusable with two jobs, shard and mutat
     NODE_WITH_THE_CACHE('${{ inputs.node-version }}'),
     '      - run: pnpm install --frozen-lockfile',
   ]);
+  // The probe comes straight after the install, before the cache and the run.
+  assert.match(steps(WEEKLY, 'shard')[4], new RegExp(`^ {6}- name: ${PROBE_STEP}\n`));
 });
 
 test('the shards are a matrix of 1 to shard-count, every shard runs to its end, and each fits a hosted job', () => {
@@ -569,8 +572,91 @@ test('a shard whose tool wrote no shard report fails and says the tool does not 
   const unsharded = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full; mkdir -p reports/mutation; echo "{}" > reports/mutation/mutation.json' } });
   assert.equal(unsharded.status, 1);
   assert.match(unsharded.stdout, /^::error::the mutation command wrote no reports\/mutation\/shard-2-of-3\.json\. Sharding needs a cosyte-mutate that reads COSYTE_MUTATE_SHARD/m);
+  assert.match(unsharded.stdout, /@cosyte\/vitest-config 0\.1\.5 or later/);
   const failed = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full' }, pnpmExit: 2 });
   assert.equal(failed.status, 2);
+});
+
+// ONE SHARD NEEDS NO SHARDING TOOL. With shard-count 1 the tool's own `mutation.json` is the report
+// of shard 1 of 1, so a small library adopts with a `cosyte-mutate` that does not shard. A
+// `mutation.json` older than the run (one left in the tree) is never read as this run's.
+const WRITES_THE_FULL_REPORT = 'pnpm exec cosyte-mutate full; mkdir -p reports/mutation packages/a/reports/mutation; echo "{\\"run\\":1}" > reports/mutation/mutation.json; echo "{}" > packages/a/reports/mutation/mutation.json';
+const ONE_SHARD = { ...SHARD_ENV, SHARD: '1', SHARD_COUNT: '1' };
+
+test('with one shard, the mutation.json a tool that does not shard writes is the report of shard 1 of 1', () => {
+  const run = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...ONE_SHARD, MUTATE_CMD: WRITES_THE_FULL_REPORT } });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  const stage = join(run.temp, 'mutation-shard');
+  assert.equal(readFileSync(join(stage, 'reports/mutation/shard-1-of-1.json'), 'utf8'), '{"run":1}\n');
+  assert.ok(existsSync(join(stage, 'packages/a/reports/mutation/shard-1-of-1.json')));
+  assert.equal(existsSync(join(stage, 'reports/mutation/mutation.json')), false);
+  assert.equal(
+    readFileSync(join(stage, 'shard-1-of-1.txt'), 'utf8'),
+    'shard-1-of-1: full, no earlier results for this shard; the tool wrote mutation.json, read as the report of shard 1 of 1\n',
+  );
+  assert.match(run.summary, /2 shard report\(s\) written\.$/m);
+});
+
+test('with one shard, a mutation.json the run did not write is not read, and the shard fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'weekly-stale-'));
+  const cwd = join(root, 'work');
+  mkdirSync(join(cwd, 'reports/mutation'), { recursive: true });
+  writeFileSync(join(cwd, 'reports/mutation/mutation.json'), '{"stale":true}\n');
+  const run = runStep(WEEKLY, 'shard', SHARD_STEP, { cwd, env: { ...ONE_SHARD, MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
+  assert.equal(run.status, 1, run.stderr + run.stdout);
+  assert.match(run.stdout, /^::error::the mutation command wrote no reports\/mutation\/shard-1-of-1\.json and no new mutation\.json/m);
+});
+
+test('with several shards, a mutation.json is never read as a shard report', () => {
+  const run = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: WRITES_THE_FULL_REPORT } });
+  assert.equal(run.status, 1);
+  assert.match(run.stdout, /@cosyte\/vitest-config 0\.1\.5 or later/);
+});
+
+// THE PROBE: A RUN OF SEVERAL SHARDS CHECKS, IN SECONDS, THAT ITS TOOL SHARDS. Without it a tool that
+// does not shard runs the whole suite on every shard, hours each, and only then fails.
+const STUB_MUTATE = join(REPO, 'test/fixtures/quality-stubs/cosyte-mutate.mjs');
+
+test('the probe asks the mutate command for its help and fails at once when it does not name the shard variable', () => {
+  const step = stepNamed(WEEKLY, 'shard', PROBE_STEP);
+  assert.match(step, /^ {10}MUTATE_CMD: \$\{\{ inputs\.mutate-cmd \}\}$/m);
+  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { SHARD: '1', SHARD_COUNT: '8', MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
+  assert.equal(run.status, 1, run.stderr + run.stdout);
+  // One call, the help: nothing is mutated.
+  assert.deepEqual(run.calls, ['exec cosyte-mutate full --help']);
+  assert.match(run.stdout, /^::error::the cosyte-mutate this run installed cannot shard: `pnpm exec cosyte-mutate full --help` does not name COSYTE_MUTATE_SHARD\. A run of 8 shards needs @cosyte\/vitest-config 0\.1\.5 or later; update it, or set shard-count: 1/m);
+});
+
+test('the probe passes the stand-in that shards and refuses the stand-in of 0.1.4, under CI as on a runner', () => {
+  const env = { SHARD: '2', SHARD_COUNT: '2', CI: 'true' };
+  const shards = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...env, MUTATE_CMD: `node '${STUB_MUTATE}' full` } });
+  assert.equal(shards.status, 0, shards.stderr + shards.stdout);
+  assert.match(shards.stdout, /^cosyte-mutate can shard: /m);
+  const old = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { ...env, MUTATE_CMD: `COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full` } });
+  assert.equal(old.status, 1, old.stderr + old.stdout);
+  assert.match(old.stdout, /needs @cosyte\/vitest-config 0\.1\.5 or later/);
+  // Several packages: every help printed must name the variable, so one old package fails the probe.
+  const mixed = runStep(WEEKLY, 'shard', PROBE_STEP, {
+    env: { ...env, MUTATE_CMD: `node '${STUB_MUTATE}' full --help; COSYTE_MUTATE_STUB_AS=0.1.4 node '${STUB_MUTATE}' full` },
+  });
+  assert.equal(mixed.status, 1, mixed.stderr + mixed.stdout);
+});
+
+test('with one shard the probe asks nothing, since any cosyte-mutate will do', () => {
+  const run = runStep(WEEKLY, 'shard', PROBE_STEP, { env: { SHARD: '1', SHARD_COUNT: '1', MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.deepEqual(run.calls, []);
+});
+
+test('the save step says what it does not save: a shard cancelled at its time limit runs no later step', () => {
+  const lines = WEEKLY.split('\n');
+  const at = lines.indexOf("      - name: Save this shard's incremental results");
+  const comment = [];
+  for (let i = at - 1; lines[i].trim().startsWith('#'); i -= 1) comment.unshift(lines[i].trim().slice(2));
+  const text = comment.join(' ');
+  assert.doesNotMatch(text, /ran out of time/);
+  assert.match(text, /cancelled/);
+  assert.match(text, /saves nothing/);
 });
 
 test('a shard refuses a shard or a count it cannot be, before it runs anything', () => {
@@ -730,8 +816,19 @@ test('self-check runs the two ci.yml jobs, the nightly run and the weekly run ag
     '      shard-count: 2',
     '      report-name: mutation-report-incremental',
   ]);
+  // ONE SHARD, WITH THE STAND-IN OF A RELEASE THAT DOES NOT SHARD: its mutation.json is shard 1 of 1.
+  assert.deepEqual(block(SELF_CHECK, '  weekly-mutation-one-shard:'), [
+    '    uses: ./.github/workflows/weekly-mutation.yml',
+    '    with:',
+    '      working-directory: test/fixtures/ci-caller',
+    '      shard-count: 1',
+    '      mutate-cmd: COSYTE_MUTATE_STUB_AS=0.1.4 pnpm exec cosyte-mutate full',
+    '      report-name: mutation-report-one-shard',
+  ]);
   const proof = block(SELF_CHECK, '  quality-artifacts:').join('\n');
-  assert.match(proof, /^ {4}needs: \[nightly-properties, weekly-mutation, weekly-mutation-incremental\]$/m);
+  assert.match(proof, /^ {4}needs: \[nightly-properties, weekly-mutation, weekly-mutation-incremental, weekly-mutation-one-shard\]$/m);
+  assert.match(proof, /test -s "\$\{artifacts\}\/mutation-report-one-shard\/mutation\.json"/);
+  assert.match(proof, /grep -F 'read as the report of shard 1 of 1' "\$\{artifacts\}\/mutation-report-one-shard\/shards\.txt"/);
   assert.match(proof, /actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\.0\.2/);
   // What the artifacts must hold: the planted seed, at the nightly depth, and the stand-in ratchet's
   // report beside the merged report; and, from the second run, an incremental start on every shard.
@@ -741,6 +838,40 @@ test('self-check runs the two ci.yml jobs, the nightly run and the weekly run ag
   assert.match(proof, /test "\$\(grep -c ': incremental, ' "\$\{artifacts\}\/mutation-report-incremental\/shards\.txt"\)" -eq 2/);
   assert.match(proof, /test "\$\(wc -l < "\$\{artifacts\}\/mutation-report\/shards\.txt"\)" -eq 2/);
   assert.match(proof, /grep -F 'cosyte-ratchet check \(a stand-in\)'/);
+});
+
+// ACROSS TWO RUNS, NOT ONLY WITHIN ONE. The second weekly call restores what the first saved in the
+// same run; the first call's shards must each have restored an entry an earlier run saved, which the
+// run id in the restored key tells apart.
+const ACROSS_RUNS = "The first weekly run started from an earlier run's results";
+
+function acrossRuns(notes, { runId = '500', attempt = '1' } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'across-runs-'));
+  const temp = join(root, 'runner-temp');
+  mkdirSync(join(temp, 'artifacts/mutation-report'), { recursive: true });
+  writeFileSync(join(temp, 'artifacts/mutation-report/shards.txt'), notes);
+  return spawnSync(BASH, ['-c', runScript(SELF_CHECK, 'quality-artifacts', ACROSS_RUNS)], {
+    cwd: root,
+    env: { PATH: process.env.PATH, RUNNER_TEMP: temp, GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: attempt },
+    encoding: 'utf8',
+  });
+}
+
+const restoredFrom = (shard, run, attempt) => `shard-${shard}-of-2: incremental, 1 result file(s) restored from cosyte-mutation-v1-test/fixtures/ci-caller-2-${shard}-${run}-${attempt}\n`;
+
+test('self-check proves each shard of its first weekly run restored an earlier run\'s results', () => {
+  const ok = acrossRuns(restoredFrom(1, 499, 1) + restoredFrom(2, 400, 2));
+  assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+  assert.match(ok.stdout, /^shard-1-of-2: restored the results of run 499, attempt 1$/m);
+  const sameRun = acrossRuns(restoredFrom(1, 499, 1) + restoredFrom(2, 500, 1));
+  assert.equal(sameRun.status, 1);
+  assert.match(sameRun.stdout, /^::error::shard-2-of-2 restored results this run saved/m);
+  // A re-run's attempt reads what an earlier attempt saved: a separate execution, so it counts.
+  assert.equal(acrossRuns(restoredFrom(1, 500, 1) + restoredFrom(2, 500, 1), { attempt: '2' }).status, 0);
+  const full = acrossRuns(`${restoredFrom(1, 499, 1)}shard-2-of-2: full, no earlier results for this shard\n`);
+  assert.equal(full.status, 1);
+  assert.match(full.stdout, /^::error::shard-2-of-2 started from no earlier run's results/m);
+  assert.equal(acrossRuns(restoredFrom(1, 499, 1)).status, 1, 'both shards must say so');
 });
 
 test('the fixture names the stand-in tools and a floor file, so every new job has something to run', () => {

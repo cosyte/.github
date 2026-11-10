@@ -6,6 +6,8 @@
 // `cosyte-mutate full` also reads the two variables `weekly-mutation.yml` sets for a sharded run,
 // COSYTE_MUTATE_SHARD and COSYTE_MUTATE_INCREMENTAL_FILE: the contract that workflow asks of the real
 // tool. With a shard it writes `reports/mutation/shard-<k>-of-<n>.json` for its share of `src/*.mjs`.
+// `--help` names both, as the real help does from the release that shards; with
+// COSYTE_MUTATE_STUB_AS=0.1.4 it plays the last release that does not, naming and reading neither.
 //
 // Each accepts exactly the command lines the real tool accepts for the calls the shared jobs make,
 // and refuses the rest with exit 2, as the real one does. Each checks what a job must have done
@@ -95,19 +97,59 @@ function guarded(name, body, io) {
 }
 
 /**
+ * The help the real `cosyte-mutate` prints, cut to the lines a caller's workflow reads: its first
+ * line, and from the release that shards, the two variables, each at the start of a line.
+ */
+function helpText(shards) {
+  const lines = [
+    "cosyte-mutate: run StrykerJS with the shared config, over everything or over a change. (a stand-in)",
+    "",
+    "  cosyte-mutate full [--config <file>]",
+    "  cosyte-mutate changed --base <ref> [--config <file>]",
+  ];
+  if (shards) lines.push("", "A full run reads two variables; with neither set it runs as above:", "COSYTE_MUTATE_SHARD=<k>/<n>", "COSYTE_MUTATE_INCREMENTAL_FILE=<file>");
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The release the stand-in plays: the current one, which shards, unless COSYTE_MUTATE_STUB_AS names
+ * 0.1.4, the last `@cosyte/vitest-config` whose `cosyte-mutate` neither names nor reads the shard
+ * variables. Any other value is refused, so a typo never passes as a release.
+ */
+function playing(env) {
+  const as = env.COSYTE_MUTATE_STUB_AS;
+  if (as === undefined || as === "") return { shards: true };
+  if (as === "0.1.4") return { shards: false };
+  throw new Refused(`COSYTE_MUTATE_STUB_AS may only be 0.1.4, not ${JSON.stringify(as)}`);
+}
+
+/**
  * `cosyte-mutate full` or `cosyte-mutate changed --base <ref>`, each with an optional `--config`.
+ * `--help` anywhere prints the help and runs nothing: exit 0, or under CI on stderr with exit 2, as
+ * the real bin does.
  *
  * @returns {number} The exit code.
  */
 export function mutate(argv, io) {
   return guarded("cosyte-mutate", () => {
+    const release = playing(io.env);
+    if (argv.includes("--help") || argv.includes("-h")) {
+      const ci = io.env.CI;
+      if (ci === undefined || ci === "" || ci === "false" || ci === "0") {
+        io.out(helpText(release.shards));
+        return 0;
+      }
+      io.errText(helpText(release.shards));
+      io.err(`cosyte-mutate (a stand-in): refusing --help under CI (CI=${ci}), as the real one does`);
+      return 2;
+    }
     const [mode, ...rest] = argv;
     if (mode !== "full" && mode !== "changed") throw new Refused(`the mode must be full or changed, not ${JSON.stringify(mode)}`);
     const options = flags(rest, ["--base", "--config"]);
     if (mode === "changed" && options.base === undefined) throw new Refused("changed needs --base <ref>");
     if (mode === "full" && options.base !== undefined) throw new Refused("full takes no --base");
     const dir = join(io.cwd, "reports", "mutation");
-    const shard = mode === "full" ? shardOf(io.env.COSYTE_MUTATE_SHARD) : null;
+    const shard = mode === "full" && release.shards ? shardOf(io.env.COSYTE_MUTATE_SHARD) : null;
     if (mode === "changed") {
       const base = mergeBase(options.base, io.cwd);
       mkdirSync(dir, { recursive: true });
@@ -177,5 +219,12 @@ export function ratchet(argv, io) {
 
 /** What a bin passes: its own directory and streams. */
 export function processIo() {
-  return { cwd: process.cwd(), env: process.env, log: (line) => console.log(line), err: (line) => console.error(line) };
+  return {
+    cwd: process.cwd(),
+    env: process.env,
+    log: (line) => console.log(line),
+    err: (line) => console.error(line),
+    out: (text) => process.stdout.write(text),
+    errText: (text) => process.stderr.write(text),
+  };
 }

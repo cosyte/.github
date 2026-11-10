@@ -36,7 +36,11 @@ name: Weekly mutation
 # As variables they reach every `cosyte-mutate` a caller's command starts, in a repository with
 # several packages too. A shard that leaves no shard report fails and says why: a `cosyte-mutate`
 # that does not read them runs everything and writes `mutation.json`, and merging that once per
-# shard would be a wrong report.
+# shard would be a wrong report. Sharding needs @cosyte/vitest-config 0.1.5 or later, and with more
+# than one shard each shard checks that first, in seconds, from the tool's `--help`.
+# WITH `shard-count: 1` ANY `cosyte-mutate` WILL DO: the `mutation.json` a tool that does not shard
+# writes is the whole report, so it is read as the report of shard 1 of 1. That tool keeps no
+# incremental results, so each such run is a full one.
 #
 # THE CACHE. Each shard restores, before its run, the newest entry for its own shard of the same
 # count, and saves its incremental files after it under a key unique to the run. A scheduled run is
@@ -115,6 +119,33 @@ jobs:
           cache: pnpm
           cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
       - run: pnpm install --frozen-lockfile
+      # A RUN OF SEVERAL SHARDS NEEDS A `cosyte-mutate` THAT SHARDS, CHECKED IN SECONDS. One that does
+      # not runs the whole suite on every shard, hours each, before the shard can see that it wrote no
+      # shard report. So each shard first runs the caller's command with `--help` after it, which the
+      # real tool answers wherever it sits on the line and without running anything, and fails unless
+      # every help it printed names COSYTE_MUTATE_SHARD: the help names it from @cosyte/vitest-config
+      # 0.1.5, and a command that runs several packages prints one help each. `CI=false`, since the
+      # tool refuses `--help` under CI with exit 2 and the help on stderr; the exit status is not read,
+      # only the text. With one shard any `cosyte-mutate` will do, so nothing is asked.
+      - name: Check that cosyte-mutate can shard
+        shell: bash
+        env:
+          MUTATE_CMD: ${{ inputs.mutate-cmd }}
+        run: |
+          set -euo pipefail
+          if [ "${SHARD_COUNT}" = "1" ]; then
+            echo "one shard: any cosyte-mutate will do, since a mutation.json it writes is read as the report of shard 1 of 1"
+            exit 0
+          fi
+          help="$(CI=false timeout 120 bash -c "${MUTATE_CMD} --help" 2>&1)" || true
+          helps="$(grep -c '^cosyte-mutate: run StrykerJS' <<< "${help}" || true)"
+          shards="$(grep -c '^COSYTE_MUTATE_SHARD=' <<< "${help}" || true)"
+          if [ "${shards}" -eq 0 ] || [ "${shards}" -lt "${helps}" ]; then
+            printf '%s\n' "${help}"
+            echo "::error::the cosyte-mutate this run installed cannot shard: \`${MUTATE_CMD} --help\` does not name COSYTE_MUTATE_SHARD. A run of ${SHARD_COUNT} shards needs @cosyte/vitest-config 0.1.5 or later; update it, or set shard-count: 1, which runs the whole suite on one runner with any version."
+            exit 1
+          fi
+          echo "cosyte-mutate can shard: \`${MUTATE_CMD} --help\` names COSYTE_MUTATE_SHARD"
       # THE NEWEST RESULTS FOR THIS SHARD, from an earlier run. The key is unique to the run, so it
       # never matches across runs; the prefix finds the newest entry, this branch's first, then the
       # default branch's. A miss is a full run of this shard, never a failure.
@@ -162,6 +193,10 @@ jobs:
           echo "${note}"
           export COSYTE_MUTATE_SHARD="${SHARD}/${SHARD_COUNT}"
           export COSYTE_MUTATE_INCREMENTAL_FILE="${INCREMENTAL_FILE}"
+          # Anything the run writes is newer than this, so a mutation.json left in the tree before it
+          # is never read as the run's.
+          started="${RUNNER_TEMP}/mutation-started"
+          touch "${started}"
           # The command's status is kept, not acted on yet: what a failed run left for the cache is
           # still gathered below, and the step then ends with that status.
           status=0
@@ -176,6 +211,20 @@ jobs:
             cp "${file}" "${stage}/${relative}"
             reports=$((reports + 1))
           done < <(find . -name node_modules -prune -o -type f -path "*/reports/mutation/${name}.json" -print0)
+          # ONE SHARD: a tool that does not shard ran everything and wrote mutation.json, which is the
+          # whole report, so it is the report of shard 1 of 1. Only with one shard: with more, each
+          # shard's mutation.json would be the whole run again, and merging them would count twice.
+          if [ "${reports}" -eq 0 ] && [ "${SHARD_COUNT}" -eq 1 ]; then
+            while IFS= read -r -d '' file; do
+              relative="$(dirname "${file#./}")"
+              mkdir -p "${stage}/${relative}"
+              cp "${file}" "${stage}/${relative}/${name}.json"
+              reports=$((reports + 1))
+            done < <(find . -name node_modules -prune -o -type f -path "*/reports/mutation/mutation.json" -newer "${started}" -print0)
+            if [ "${reports}" -gt 0 ]; then
+              note="${note}; the tool wrote mutation.json, read as the report of shard 1 of 1"
+            fi
+          fi
           while IFS= read -r -d '' file; do
             relative="${file#./}"
             mkdir -p "${cache}/$(dirname "${relative}")"
@@ -191,13 +240,20 @@ jobs:
             echo "::error::the mutation command exited ${status} on ${name}"
             exit "${status}"
           fi
-          if [ "${reports}" -eq 0 ]; then
-            echo "::error::the mutation command wrote no reports/mutation/${name}.json. Sharding needs a cosyte-mutate that reads COSYTE_MUTATE_SHARD; one that does not runs everything and writes mutation.json, which is never merged. Update @cosyte/vitest-config to a version that shards."
+          if [ "${reports}" -eq 0 ] && [ "${SHARD_COUNT}" -eq 1 ]; then
+            echo "::error::the mutation command wrote no reports/mutation/${name}.json and no new mutation.json, so there is no report to read"
             exit 1
           fi
-      # Saved whatever the run did, short of a cancel: a shard that failed or ran out of time may
-      # still have left results Stryker kept, and the next run starts from them. A save that fails is
-      # a warning, and a shard that wrote no incremental file saves nothing.
+          if [ "${reports}" -eq 0 ]; then
+            echo "::error::the mutation command wrote no reports/mutation/${name}.json. Sharding needs a cosyte-mutate that reads COSYTE_MUTATE_SHARD; one that does not runs everything and writes mutation.json, which is never merged with more than one shard. Update to @cosyte/vitest-config 0.1.5 or later, or set shard-count: 1."
+            exit 1
+          fi
+      # Saved whatever the run did, short of a cancel: a shard whose command failed may still have
+      # left results Stryker kept, and the next run starts from them. A SHARD CANCELLED AT ITS TIME
+      # LIMIT SAVES NOTHING: GitHub cancels a job that passes its `timeout-minutes`, and a cancelled
+      # job does not run a step whose condition is `!cancelled()`, as this one's is. Its next run then
+      # restores the newest entry an earlier run saved. A save that fails is a warning, and a shard
+      # that wrote no incremental file saves nothing.
       - name: Save this shard's incremental results
         if: ${{ !cancelled() }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

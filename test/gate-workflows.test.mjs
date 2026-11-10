@@ -161,9 +161,10 @@ function pullRequestRepo({ baseMessage, headMessage }) {
       env: {
         ...process.env,
         GIT_AUTHOR_NAME: 'gate',
-        GIT_AUTHOR_EMAIL: 'gate@example.invalid',
+        // No domain: the PHI scan reads any address with one as a possible real email.
+        GIT_AUTHOR_EMAIL: 'gate-tester',
         GIT_COMMITTER_NAME: 'gate',
-        GIT_COMMITTER_EMAIL: 'gate@example.invalid',
+        GIT_COMMITTER_EMAIL: 'gate-tester',
       },
     });
     assert.equal(done.status, 0, `git ${args.join(' ')} failed: ${done.stdout}${done.stderr}`);
