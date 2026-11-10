@@ -530,12 +530,17 @@ runner, past what one job may take. So `weekly-mutation.yml` splits it.
   they reach every `cosyte-mutate` a caller's command starts, in a repository with several packages
   too. Each shard's job is bounded at 340 minutes, inside GitHub's 6 hour limit, and every shard runs
   to its end when another fails (`fail-fast: false`).
-- **The tool is checked first.** With more than one shard, each shard runs `<mutate-cmd> --help`
-  right after the install and fails within seconds unless every help it printed names
-  `COSYTE_MUTATE_SHARD`, saying that sharding needs `@cosyte/vitest-config` 0.1.5 or later. Without
-  the check, a tool that does not shard would run the whole suite on every shard, hours each, before
-  failing. The real tool answers `--help` wherever it sits on the line and runs nothing; a
-  `mutate-cmd` that cannot take `--help` at its end fails the check.
+- **The tool is checked first.** With more than one shard, each shard runs `mutate-cmd` as written
+  right after the install, once, with `COSYTE_MUTATE_SHARD` naming a shard no file can be in (`n` is
+  2^33, past every 32-bit hash the tool shards by). A tool that reads the variable writes an empty
+  shard report and stops within seconds; the check then deletes it. The check fails, saying that
+  sharding needs `@cosyte/vitest-config` 0.1.5 or later, when the command wrote a `mutation.json`
+  (it ran everything), when it is still running after 180 seconds (it is stopped), when it exits
+  non-zero, or when it wrote no shard report. So a tool whose help names the variable but which
+  ignores it is caught here, not after hours of mutating, and a compound `mutate-cmd` (`a && b`) is
+  run whole, every part with the variable set, never with a full mutation in any part. Without the
+  check, a tool that does not shard would run the whole suite on every shard, hours each, before
+  failing.
 - **One shard needs no sharding tool.** With `shard-count: 1` nothing is checked, and when the tool
   writes `mutation.json` instead of `shard-1-of-1.json`, that report, written by this run, is the
   report of shard 1 of 1. So a small library adopts the weekly run with any `cosyte-mutate`, as a full
@@ -561,7 +566,7 @@ runner, past what one job may take. So `weekly-mutation.yml` splits it.
 both variables and names them in its `--help`. It ships in the next patch release of
 `@cosyte/vitest-config`, 0.1.5, which is not on npm yet. `cosyte-mutate` in 0.1.4 does not read
 them: it runs everything and writes `mutation.json`, so with more than one shard each shard fails its
-check in seconds, and with `shard-count: 1` the run works as a full run. The workflow side is proved
+check within 180 seconds, and with `shard-count: 1` the run works as a full run. The workflow side is proved
 against the stand-in in `test/fixtures/quality-stubs/`, which plays both releases. A library adopts
 more than one shard once 0.1.5 is published.
 
