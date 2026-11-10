@@ -2,8 +2,9 @@
 //
 // Four gates run in the `version` job, after its `Verify` ladder and before anything can publish:
 // the `release` job `needs:` that job, so a gate that fails stops the publish, and the version job
-// holds no publish credential, so nothing a gate runs can reach the registry. Each runs only on the
-// run that owes a publish. Each says by name why it skipped when a caller has not turned it on, and
+// holds no publish credential, so nothing a gate runs can reach the registry. README.md, "What a
+// skipped required context does to a merge", owns why `release` must not survive that failure. Each
+// runs only on the run that owes a publish. Each says by name why it skipped when a caller has not turned it on, and
 // none of them re-runs a mutation pass: the mutation gate reads the latest weekly result.
 //
 // The fifth piece is in the jobs that create a GitHub release: a CycloneDX SBOM, written before the
