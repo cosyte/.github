@@ -109,6 +109,27 @@ test('format-check fails on a carriage return, naming the file, and passes LF on
   assert.deepEqual(await verb('format-check', lf), { code: 0, lines: ['format-check: 2 files, LF line endings only'] });
 });
 
+test('the fixture\'s line endings are decided by the checkout, not by this repository\'s eol=lf', () => {
+  // This repository's root `.gitattributes` is `* text=auto eol=lf`, and an `eol` attribute
+  // overrides `core.autocrlf` and `core.eol`, so under it every checkout on every system writes LF
+  // and `format-check` could never see a CRLF checkout. The fixture's own `.gitattributes` leaves
+  // `eol` unspecified, so its files are `text=auto` and the checkout's git settings decide: on a
+  // Windows leg, `format-check` then measures what `verify` set before it checked out.
+  const listed = spawnSync('git', ['ls-files', '-z'], { cwd: FIXTURE, encoding: 'utf8' });
+  assert.equal(listed.status, 0, listed.stderr);
+  const files = listed.stdout.split('\0').filter(Boolean);
+  assert.ok(files.includes('tool.mjs') && files.includes('pnpm-lock.yaml'), files.join(', '));
+  const attrs = spawnSync('git', ['check-attr', '-z', 'text', 'eol', '--', ...files], { cwd: FIXTURE, encoding: 'utf8' });
+  assert.equal(attrs.status, 0, attrs.stderr);
+  const fields = attrs.stdout.split('\0');
+  const seen = {};
+  for (let i = 0; i + 2 < fields.length; i += 3) seen[`${fields[i]} ${fields[i + 1]}`] = fields[i + 2];
+  for (const file of files) {
+    assert.equal(seen[`${file} text`], 'auto', `${file} is not text=auto`);
+    assert.equal(seen[`${file} eol`], 'unspecified', `${file} has its eol fixed, so no checkout can make it CRLF`);
+  }
+});
+
 test('runtimeOf names Bun, then Deno, then Node', () => {
   assert.equal(runtimeOf({ bun: '1.4.4', node: '24.3.0' }), 'bun 1.4.4');
   assert.equal(runtimeOf({ deno: '2.9.8', node: '24.2.0' }), 'deno 2.9.8');

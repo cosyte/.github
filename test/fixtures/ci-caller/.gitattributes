@@ -1,0 +1,3 @@
+# The root's `eol=lf` would fix every file here to LF on every checkout, and then `format-check`
+# could never see what a Windows checkout writes. Unset here, so the checkout's settings decide.
+* text=auto !eol
