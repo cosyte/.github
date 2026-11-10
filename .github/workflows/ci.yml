@@ -183,6 +183,35 @@ on:
         description: "On a pull request, mutate the changed files and judge their mutants, in the mutation job."
         type: boolean
         default: false
+      # THE PERFORMANCE STANDARD'S TWO PULL REQUEST JOBS, each OFF BY DEFAULT behind its own input, so
+      # no caller changes until it opts in by name. The standard is cosyte/config's
+      # documentation/decisions/0005-the-performance-standard.md; the tools are the scaling gate in
+      # `@cosyte/test-utils/perf` and `cosyte-bench` from `@cosyte/bench`, which a caller adds to its
+      # own devDependencies.
+      #
+      # `scaling-gate` runs the caller's `test:perf`, the non-instrumented run that holds the scaling
+      # gate and its self-check. It is the standard's required check for complexity regressions.
+      run-scaling-gate:
+        description: "Run the test:perf script, the scaling gate from @cosyte/test-utils/perf, in the scaling-gate job."
+        type: boolean
+        default: false
+      # `bench-compare` runs on a pull request only: it builds the base beside the head and times both,
+      # interleaved, on one runner, with `cosyte-bench compare`. IT IS ADVISORY AND NEVER FAILS: it
+      # posts its numbers in the job summary and keeps the results as an artifact, and stays that way
+      # until an A/A calibration of the caller's suite on this runner class shows false alarms under
+      # 1% (the standard's section 4). A regression is a warning on the run's page, not a red check.
+      run-bench-compare:
+        description: "On a pull request, time the base build against the head build with @cosyte/bench, in the bench-compare job. Advisory: it never fails."
+        type: boolean
+        default: false
+      bench-suites:
+        description: "The suites bench-compare runs, separated by spaces or new lines, relative to working-directory. Empty runs every bench/*.bench.mjs and bench/*.bench.ts."
+        type: string
+        default: ""
+      bench-target:
+        description: "The built entry bench-compare times on each side, relative to working-directory."
+        type: string
+        default: "dist/index.mjs"
 
 permissions:
   contents: read
@@ -732,3 +761,154 @@ jobs:
           path: ${{ inputs.working-directory }}/reports/mutation/
           if-no-files-found: warn
           retention-days: 14
+
+  # THE PERFORMANCE STANDARD ON A PULL REQUEST, in two jobs, `scaling-gate` and `bench-compare`,
+  # each OFF BY DEFAULT behind its own input, so a caller that passes nothing gets two skipped jobs
+  # and no other change. Each runs on ubuntu-latest at the lowest Node line, so each job id is one
+  # stable check context, `<caller job id> / scaling-gate` and `<caller job id> / bench-compare`, and
+  # the runner class is the one the standard's calibration was taken on. Neither has a `needs:`, so
+  # both run beside `verify` and the slowest job sets how long a pull request waits.
+  #
+  # A SKIPPED JOB SATISFIES A REQUIRED CONTEXT, so require `scaling-gate` only while its input is on
+  # (README.md, "What a skipped required context does to a merge"). Never require `bench-compare`:
+  # it ends green whatever it measured, by design, until the calibration rule is met.
+  scaling-gate:
+    if: ${{ inputs.run-scaling-gate }}
+    runs-on: ubuntu-latest
+    # The gate times each phase for well under a second and its self-check about as long again; the
+    # bound is for an install and a suite that hang, inside the 15 minute budget for a pull request.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:perf
+
+  bench-compare:
+    if: ${{ inputs.run-bench-compare && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    # The comparisons stop themselves at BENCH_BUDGET_SECONDS below and report it; this bound is for
+    # an install or a build that hangs, which would otherwise hold a runner for the default six hours.
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      # The whole history, so the base commit is on disk for a worktree beside the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions)[0] }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      # ONE STEP, AND IT ENDS 0 WHATEVER HAPPENS. The head is installed and built here, the base is
+      # checked out in a worktree under RUNNER_TEMP and installed and built there, and each suite (the
+      # head's, which is handed either build) runs `cosyte-bench compare`: 12 rounds, each running
+      # every case once on each side in a fresh process, back to back, so the runner's noise lands on
+      # both. The tool's exit (1 a regression, 2 a case it could not measure) becomes an annotation on
+      # the run's page, never a red check; a base that does not build, a suite that is not there, or
+      # a spent budget ends the step with a note. Each suite's results document (results-v1, checked
+      # with `cosyte-bench check`) and its Markdown are kept in the `bench-comparison` artifact.
+      - name: Compare the base build with the head build
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BENCH_SUITES: ${{ inputs.bench-suites }}
+          BENCH_TARGET: ${{ inputs.bench-target }}
+          BENCH_BUDGET_SECONDS: "600"
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/bench-comparison"
+          mkdir -p "${out}"
+          {
+            echo "### Base against head timing (advisory)"
+            echo
+            echo "This comparison does not fail the pull request. It becomes a required check only once an A/A calibration of this suite on this runner class shows false alarms under 1% (cosyte/config, documentation/decisions/0005-the-performance-standard.md, section 4)."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          stop() {
+            echo "::warning::bench-compare: $1; nothing was compared, and the pull request is not failed for it"
+            { echo; echo "Not run: $1."; } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          }
+          if [ -z "${BASE_SHA}" ]; then stop "this run names no base commit"; fi
+          suites=()
+          if [ -n "${BENCH_SUITES//[[:space:]]/}" ]; then
+            read -r -d '' -a suites <<< "${BENCH_SUITES}" || true
+          else
+            shopt -s nullglob
+            suites=(bench/*.bench.mjs bench/*.bench.ts)
+            shopt -u nullglob
+          fi
+          if [ "${#suites[@]}" -eq 0 ]; then stop "no suite to run: name one in bench-suites, or add bench/<name>.bench.mjs"; fi
+          if ! pnpm install --frozen-lockfile || ! pnpm build; then stop "the head did not install or build"; fi
+          head_sha="$(git rev-parse HEAD)"
+          prefix="$(git rev-parse --show-prefix)"
+          base_root="${RUNNER_TEMP}/bench-base"
+          base_dir="${base_root}"
+          if [ -n "${prefix}" ]; then base_dir="${base_root}/${prefix%/}"; fi
+          if ! git worktree add --quiet --detach "${base_root}" "${BASE_SHA}"; then stop "the base commit ${BASE_SHA} could not be checked out"; fi
+          if ! (cd "${base_dir}" && pnpm install --frozen-lockfile && pnpm build); then stop "the base did not install or build"; fi
+          deadline=$((SECONDS + BENCH_BUDGET_SECONDS))
+          for suite in "${suites[@]}"; do
+            if [ ! -f "${suite}" ]; then
+              echo "::warning::bench-compare: ${suite} is not a file, so it was not compared"
+              continue
+            fi
+            name="${suite%.bench.*}"
+            name="${name//\//-}"
+            left=$((deadline - SECONDS))
+            if [ "${left}" -le 0 ]; then
+              echo "::warning::bench-compare: ${suite}: not compared, the ${BENCH_BUDGET_SECONDS} second budget was spent"
+              { echo; echo "Not compared: ${suite}, the ${BENCH_BUDGET_SECONDS} second budget was spent."; } >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            status=0
+            timeout --kill-after=10 "${left}" pnpm exec cosyte-bench compare --suite "${suite}" \
+              --base "${base_dir}/${BENCH_TARGET}" --head "${BENCH_TARGET}" \
+              --base-commit "${BASE_SHA}" --head-commit "${head_sha}" \
+              --out "${out}/${name}.json" --summary "${out}/${name}.md" || status=$?
+            case "${status}" in
+              0) ;;
+              1) echo "::warning::bench-compare: ${suite}: the head is slower than the base beyond the threshold in at least one case. Advisory: this does not fail the pull request" ;;
+              2) echo "::notice::bench-compare: ${suite}: could not measure every case (a skip, or a process that died), and a skip is not a pass" ;;
+              124 | 137) echo "::warning::bench-compare: ${suite}: stopped at the end of the ${BENCH_BUDGET_SECONDS} second budget" ;;
+              *) echo "::warning::bench-compare: ${suite}: cosyte-bench exited ${status}" ;;
+            esac
+            if [ -f "${out}/${name}.md" ]; then
+              { echo; cat "${out}/${name}.md"; } >> "${GITHUB_STEP_SUMMARY}"
+            else
+              { echo; echo "No results for ${suite}: cosyte-bench exited ${status}."; } >> "${GITHUB_STEP_SUMMARY}"
+            fi
+            if [ -f "${out}/${name}.json" ] && ! pnpm exec cosyte-bench check "${out}/${name}.json"; then
+              echo "::warning::bench-compare: ${out}/${name}.json does not match the results schema"
+            fi
+          done
+          exit 0
+      # The results documents, in the results-v1 shape `@cosyte/bench` writes, and their Markdown.
+      # `!cancelled()` keeps whatever was written before a timeout or a failed setup step.
+      - name: Keep the comparison
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-comparison
+          path: ${{ runner.temp }}/bench-comparison/
+          if-no-files-found: warn
+          retention-days: 30

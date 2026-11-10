@@ -110,6 +110,10 @@ test('the new inputs come after every existing one, and each is off or inert by 
     'deno-version',
     'run-coverage-ratchet',
     'run-mutation',
+    'run-scaling-gate',
+    'run-bench-compare',
+    'bench-suites',
+    'bench-target',
   ]);
   // THE DEFAULTS ARE WHAT KEEP A MERGE FROM CHANGING ANY CALLER: both runtimes off, and the
   // directory at the repository root, where every step reads what it read before.
@@ -127,7 +131,7 @@ test('the new inputs come after every existing one, and each is off or inert by 
 });
 
 test('bun and deno are added after the existing jobs, each behind its own input, and nothing depends on them', () => {
-  assert.deepEqual(jobIds(CI), ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation']);
+  assert.deepEqual(jobIds(CI), ['verify', 'prepublish', 'actionlint', 'bun', 'deno', 'coverage-ratchet', 'mutation', 'scaling-gate', 'bench-compare']);
   assert.deepEqual(jobKeys(CI, 'bun').slice(0, 3), [
     '    if: ${{ inputs.run-bun }}',
     '    runs-on: ubuntu-latest',
@@ -389,7 +393,7 @@ test('the bun step prints the Bun it runs, runs the test script with --bun, and 
 // ---------------------------------------------------------------------------
 
 test('self-check runs ci.yml itself on all three systems and both runtimes, against the fixture', () => {
-  assert.deepEqual(jobIds(SELF_CHECK), ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'quality-artifacts']);
+  assert.deepEqual(jobIds(SELF_CHECK), ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'quality-artifacts', 'performance-artifacts']);
   assert.deepEqual(block(SELF_CHECK, '  systems:'), [
     '    uses: ./.github/workflows/ci.yml',
     '    with:',
@@ -401,6 +405,8 @@ test('self-check runs ci.yml itself on all three systems and both runtimes, agai
     '      run-deno: true',
     '      run-coverage-ratchet: true',
     '      run-mutation: true',
+    '      run-scaling-gate: true',
+    '      run-bench-compare: true',
     '      run-actionlint: false',
     '      run-prepublish-manifest-lint: false',
     '      run-prepublish-install: false',

@@ -136,6 +136,11 @@ jobs:
   # proven on all three systems here, before a caller adopts it. `prepublish` and `actionlint` are
   # off: they read the repository root, which is not a package, and this repository's own
   # `actionlint` job above already lints every workflow file.
+  #
+  # `scaling-gate` and `bench-compare` run here with the REAL tools, `@cosyte/test-utils` and
+  # `@cosyte/bench`, from the fixture's lockfile: the fixture's `test:perf` runs the scaling gate and
+  # its self-check on a synthetic split, and `bench/greeting.bench.mjs` is the suite the comparison
+  # times on this pull request's base and head. `performance-artifacts` below reads what it kept.
   systems:
     uses: ./.github/workflows/ci.yml
     with:
@@ -147,6 +152,8 @@ jobs:
       run-deno: true
       run-coverage-ratchet: true
       run-mutation: true
+      run-scaling-gate: true
+      run-bench-compare: true
       run-actionlint: false
       run-prepublish-manifest-lint: false
       run-prepublish-install: false
@@ -193,3 +200,31 @@ jobs:
           cat "${artifacts}/mutation-report/ratchet.txt"
           grep -F 'cosyte-ratchet check (a stand-in)' "${artifacts}/mutation-report/ratchet.txt"
           grep -F '  read reports/mutation/mutation.json' "${artifacts}/mutation-report/ratchet.txt"
+
+  # What `bench-compare` kept, on a pull request (the only event it runs on). The comparison ends
+  # green whatever it measured, so this is what turns a comparison that wrote nothing, or wrote a
+  # document of another kind, into a red check here: the artifact must hold the fixture suite's
+  # results document, a results-v1 `comparison`, and its Markdown.
+  performance-artifacts:
+    needs: [systems]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bench-comparison
+          path: ${{ runner.temp }}/bench-comparison
+      - name: The comparison kept a results-v1 document
+        shell: bash
+        run: |
+          set -euo pipefail
+          kept="${RUNNER_TEMP}/bench-comparison"
+          ls -l "${kept}"
+          test -s "${kept}/bench-greeting.md"
+          results="${kept}/bench-greeting.json"
+          jq -r '.comparison.cases[] | "\(.benchmark) \(.size): \(.verdict), \(.ratios | length) round(s)"' "${results}"
+          if ! jq -e '.schemaVersion == 1 and .kind == "comparison" and (.comparison.cases | length) > 0' "${results}"; then
+            echo "::error::${results} is not a results-v1 comparison with at least one case"
+            exit 1
+          fi

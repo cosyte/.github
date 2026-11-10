@@ -324,7 +324,7 @@ jobs:
 | `bun-version` | `"1.4.4"` | the Bun the `bun` job installs |
 | `run-deno` | `false` | the `deno` job: install with pnpm from the lockfile, take `node` off PATH, then `deno task test` |
 | `deno-version` | `"2.9.8"` | the Deno the `deno` job installs |
-| `working-directory` | `"."` | where `verify`, `bun`, `deno`, `coverage-ratchet` and `mutation` find `package.json`; `prepublish` and `actionlint` ignore it |
+| `working-directory` | `"."` | where `verify`, `bun`, `deno`, `coverage-ratchet`, `mutation`, `scaling-gate` and `bench-compare` find `package.json`; `prepublish` and `actionlint` ignore it |
 
 Both runtime jobs run on `ubuntu-latest` only, so each is one stable check context. A skipped job
 satisfies a required context, so require `ci / bun` or `ci / deno` only while its input is on
@@ -495,6 +495,79 @@ real tools pass its tree on a hosted runner, whether a changed-files mutation ru
 budget for a pull request (a large changed file is mutated whole), and whether a full mutation score
 is steady enough week to week for an exact comparison (decision 0004 measured it moving 0.36
 points between two runs of unchanged code, and leaves a tolerance to the owner).
+
+## The performance standard's jobs
+
+The performance standard (cosyte/config,
+[decision 0005](https://github.com/cosyte/config/blob/main/documentation/decisions/0005-the-performance-standard.md))
+has two instruments, and `ci.yml` runs each in its own job. Both are off until a caller opts in, so
+a caller that changes nothing sees two new skipped checks, `ci / scaling-gate` and
+`ci / bench-compare`, and nothing else.
+
+| Input | Default | Job | When | What it runs |
+|---|---|---|---|---|
+| `run-scaling-gate` | `false` | `scaling-gate` | every event | `pnpm test:perf`: the caller's non-instrumented run of the scaling gate from `@cosyte/test-utils/perf` and its self-check. Red when it fails |
+| `run-bench-compare` | `false` | `bench-compare` | a pull request | builds the head and, in a worktree, the base, then `cosyte-bench compare` from `@cosyte/bench` for each suite. **Never red** |
+| `bench-suites` | `""` | `bench-compare` | | the suites to compare, separated by spaces or new lines, relative to `working-directory`; empty runs every `bench/*.bench.mjs` and `bench/*.bench.ts` |
+| `bench-target` | `"dist/index.mjs"` | `bench-compare` | | the built entry timed on each side, relative to `working-directory` |
+
+A library adopts the standard in its own repository (decision 0005, "How a repository adopts it"):
+it adds `@cosyte/test-utils` and a `test:perf` script with its own non-instrumented Vitest config,
+adds `@cosyte/bench` and a suite under `bench/`, and opts in here:
+
+```yaml
+# <parser>/.github/workflows/ci.yml
+jobs:
+  ci:
+    uses: cosyte/.github/.github/workflows/ci.yml@workflows-YYYY-MM-DD-COMMIT
+    with:
+      run-scaling-gate: true # adds the `ci / scaling-gate` check
+      run-bench-compare: true # adds the `ci / bench-compare` check, on pull requests, never red
+```
+
+How they run:
+
+- **Beside `verify`, never after it.** Neither job has a `needs:`. Both run on `ubuntu-latest` at
+  the first entry of `node-versions`: one stable check context each, on the runner class the
+  standard's calibration was taken on.
+- **The scaling gate is the required one.** `scaling-gate` ends with `pnpm test:perf`'s exit
+  status, so a caller may require `ci / scaling-gate` while its input is on. It has a 15 minute
+  bound.
+- **The comparison is advisory, and the step makes sure of it.** `bench-compare` runs as one step
+  that ends 0 whatever happens. `cosyte-bench compare` runs 12 rounds; in each, every case runs once
+  on the base build and once on the head build, each in a fresh process, back to back, so the
+  runner's noise lands on both sides. A `regression` verdict (exit 1) becomes a warning on the run's
+  page, a case it could not measure (exit 2) a notice, and a base that does not install or build, a
+  named suite that is not a file, or a run with no suite ends the step with a note in the summary.
+  The comparisons share a 600 second budget: a suite that starts after it is spent is reported and
+  skipped, and one still running when it ends is stopped and reported. The job's own bound, 20
+  minutes, is for an install or a build that hangs.
+- **On the run's page and in an artifact.** Each suite's Markdown goes in the job summary. Its
+  results document, in the `results-v1` shape `@cosyte/bench` writes and checked with
+  `cosyte-bench check`, goes in the `bench-comparison` artifact with the Markdown, for 30 days, so a
+  later results repository can keep it. The documents are named after the suite path, with `/` as
+  `-`: `bench/parse.bench.mjs` is `bench-parse.json`.
+- **The suite is the head's.** `cosyte-bench compare` hands one suite file both builds, so the
+  suites are read from the pull request's tree. A suite that measures something the base does not
+  have yet cannot time the base, and the comparison says it could not measure that case.
+- **Never require `ci / bench-compare`.** It is green whatever it measured, and decision 0005 makes
+  it a required check on a runner class only once an A/A calibration of the caller's own suite there
+  shows false alarms, and comparisons with a skipped case, each under 1% with 95% confidence. When
+  that is met, failing on a regression is a change to this job that every caller would act on.
+- **A skipped job satisfies a required context.** Require `ci / scaling-gate` only while its input
+  is on. `ci / bench-compare` is skipped on every event but a pull request.
+
+What we proved here, and what we could not. `test/performance-jobs.test.mjs` runs the comparison's
+script against a real git repository and a stub `pnpm`: the base it checks out, the builds it makes,
+the arguments it hands `cosyte-bench`, the summary, the kept files, and that a regression, a skip, a
+crash, an unbuilt base, a missing suite and a spent budget each end the step 0. `self-check.yml`'s
+`systems` job turns both jobs on against `test/fixtures/ci-caller/` with the real tools from npm:
+the fixture's `test:perf` runs the scaling gate and its self-check on a synthetic line splitter, and
+`bench/greeting.bench.mjs` is timed on the pull request's base and head. `performance-artifacts`
+then requires the kept document to be a `results-v1` comparison with at least one case. What a
+caller learns only by adopting: whether its own fixtures clear the scaling gate's
+`MIN_PHASE_MS` on a hosted runner, how long its own suite's comparison takes (decision 0005 measured
+about two minutes for six cases), and its own suite's false alarm rate, which is the calibration.
 
 ## The docs-content gate
 
