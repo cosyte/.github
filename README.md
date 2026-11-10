@@ -59,6 +59,7 @@ jobs:
     with:
       package-name: "@cosyte/hl7"
       # publish-mode: staged # optional; the default, direct, is live when the run ends. See below
+      # node-version: "24" # optional, 24 or later; empty keeps version on 22, release and finalize on 24
     # npm authenticates by trusted publishing (OIDC), so there is no npm token to pass. The package's
     # trusted-publisher entry on npmjs.com names THIS repository and `release.yml` (this file),
     # never cosyte/.github. See "How a release authenticates to npm".

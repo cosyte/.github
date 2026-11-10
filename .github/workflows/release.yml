@@ -424,6 +424,19 @@ on:
         description: "How a package already on npm is published: direct (default, live at once) or staged (a maintainer promotes it with 2FA)."
         type: string
         default: "direct"
+      # THE NODE LINE EVERY JOB THAT SETS UP NODE RUNS ON, AND EMPTY KEEPS EACH JOB ON ITS OWN LINE.
+      # Empty, the default, is what every job ran on before the input existed: `version` on 22,
+      # `release` and `finalize` on 24. A caller passing nothing runs exactly as it did. A package
+      # whose `engines.node` starts above 22 cannot install on 22 (`ERR_PNPM_UNSUPPORTED_ENGINE`), so
+      # its `version` job reds at `pnpm install --frozen-lockfile`; it passes its floor here, and the value
+      # then applies to all three jobs, so the tree is installed, verified, built and published on one
+      # line. It must be 24 or later, because `release` publishes on it and Node 22's npm is below the
+      # publish floor: the `version` job refuses anything else before it installs, tags or publishes.
+      # It reaches setup-node and an `env:` entry only, never shell text.
+      node-version:
+        description: "Node version for every job that sets up Node, 24 or later (e.g. \"24\"). Empty keeps version on 22 and release and finalize on 24."
+        type: string
+        default: ""
     # NO npm SECRET, AND THE ABSENCE IS THE POINT. Every publish authenticates through npm trusted
     # publishing (see "EVERY PUBLISH AUTHENTICATES" at the top of this file), so no npm token is
     # declared, read or handed to any step. A caller passing `secrets: inherit` names no secret, so
@@ -712,9 +725,27 @@ jobs:
       # the public registry anonymously, and `registry=https://registry.npmjs.org` is a restatement of
       # pnpm's and npm's own default. No job in this file sets it now: the publish job below
       # authenticates by OIDC, which needs no credential file.
+      #
+      # THE `node-version` INPUT IS CHECKED HERE, before setup-node and before anything is installed,
+      # tagged or published: the `release` job needs this job, so a refusal here stops every job
+      # that would run on the value. Empty passes and keeps this job on 22.
+      - name: The node-version input must be 24 or later
+        env:
+          NODE_VERSION_INPUT: ${{ inputs.node-version }}
+        run: |
+          if [ -z "$NODE_VERSION_INPUT" ]; then
+            echo "node-version is empty: version runs on 22, release and finalize on 24"
+            exit 0
+          fi
+          if [[ "$NODE_VERSION_INPUT" =~ ^v?([0-9]+)(\.([0-9]+|x|\*)){0,2}$ ]] && [ "$((10#${BASH_REMATCH[1]}))" -ge 24 ]; then
+            echo "node-version is \"$NODE_VERSION_INPUT\": every job that sets up Node runs on it"
+            exit 0
+          fi
+          echo "::error title=node-version refused::node-version is \"$NODE_VERSION_INPUT\". It must be a version of Node 24 or later (for example \"24\" or \"24.18.0\"), because the release job publishes on it and the npm that Node 22 bundles is below the publish floor. Leave it empty to keep version on 22 and release and finalize on 24."
+          exit 1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: ${{ inputs.node-version || '22' }}
           cache: pnpm
       # THE GATE. The notes are derived exactly ONCE, here, before anything is published, and the
       # publish job reuses these exact bytes rather than deriving its own. Two reasons, and the second
@@ -1200,11 +1231,13 @@ jobs:
       # publishes through the npm CLI: trusted publishing needs npm 11.5.1 and Node 22.14.0, and the
       # staged arm needs npm 11.15.0. Every Node 22 release bundles npm 10.9.x (22.23.3 ships 10.9.9),
       # which clears neither. Node 24.18.0 and later bundle npm 11.16.0 or newer
-      # (nodejs.org/dist/index.json). publish-floor.mjs still reads the real npm at runtime and refuses
+      # (nodejs.org/dist/index.json). A caller's `node-version` replaces 24 here, and the `version`
+      # job refused it unless it is 24 or later, before anything was tagged or published.
+      # publish-floor.mjs still reads the real npm at runtime and refuses
       # below the floor its arm owes, so a Node 24 that regressed would fail closed, not publish.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ${{ inputs.node-version || '24' }}
           cache: pnpm
       # THE RELEASE NOTES ARRIVE, THEY ARE NOT RE-DERIVED. These are the exact bytes the version job
       # derived before anyone was asked to approve anything, carried across the job boundary as a
@@ -1852,11 +1885,12 @@ jobs:
       # the tree it was written for: pnpm from the caller's `packageManager`, Node 24, the caller's
       # frozen lockfile, and a build, because in the `release` job pack-docs always runs on a built
       # tree. NO `registry-url`: nothing in this job authenticates to a registry, so no registry
-      # credential file is written for anything to read.
+      # credential file is written for anything to read. A caller's `node-version` replaces Node 24,
+      # so the tree is built on the line the `release` job published it from.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ${{ inputs.node-version || '24' }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build

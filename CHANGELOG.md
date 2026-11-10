@@ -51,6 +51,16 @@ so the next change to this file moves those lines under a heading with that name
   changed default there. The input stays, in the same grammar, for a caller that has to name a
   blocked dependency, and a caller that passes it, empty or not, is unaffected. Job ids, the other
   inputs and their defaults, secrets and permissions are unchanged.
+- `release.yml` takes an optional `node-version` input, the Node line every job that sets up Node
+  runs on: `version`, `release` and `finalize`. It defaults to empty, which keeps each job on the
+  line it ran on before the input existed, `version` on 22 and `release` and `finalize` on 24, so a
+  caller passing nothing runs exactly as it did. A package whose `engines.node` starts above 22, whose
+  `version` job pnpm refuses to install on 22 (`ERR_PNPM_UNSUPPORTED_ENGINE`), passes its floor with
+  `with: { node-version: "24" }`, and all three jobs then install, build and publish on it. The value
+  must be a version of Node 24 or later, because the `release` job publishes on it and the npm that
+  Node 22 bundles is below the publish floor: the `version` job refuses anything else, an alias such
+  as `lts/*` included, before it sets Node up, installs, tags or publishes. Job ids, the other inputs
+  and their defaults, secrets and permissions are unchanged.
 
 ## workflows-2026-11-08-c0db8d8e5927
 
