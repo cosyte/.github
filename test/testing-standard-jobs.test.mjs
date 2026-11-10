@@ -284,7 +284,7 @@ test('the mutation job fails when either tool fails, and keeps its report either
 });
 
 test('every multi-line script in the new jobs names bash and stops on an unset variable', () => {
-  for (const [text, job] of [[CI, 'coverage-ratchet'], [CI, 'mutation'], [NIGHTLY, 'properties'], [WEEKLY, 'mutation']]) {
+  for (const [text, job] of [[CI, 'coverage-ratchet'], [CI, 'mutation'], [NIGHTLY, 'properties'], [WEEKLY, 'shard'], [WEEKLY, 'mutation']]) {
     for (const step of steps(text, job).filter((entry) => entry.includes('run: |'))) {
       assert.match(step, /^ {8}shell: bash$/m, `${job}: ${step.split('\n')[0].trim()}`);
       assert.match(step, /^ {10}set -euo pipefail$/m, `${job}: ${step.split('\n')[0].trim()}`);
@@ -468,20 +468,22 @@ test('the nightly run keeps the log and the seeds as an artifact, whatever the s
 });
 
 // ---------------------------------------------------------------------------
-// weekly-mutation.yml: THE FULL RUN, REPORTED AGAINST THE FLOOR, NEVER COMMITTED
+// weekly-mutation.yml: THE FULL RUN, SHARDED AND INCREMENTAL, REPORTED AGAINST THE FLOOR, NEVER COMMITTED
 // ---------------------------------------------------------------------------
 
-test('weekly-mutation.yml is a published reusable with one job, mutation, that can only read', () => {
+test('weekly-mutation.yml is a published reusable with two jobs, shard and mutation, that can only read', () => {
   assert.ok(WEEKLY !== '', `${WEEKLY_FILE} is missing`);
   assert.ok(REUSABLE_WORKFLOWS.includes('weekly-mutation.yml'), 'a reference must carry it');
-  assert.deepEqual(jobIds(WEEKLY), ['mutation']);
-  assert.deepEqual(inputNames(WEEKLY), ['mutate-cmd', 'node-version', 'working-directory']);
+  // `mutation` keeps its id, so a caller's check context does not move.
+  assert.deepEqual(jobIds(WEEKLY), ['shard', 'mutation']);
+  assert.deepEqual(inputNames(WEEKLY), ['mutate-cmd', 'shard-count', 'node-version', 'working-directory', 'report-name']);
   assert.deepEqual(inputOf(WEEKLY, 'mutate-cmd'), {
     description: '"The command that runs the full mutation run."',
     type: 'string',
     default: '"pnpm exec cosyte-mutate full"',
     required: undefined,
   });
+  assert.deepEqual(inputOf(WEEKLY, 'shard-count'), { description: '"How many parallel jobs share the mutants, 1 to 16."', type: 'number', default: '8', required: undefined });
   assert.deepEqual(inputOf(WEEKLY, 'node-version'), { description: '"The Node version the job runs on."', type: 'string', default: '"22"', required: undefined });
   assert.deepEqual(inputOf(WEEKLY, 'working-directory'), {
     description: '"The directory holding package.json and quality-floor.json, relative to the repository root."',
@@ -489,16 +491,16 @@ test('weekly-mutation.yml is a published reusable with one job, mutation, that c
     default: '"."',
     required: undefined,
   });
+  assert.deepEqual(inputOf(WEEKLY, 'report-name'), { description: '"The artifact name of the merged mutation report."', type: 'string', default: '"mutation-report"', required: undefined });
   // IT NEVER COMMITS: read-only contents, no credential kept by the checkout, and no command that
   // writes to the repository. Raising a floor is a pull request a person or an agent opens.
   assert.deepEqual(block(WEEKLY, 'permissions:'), ['  contents: read']);
-  assert.ok(!/permissions:/.test(block(WEEKLY, '  mutation:').join('\n')), 'the job widens no permission');
+  for (const job of ['shard', 'mutation']) assert.ok(!/permissions:/.test(block(WEEKLY, `  ${job}:`).join('\n')), `${job} widens no permission`);
   const code = WEEKLY.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
   for (const forbidden of [/\bgit (?:commit|push)\b/, /^\s*(?:pnpm exec )?cosyte-ratchet raise/m, /contents: write/]) {
     assert.doesNotMatch(code, forbidden);
   }
-  assert.deepEqual(jobKeys(WEEKLY, 'mutation').slice(0, 3), ['    runs-on: ubuntu-latest', '    timeout-minutes: 180', '    defaults:']);
-  assert.deepEqual(steps(WEEKLY, 'mutation').slice(0, 4), [
+  assert.deepEqual(steps(WEEKLY, 'shard').slice(0, 4), [
     CHECKOUT,
     PNPM_FROM_THE_PACKAGE,
     NODE_WITH_THE_CACHE('${{ inputs.node-version }}'),
@@ -506,16 +508,152 @@ test('weekly-mutation.yml is a published reusable with one job, mutation, that c
   ]);
 });
 
-const FULL_RUN = 'The full mutation run';
-const AGAINST_THE_FLOOR = "Each package's mutation score against its floor";
+test('the shards are a matrix of 1 to shard-count, every shard runs to its end, and each fits a hosted job', () => {
+  const keys = jobKeys(WEEKLY, 'shard');
+  assert.deepEqual(keys.slice(0, 2), ['    strategy:', '    runs-on: ubuntu-latest']);
+  const strategy = block(WEEKLY, '    strategy:');
+  assert.equal(strategy[0], '      fail-fast: false');
+  const table = /^ {8}shard: \$\{\{ fromJSON\('(.*)'\)\[format\('\{0\}', inputs\.shard-count\)\] \}\}$/.exec(strategy[2]);
+  assert.ok(table, strategy[2]);
+  const lists = JSON.parse(table[1]);
+  assert.deepEqual(Object.keys(lists), Array.from({ length: 16 }, (_v, i) => String(i + 1)));
+  for (const [count, list] of Object.entries(lists)) assert.deepEqual(list, Array.from({ length: Number(count) }, (_v, i) => i + 1), count);
+  // GitHub ends a job on a hosted runner at 6 hours; the bound is the workflow's own, below it.
+  const timeout = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(block(WEEKLY, '  shard:').join('\n'))[1]);
+  assert.ok(timeout < 360 && timeout >= 300, `${timeout}`);
+});
 
-test('the weekly job runs the caller\'s mutation command, and fails when it fails', () => {
-  assert.match(stepNamed(WEEKLY, 'mutation', FULL_RUN), /^ {10}MUTATE_CMD: \$\{\{ inputs\.mutate-cmd \}\}$/m);
-  const ok = runStep(WEEKLY, 'mutation', FULL_RUN, { env: { MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
-  assert.equal(ok.status, 0, ok.stderr);
-  assert.deepEqual(ok.calls, ['exec cosyte-mutate full']);
-  const failed = runStep(WEEKLY, 'mutation', FULL_RUN, { env: { MUTATE_CMD: 'pnpm exec cosyte-mutate full' }, pnpmExit: 2 });
+const AGAINST_THE_FLOOR = "Each package's mutation score against its floor";
+const SHARD_STEP = 'Mutate this shard';
+const SHARD_ENV = { SHARD: '2', SHARD_COUNT: '3', INCREMENTAL_FILE: 'reports/mutation/incremental.json', RESTORED_FROM: '' };
+/** A mutate command that records what it was handed and writes what a sharding cosyte-mutate writes. */
+const WRITES_A_SHARD =
+  'pnpm exec cosyte-mutate full; printf "%s|%s|%s\\n" "$COSYTE_MUTATE_SHARD" "$COSYTE_MUTATE_INCREMENTAL_FILE" "$(cat reports/mutation/incremental.json 2>/dev/null || echo none)" > seen.txt; ' +
+  'mkdir -p reports/mutation packages/a/reports/mutation; echo "{}" > reports/mutation/shard-2-of-3.json; echo "{}" > packages/a/reports/mutation/shard-2-of-3.json; ' +
+  'echo new > reports/mutation/incremental.json; echo "{}" > reports/mutation/mutation.json';
+
+test('a shard hands the tool its share and its incremental file, and gathers what the tool wrote', () => {
+  const step = stepNamed(WEEKLY, 'shard', SHARD_STEP);
+  assert.match(step, /^ {10}MUTATE_CMD: \$\{\{ inputs\.mutate-cmd \}\}$/m);
+  assert.match(block(WEEKLY, '  shard:').join('\n'), /^ {6}SHARD: \$\{\{ matrix\.shard \}\}\n {6}SHARD_COUNT: \$\{\{ inputs\.shard-count \}\}\n {6}INCREMENTAL_FILE: reports\/mutation\/incremental\.json$/m);
+  const run = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: WRITES_A_SHARD } });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.deepEqual(run.calls, ['exec cosyte-mutate full']);
+  assert.equal(readFileSync(join(run.cwd, 'seen.txt'), 'utf8'), '2/3|reports/mutation/incremental.json|none\n');
+  const stage = join(run.temp, 'mutation-shard');
+  assert.ok(existsSync(join(stage, 'reports/mutation/shard-2-of-3.json')));
+  assert.ok(existsSync(join(stage, 'packages/a/reports/mutation/shard-2-of-3.json')));
+  assert.equal(existsSync(join(stage, 'reports/mutation/mutation.json')), false, 'a full report is never merged');
+  assert.equal(readFileSync(join(stage, 'shard-2-of-3.txt'), 'utf8'), 'shard-2-of-3: full, no earlier results for this shard\n');
+  assert.equal(readFileSync(join(run.temp, 'mutation-incremental/reports/mutation/incremental.json'), 'utf8'), 'new\n');
+  assert.match(run.summary, /^shard-2-of-3: full, no earlier results for this shard\. 2 shard report\(s\) written\.$/m);
+});
+
+test('a shard puts the restored incremental results back where the tool reads them, and says it did', () => {
+  const root = mkdtempSync(join(tmpdir(), 'weekly-restored-'));
+  const temp = join(root, 'runner-temp');
+  mkdirSync(join(temp, 'mutation-incremental/reports/mutation'), { recursive: true });
+  writeFileSync(join(temp, 'mutation-incremental/reports/mutation/incremental.json'), 'earlier\n');
+  const run = runStep(WEEKLY, 'shard', SHARD_STEP, {
+    env: { ...SHARD_ENV, RUNNER_TEMP: temp, RESTORED_FROM: 'cosyte-mutation-v1-.-3-2-100-1', MUTATE_CMD: WRITES_A_SHARD },
+  });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal(readFileSync(join(run.cwd, 'seen.txt'), 'utf8'), '2/3|reports/mutation/incremental.json|earlier\n');
+  assert.equal(
+    readFileSync(join(temp, 'mutation-shard/shard-2-of-3.txt'), 'utf8'),
+    'shard-2-of-3: incremental, 1 result file(s) restored from cosyte-mutation-v1-.-3-2-100-1\n',
+  );
+});
+
+test('a shard whose tool wrote no shard report fails and says the tool does not shard; the tool\'s failure is the shard\'s', () => {
+  const unsharded = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full; mkdir -p reports/mutation; echo "{}" > reports/mutation/mutation.json' } });
+  assert.equal(unsharded.status, 1);
+  assert.match(unsharded.stdout, /^::error::the mutation command wrote no reports\/mutation\/shard-2-of-3\.json\. Sharding needs a cosyte-mutate that reads COSYTE_MUTATE_SHARD/m);
+  const failed = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, MUTATE_CMD: 'pnpm exec cosyte-mutate full' }, pnpmExit: 2 });
   assert.equal(failed.status, 2);
+});
+
+test('a shard refuses a shard or a count it cannot be, before it runs anything', () => {
+  for (const [shard, count] of [['1', '0'], ['1', '17'], ['4', '3'], ['0', '3'], ['x', '3'], ['1', '2.5']]) {
+    const run = runStep(WEEKLY, 'shard', SHARD_STEP, { env: { ...SHARD_ENV, SHARD: shard, SHARD_COUNT: count, MUTATE_CMD: 'pnpm exec cosyte-mutate full' } });
+    assert.equal(run.status, 2, `${shard} of ${count}`);
+    assert.deepEqual(run.calls, []);
+  }
+});
+
+test('each shard restores its own newest results and saves its own, keyed to the run, whatever the run did', () => {
+  const key = 'cosyte-mutation-v1-${{ inputs.working-directory }}-${{ inputs.shard-count }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}';
+  assert.equal(
+    stepNamed(WEEKLY, 'shard', "Restore this shard's incremental results"),
+    [
+      "      - name: Restore this shard's incremental results",
+      '        id: incremental',
+      '        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
+      '        with:',
+      '          path: ${{ runner.temp }}/mutation-incremental',
+      `          key: ${key}`,
+      '          restore-keys: |',
+      '            cosyte-mutation-v1-${{ inputs.working-directory }}-${{ inputs.shard-count }}-${{ matrix.shard }}-',
+    ].join('\n'),
+  );
+  assert.equal(
+    stepNamed(WEEKLY, 'shard', "Save this shard's incremental results"),
+    [
+      "      - name: Save this shard's incremental results",
+      '        if: ${{ !cancelled() }}',
+      '        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
+      '        with:',
+      '          path: ${{ runner.temp }}/mutation-incremental',
+      `          key: ${key}`,
+    ].join('\n'),
+  );
+  assert.equal(
+    stepNamed(WEEKLY, 'shard', "Keep this shard's report"),
+    [
+      "      - name: Keep this shard's report",
+      '        if: ${{ !cancelled() }}',
+      `        uses: ${UPLOAD}`,
+      '        with:',
+      '          name: ${{ inputs.report-name }}-shard-${{ matrix.shard }}-of-${{ inputs.shard-count }}',
+      '          path: ${{ runner.temp }}/mutation-shard/',
+      '          if-no-files-found: error',
+      '          retention-days: 7',
+    ].join('\n'),
+  );
+});
+
+test('the mutation job runs after every shard, even a failed one, and fails when any shard did not succeed', () => {
+  assert.deepEqual(jobKeys(WEEKLY, 'mutation').slice(0, 4), ['    needs: shard', '    if: ${{ !cancelled() }}', '    runs-on: ubuntu-latest', '    timeout-minutes: 30']);
+  const gate = 'Every shard must have finished';
+  assert.match(stepNamed(WEEKLY, 'mutation', gate), /^ {10}SHARDS: \$\{\{ needs\.shard\.result \}\}$/m);
+  assert.equal(runStep(WEEKLY, 'mutation', gate, { env: { SHARDS: 'success' } }).status, 0);
+  for (const result of ['failure', 'cancelled', 'skipped', '']) {
+    const run = runStep(WEEKLY, 'mutation', gate, { env: { SHARDS: result } });
+    assert.equal(run.status, 1, result);
+    assert.match(run.stdout, /^::error::the shards ended/m);
+  }
+});
+
+test('the mutation job merges the shards with the tooling at this workflow\'s own commit', () => {
+  const list = steps(WEEKLY, 'mutation');
+  const names = list.map((step) => /^ {6}- name: (.*)$/m.exec(step)?.[1] ?? step.split('\n')[0].trim());
+  assert.deepEqual(names, [
+    'Every shard must have finished',
+    '- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+    'Say which commit the mutation tooling comes from',
+    'Check out the shared mutation tooling',
+    '- uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9',
+    '- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',
+    '- run: pnpm install --frozen-lockfile',
+    'Collect the shard reports',
+    'Merge the shard reports into one report per package',
+    AGAINST_THE_FLOOR,
+    'Keep the mutation report',
+  ]);
+  assert.match(stepNamed(WEEKLY, 'mutation', 'Check out the shared mutation tooling'), /^ {10}repository: cosyte\/\.github\n {10}ref: \$\{\{ job\.workflow_sha \}\}\n {10}path: \.cosyte-mutation-tooling\n {10}persist-credentials: false$/m);
+  assert.match(stepNamed(WEEKLY, 'mutation', 'Collect the shard reports'), /^ {10}pattern: \$\{\{ inputs\.report-name \}\}-shard-\*-of-\$\{\{ inputs\.shard-count \}\}\n {10}path: \$\{\{ runner\.temp \}\}\/mutation-shards\n {10}merge-multiple: true$/m);
+  const merge = runScript(WEEKLY, 'mutation', 'Merge the shard reports into one report per package');
+  assert.match(merge, /node "\$\{GITHUB_WORKSPACE\}\/\.cosyte-mutation-tooling\/scripts\/mutation-shards\.mjs" merge \\\n {2}--shards "\$\{RUNNER_TEMP\}\/mutation-shards" --count "\$\{SHARD_COUNT\}" --into \./);
 });
 
 test('the weekly job reports each package against its floor in the summary, and keeps the report', () => {
@@ -534,7 +672,7 @@ test('the weekly job reports each package against its floor in the summary, and 
       '        if: ${{ !cancelled() }}',
       `        uses: ${UPLOAD}`,
       '        with:',
-      '          name: mutation-report',
+      '          name: ${{ inputs.report-name }}',
       '          path: ${{ inputs.working-directory }}/reports/mutation/',
       '          if-no-files-found: warn',
       '          retention-days: 30',
@@ -557,7 +695,8 @@ test('a score below its floor turns the weekly run red, with the report on its p
 test('each new reusable\'s header shows the schedule a caller writes, since a reusable cannot carry one', () => {
   assert.match(NIGHTLY, /^#   on:\n#     schedule: \[\{ cron: "\d+ \d+ \* \* \*" \}\]\n#     workflow_dispatch: \{\}$/m);
   assert.match(NIGHTLY, /^#       uses: cosyte\/\.github\/\.github\/workflows\/nightly-properties\.yml@workflows-YYYY-MM-DD-COMMIT$/m);
-  assert.match(WEEKLY, /^#   on:\n#     schedule: \[\{ cron: "\d+ \d+ \* \* \d" \}\]\n#     workflow_dispatch: \{\}$/m);
+  // Twice a week: a cache entry nobody reads for 7 days is evicted, and a weekly run could miss it.
+  assert.match(WEEKLY, /^#   on:\n#     schedule: \[\{ cron: "\d+ \d+ \* \* \d" \}, \{ cron: "\d+ \d+ \* \* \d" \}\]\n#     workflow_dispatch: \{\}$/m);
   assert.match(WEEKLY, /^#       uses: cosyte\/\.github\/\.github\/workflows\/weekly-mutation\.yml@workflows-YYYY-MM-DD-COMMIT$/m);
 });
 
@@ -575,19 +714,32 @@ test('self-check runs the two ci.yml jobs, the nightly run and the weekly run ag
     '      working-directory: test/fixtures/ci-caller',
     '      test-cmd: pnpm run test:properties',
   ]);
+  // A SHARDED RUN, then an INCREMENTAL one: the second call restores the incremental files the
+  // first saved, so each of its shards says it started from earlier results.
   assert.deepEqual(block(SELF_CHECK, '  weekly-mutation:'), [
     '    uses: ./.github/workflows/weekly-mutation.yml',
     '    with:',
     '      working-directory: test/fixtures/ci-caller',
+    '      shard-count: 2',
+  ]);
+  assert.deepEqual(block(SELF_CHECK, '  weekly-mutation-incremental:'), [
+    '    needs: weekly-mutation',
+    '    uses: ./.github/workflows/weekly-mutation.yml',
+    '    with:',
+    '      working-directory: test/fixtures/ci-caller',
+    '      shard-count: 2',
+    '      report-name: mutation-report-incremental',
   ]);
   const proof = block(SELF_CHECK, '  quality-artifacts:').join('\n');
-  assert.match(proof, /^ {4}needs: \[nightly-properties, weekly-mutation\]$/m);
+  assert.match(proof, /^ {4}needs: \[nightly-properties, weekly-mutation, weekly-mutation-incremental\]$/m);
   assert.match(proof, /actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\.0\.2/);
   // What the artifacts must hold: the planted seed, at the nightly depth, and the stand-in ratchet's
-  // report beside the full run's report.
+  // report beside the merged report; and, from the second run, an incremental start on every shard.
   assert.match(proof, /grep -F 'Nightly property run at COSYTE_PROPERTY_RUNS=10000: 1 replay seed\(s\)\.'/);
   assert.match(proof, /grep -F 'replay: COSYTE_PROPERTY_SEED=20261110 COSYTE_PROPERTY_PATH=0:1'/);
   assert.match(proof, /test -s "\$\{artifacts\}\/mutation-report\/mutation\.json"/);
+  assert.match(proof, /test "\$\(grep -c ': incremental, ' "\$\{artifacts\}\/mutation-report-incremental\/shards\.txt"\)" -eq 2/);
+  assert.match(proof, /test "\$\(wc -l < "\$\{artifacts\}\/mutation-report\/shards\.txt"\)" -eq 2/);
   assert.match(proof, /grep -F 'cosyte-ratchet check \(a stand-in\)'/);
 });
 

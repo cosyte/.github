@@ -1401,6 +1401,9 @@ const CONVERGED_ON_THE_SHARED_READER = [
   // Reads each job's setup-node and the version job's `node-version` check through the shared
   // reader, and runs that check's own script.
   'release-node-version.test.mjs',
+  // Reads the version job's pre-publish gates, the SBOM steps and the new inputs through the shared
+  // reader, and runs each gate's own script.
+  'release-gates.test.mjs',
   'trusted-publishing.test.mjs',
   'workflow-sha.test.mjs',
 ];
@@ -1450,6 +1453,8 @@ const NAMES_IT_WITHOUT_ASKING_ABOUT_ITS_COMPOSITION = [
   'caller-reference-docs.test.mjs',
   'gate-install-before-scan.test.mjs',
   'prepublish-check.test.mjs',
+  // Names the workflow in its header comment, as the place the SBOM it tests is attached.
+  'sbom.test.mjs',
   'self-scan.test.mjs',
 ];
 
@@ -2626,6 +2631,9 @@ test('AC11: no caller has to change anything, so every input and secret is the o
   // loop below is what admits them: optional, with a default, so no caller has to pass any.
   // `publish-mode`'s default is the arm every caller gets, and it is `direct`: a release is live when
   // its run ends. `node-version`'s is empty, which keeps every job on the Node line it ran on before.
+  // The pre-publish gates' eight follow, each optional with a default: the mutation gate reads the
+  // weekly result and skips a caller without the workflow, and the other three are off by default
+  // (`test/release-gates.test.mjs` pins each one).
   assert.deepEqual(Object.keys(inputs), [
     'package-name',
     'dispatch-docs',
@@ -2634,6 +2642,14 @@ test('AC11: no caller has to change anything, so every input and secret is the o
     'promotion-window-minutes',
     'publish-mode',
     'node-version',
+    'mutation-workflow',
+    'mutation-max-age-days',
+    'run-benchmarks',
+    'bench-suites',
+    'bench-target',
+    'run-package-checks',
+    'run-tarball-samples',
+    'docs-dir',
   ]);
   assert.equal(inputs['promotion-window-minutes'].type, 'number');
   assert.equal(inputs['promotion-window-minutes'].default, '120');

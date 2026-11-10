@@ -1,8 +1,8 @@
 # actionlint configuration.
 #
 # `job.workflow_sha` is a real context property: for a job defined by a reusable workflow it holds
-# the commit SHA of the workflow file defining that job. `ci.yml`, `release.yml` and
-# `workflow-sha-probe.yml` read it so the scripts they check out come from the commit of the
+# the commit SHA of the workflow file defining that job. `ci.yml`, `release.yml`,
+# `weekly-mutation.yml` and `workflow-sha-probe.yml` read it so the scripts they check out come from the commit of the
 # workflow calling them, and the two can never drift. `workflow-sha-probe.yml` measures it on a real
 # runner and fails if it is not a 40 character SHA, so the property is proved rather than assumed.
 #
@@ -26,6 +26,9 @@ paths:
     ignore:
       - 'property "workflow_sha" is not defined in object type \{check_run_id: number'
   .github/workflows/ci.yml:
+    ignore:
+      - 'property "workflow_sha" is not defined in object type \{check_run_id: number'
+  .github/workflows/weekly-mutation.yml:
     ignore:
       - 'property "workflow_sha" is not defined in object type \{check_run_id: number'
   .github/workflows/workflow-sha-probe.yml:

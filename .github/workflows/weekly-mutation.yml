@@ -1,14 +1,21 @@
 name: Weekly mutation
 
-# Reusable full mutation run: every file the caller's StrykerJS config names is mutated, and each
-# package's mutation score is reported against its floor in quality-floor.json, in the job summary.
+# Reusable full mutation run, SHARDED AND INCREMENTAL so it finishes on hosted runners: the files the
+# caller's StrykerJS config names are shared out across `shard-count` parallel jobs, each shard keeps
+# Stryker's incremental result file in the Actions cache so a later run retests only what changed,
+# and a final job merges the shards into one report per package and holds each package's score to
+# its floor in quality-floor.json, in the job summary.
 # Caller (each package's .github/workflows/weekly-mutation.yml):
 #   on:
-#     schedule: [{ cron: "43 4 * * 0" }]
+#     schedule: [{ cron: "43 4 * * 0" }, { cron: "43 4 * * 3" }]
 #     workflow_dispatch: {}
 #   jobs:
 #     mutation:
 #       uses: cosyte/.github/.github/workflows/weekly-mutation.yml@workflows-YYYY-MM-DD-COMMIT
+# TWICE A WEEK IN THE EXAMPLE, ON PURPOSE. GitHub evicts a cache entry nobody has read for 7 days, so
+# runs exactly a week apart can find the last results gone and start from nothing again. A run every
+# 3 or 4 days reads each entry before it can lapse, and keeps the result `release.yml`'s mutation
+# gate reads well inside its 8 day limit.
 # IT NEVER COMMITS. A score below its floor turns the run red; a score above it changes nothing here.
 # Raising a floor is a pull request a person or an agent opens, after `cosyte-ratchet raise`.
 #
@@ -17,6 +24,25 @@ name: Weekly mutation
 #   repository; a published reference names one commit and never moves. Take the newest from
 #   https://github.com/cosyte/.github/releases, whose notes say what adopting it asks of a caller.
 #   README.md, "The published reference", owns the rest.
+#
+# HOW A SHARD KNOWS ITS SHARE. Each `shard` job runs the caller's `mutate-cmd` with two variables
+# set, and `cosyte-mutate full` reads them:
+#   COSYTE_MUTATE_SHARD             `<k>/<n>`: mutate only shard k of n of the files the config
+#                                   names, and write `reports/mutation/shard-<k>-of-<n>.json` (an
+#                                   empty report when the shard holds no file) in place of
+#                                   `mutation.json`.
+#   COSYTE_MUTATE_INCREMENTAL_FILE  where Stryker reads and writes its incremental results,
+#                                   relative to the directory each run starts in.
+# As variables they reach every `cosyte-mutate` a caller's command starts, in a repository with
+# several packages too. A shard that leaves no shard report fails and says why: a `cosyte-mutate`
+# that does not read them runs everything and writes `mutation.json`, and merging that once per
+# shard would be a wrong report.
+#
+# THE CACHE. Each shard restores, before its run, the newest entry for its own shard of the same
+# count, and saves its incremental files after it under a key unique to the run. A scheduled run is
+# on the default branch, so its entries are the default branch's latest results; a run on another
+# branch reads its own branch's first and the default branch's after, as the cache scopes them.
+# Changing `shard-count` starts every shard from nothing once, since files move between shards.
 
 on:
   workflow_call:
@@ -27,6 +53,13 @@ on:
         description: "The command that runs the full mutation run."
         type: string
         default: "pnpm exec cosyte-mutate full"
+      # 1 to 16. Each shard is its own job on its own runner. A library whose whole run takes hours
+      # on one runner takes about that divided by this on its first run; later runs retest only what
+      # changed. Any other value fails the run before a shard starts.
+      shard-count:
+        description: "How many parallel jobs share the mutants, 1 to 16."
+        type: number
+        default: 8
       node-version:
         description: "The Node version the job runs on."
         type: string
@@ -37,20 +70,38 @@ on:
         description: "The directory holding package.json and quality-floor.json, relative to the repository root."
         type: string
         default: "."
+      # The merged report's artifact name; each shard's is this name with `-shard-<k>-of-<n>` after
+      # it. It exists so one run can call this workflow twice, as `self-check.yml` does.
+      report-name:
+        description: "The artifact name of the merged mutation report."
+        type: string
+        default: "mutation-report"
 
 permissions:
   contents: read
 
 jobs:
-  mutation:
+  shard:
+    strategy:
+      # Every shard runs to its end, so each one's results reach the cache even when another fails.
+      fail-fast: false
+      # The list for each allowed count, looked up by the count: an expression has no range function.
+      # A count outside 1 to 16 looks up nothing, and the run fails before a shard starts.
+      matrix:
+        shard: ${{ fromJSON('{"1":[1],"2":[1,2],"3":[1,2,3],"4":[1,2,3,4],"5":[1,2,3,4,5],"6":[1,2,3,4,5,6],"7":[1,2,3,4,5,6,7],"8":[1,2,3,4,5,6,7,8],"9":[1,2,3,4,5,6,7,8,9],"10":[1,2,3,4,5,6,7,8,9,10],"11":[1,2,3,4,5,6,7,8,9,10,11],"12":[1,2,3,4,5,6,7,8,9,10,11,12],"13":[1,2,3,4,5,6,7,8,9,10,11,12,13],"14":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],"15":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],"16":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}')[format('{0}', inputs.shard-count)] }}
     runs-on: ubuntu-latest
-    # A caller cannot bound a job that calls this workflow, so the bound is here. A full run of the
-    # PHI-scan engine alone took 10 to 13 minutes on 16 cores (cosyte/config, decision 0004), and a
-    # hosted runner has 4.
-    timeout-minutes: 180
+    # INSIDE GITHUB'S 6 HOUR LIMIT FOR A JOB ON A HOSTED RUNNER, with room for the setup and the cache.
+    # A caller cannot bound a job that calls this workflow, so the bound is here. The first full run
+    # of a large library, about 3 to 14 hours on one 4-core runner, is about an eighth of that on
+    # each of 8 shards; later runs retest only what changed.
+    timeout-minutes: 340
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
+    env:
+      SHARD: ${{ matrix.shard }}
+      SHARD_COUNT: ${{ inputs.shard-count }}
+      INCREMENTAL_FILE: reports/mutation/incremental.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,13 +115,183 @@ jobs:
           cache: pnpm
           cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
       - run: pnpm install --frozen-lockfile
-      - name: The full mutation run
+      # THE NEWEST RESULTS FOR THIS SHARD, from an earlier run. The key is unique to the run, so it
+      # never matches across runs; the prefix finds the newest entry, this branch's first, then the
+      # default branch's. A miss is a full run of this shard, never a failure.
+      - name: Restore this shard's incremental results
+        id: incremental
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mutation-incremental
+          key: cosyte-mutation-v1-${{ inputs.working-directory }}-${{ inputs.shard-count }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cosyte-mutation-v1-${{ inputs.working-directory }}-${{ inputs.shard-count }}-${{ matrix.shard }}-
+      # Put each restored incremental file back where its run reads it, run the caller's command on
+      # this shard, then gather what it wrote: the shard reports for the merge, and the incremental
+      # files for the cache. A shard that leaves no shard report fails: the `cosyte-mutate` it ran
+      # does not shard.
+      - name: Mutate this shard
         shell: bash
         env:
           MUTATE_CMD: ${{ inputs.mutate-cmd }}
+          RESTORED_FROM: ${{ steps.incremental.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
-          bash -c "${MUTATE_CMD}"
+          if ! [[ "${SHARD_COUNT}" =~ ^[0-9]+$ && "${SHARD}" =~ ^[0-9]+$ ]] \
+            || [ "${SHARD_COUNT}" -lt 1 ] || [ "${SHARD_COUNT}" -gt 16 ] \
+            || [ "${SHARD}" -lt 1 ] || [ "${SHARD}" -gt "${SHARD_COUNT}" ]; then
+            echo "::error::shard ${SHARD} of ${SHARD_COUNT} is not a shard: shard-count must be a whole number from 1 to 16"
+            exit 2
+          fi
+          name="shard-${SHARD}-of-${SHARD_COUNT}"
+          cache="${RUNNER_TEMP}/mutation-incremental"
+          restored=0
+          if [ -d "${cache}" ]; then
+            while IFS= read -r -d '' file; do
+              relative="${file#"${cache}/"}"
+              mkdir -p "$(dirname "${relative}")"
+              cp "${file}" "${relative}"
+              restored=$((restored + 1))
+            done < <(find "${cache}" -type f -print0)
+          fi
+          if [ "${restored}" -gt 0 ]; then
+            note="${name}: incremental, ${restored} result file(s) restored from ${RESTORED_FROM}"
+          else
+            note="${name}: full, no earlier results for this shard"
+          fi
+          echo "${note}"
+          export COSYTE_MUTATE_SHARD="${SHARD}/${SHARD_COUNT}"
+          export COSYTE_MUTATE_INCREMENTAL_FILE="${INCREMENTAL_FILE}"
+          # The command's status is kept, not acted on yet: what a failed run left for the cache is
+          # still gathered below, and the step then ends with that status.
+          status=0
+          bash -c "${MUTATE_CMD}" || status=$?
+          stage="${RUNNER_TEMP}/mutation-shard"
+          rm -rf "${stage}" "${cache}"
+          mkdir -p "${stage}" "${cache}"
+          reports=0
+          while IFS= read -r -d '' file; do
+            relative="${file#./}"
+            mkdir -p "${stage}/$(dirname "${relative}")"
+            cp "${file}" "${stage}/${relative}"
+            reports=$((reports + 1))
+          done < <(find . -name node_modules -prune -o -type f -path "*/reports/mutation/${name}.json" -print0)
+          while IFS= read -r -d '' file; do
+            relative="${file#./}"
+            mkdir -p "${cache}/$(dirname "${relative}")"
+            cp "${file}" "${cache}/${relative}"
+          done < <(find . -name node_modules -prune -o -type f -path "*/${INCREMENTAL_FILE}" -print0)
+          echo "${note}" > "${stage}/${name}.txt"
+          {
+            echo "### Mutation, ${name}"
+            echo
+            echo "${note}. ${reports} shard report(s) written."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::the mutation command exited ${status} on ${name}"
+            exit "${status}"
+          fi
+          if [ "${reports}" -eq 0 ]; then
+            echo "::error::the mutation command wrote no reports/mutation/${name}.json. Sharding needs a cosyte-mutate that reads COSYTE_MUTATE_SHARD; one that does not runs everything and writes mutation.json, which is never merged. Update @cosyte/vitest-config to a version that shards."
+            exit 1
+          fi
+      # Saved whatever the run did, short of a cancel: a shard that failed or ran out of time may
+      # still have left results Stryker kept, and the next run starts from them. A save that fails is
+      # a warning, and a shard that wrote no incremental file saves nothing.
+      - name: Save this shard's incremental results
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mutation-incremental
+          key: cosyte-mutation-v1-${{ inputs.working-directory }}-${{ inputs.shard-count }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Keep this shard's report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.report-name }}-shard-${{ matrix.shard }}-of-${{ inputs.shard-count }}
+          path: ${{ runner.temp }}/mutation-shard/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ONE SCORE PER PACKAGE, AND THE FLOOR, EXACTLY AS BEFORE THE SHARDS. The job id stays `mutation`,
+  # so a caller's check context does not move.
+  #
+  # `!cancelled()`, AND IT FAILS RATHER THAN SKIPS WHEN A SHARD FAILED. A job skipped by a failed
+  # dependency concludes `skipped`, which a required context reads as success (README.md, "What a
+  # skipped required context does to a merge"). So this job runs after the shards whatever they did,
+  # and its first step turns any shard that did not succeed into a red run.
+  mutation:
+    needs: shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Every shard must have finished
+        shell: bash
+        working-directory: .
+        env:
+          SHARDS: ${{ needs.shard.result }}
+        run: |
+          set -euo pipefail
+          if [ "${SHARDS}" != "success" ]; then
+            echo "::error::the shards ended ${SHARDS:-without a result}, so no package's score can be read from them; each shard's log says why"
+            exit 1
+          fi
+          echo "every shard finished"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The merge is `scripts/mutation-shards.mjs` in this repository, at the commit of THIS workflow
+      # file (`job.workflow_sha`), so the script cannot drift from the YAML that calls it.
+      - name: Say which commit the mutation tooling comes from
+        shell: bash
+        working-directory: .
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          ref="${TOOLING_SHA}"
+          if [ -z "${ref}" ]; then
+            echo "mutation tooling: job.workflow_sha was empty, falling back to the cosyte/.github default branch" >&2
+            ref="(the cosyte/.github default branch)"
+          fi
+          echo "mutation tooling: ref ${ref}, from cosyte/.github"
+      - name: Check out the shared mutation tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cosyte/.github
+          ref: ${{ job.workflow_sha }}
+          path: .cosyte-mutation-tooling
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ${{ inputs.working-directory == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Collect the shard reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ inputs.report-name }}-shard-*-of-${{ inputs.shard-count }}
+          path: ${{ runner.temp }}/mutation-shards
+          merge-multiple: true
+      # Every package that wrote a shard report must have one from every shard. Its shards' files are
+      # joined into `reports/mutation/mutation.json` in its own directory, the file `cosyte-ratchet`
+      # reads. A shard missing for a package, or one file in two shards, fails.
+      - name: Merge the shard reports into one report per package
+        shell: bash
+        env:
+          SHARD_COUNT: ${{ inputs.shard-count }}
+        run: |
+          set -euo pipefail
+          node "${GITHUB_WORKSPACE}/.cosyte-mutation-tooling/scripts/mutation-shards.mjs" merge \
+            --shards "${RUNNER_TEMP}/mutation-shards" --count "${SHARD_COUNT}" --into .
       # No `--base`: this judges no change, it compares each package's whole score with its floor.
       # `--skip coverage`: no coverage run happens here. The ratchet's own exit status is the job's,
       # so a drop below a floor is red, and its report is on the run's page either way.
@@ -97,7 +318,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-report
+          name: ${{ inputs.report-name }}
           path: ${{ inputs.working-directory }}/reports/mutation/
           if-no-files-found: warn
           retention-days: 30

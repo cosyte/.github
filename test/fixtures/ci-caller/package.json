@@ -5,6 +5,9 @@
   "description": "A package the shared CI runs against on every system, so a change to ci.yml is proven before a caller adopts it.",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

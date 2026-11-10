@@ -393,7 +393,7 @@ test('the bun step prints the Bun it runs, runs the test script with --bun, and 
 // ---------------------------------------------------------------------------
 
 test('self-check runs ci.yml itself on all three systems and both runtimes, against the fixture', () => {
-  assert.deepEqual(jobIds(SELF_CHECK), ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'quality-artifacts', 'performance-artifacts']);
+  assert.deepEqual(jobIds(SELF_CHECK), ['actionlint', 'scripts', 'package-lists', 'systems', 'nightly-properties', 'weekly-mutation', 'weekly-mutation-incremental', 'quality-artifacts', 'release-gates', 'performance-artifacts']);
   assert.deepEqual(block(SELF_CHECK, '  systems:'), [
     '    uses: ./.github/workflows/ci.yml',
     '    with:',
