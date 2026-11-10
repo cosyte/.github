@@ -24,7 +24,7 @@ const STUBS = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures/quality
 function repo({ floor = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'quality-stubs-'));
   const git = (...args) => {
-    const result = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root, encoding: 'utf8' });
+    const result = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=stub-tester', ...args], { cwd: root, encoding: 'utf8' });
     assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
     return result.stdout.trim();
   };
