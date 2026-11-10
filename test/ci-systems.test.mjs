@@ -1,6 +1,6 @@
-// `ci.yml` on every system and runtime: the line ending step `verify` runs first on Windows, the
-// opt-in `bun` and `deno` jobs, the `working-directory` input that lets this repository run the
-// workflow against its own fixture, and the `systems` job in `self-check.yml` that does it.
+// `ci.yml` on every system and runtime: the opt-in `bun` and `deno` jobs, the shells `verify` names
+// so a Windows leg runs the same scripts, the `working-directory` input that lets this repository
+// run the workflow against its own fixture, and the `systems` job in `self-check.yml` that does it.
 //
 // WHAT THIS FILE CAN PROVE AND WHAT IT CANNOT. It reads the two workflow files and runs the one shell
 // script whose logic is ours (the deno step's PATH rewrite) against stubs. It cannot prove that a step

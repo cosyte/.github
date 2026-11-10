@@ -17,6 +17,26 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `ci.yml` takes two opt-in inputs, `run-bun` and `run-deno`, both `false` by default, which add the
+  jobs `bun` and `deno`: each installs with pnpm from the committed lockfile, as `verify` does, and
+  runs the caller's own `test` script under that runtime, `bun --bun run test` and `deno task test`
+  (with `node` taken off PATH, so a script's literal `node` runs on Deno too). A caller that passes
+  nothing sees two skipped checks, `ci / bun` and `ci / deno`, and no other change. To opt in, add
+  `run-bun: true` and `run-deno: true` under `with:`; `bun-version` (default `"1.4.4"`) and
+  `deno-version` (default `"2.9.8"`) pick the runtime. Require `ci / bun` or `ci / deno` in a ruleset
+  only while its input is on, since a skipped job satisfies a required context.
+- To run `verify` on every system, pass
+  `os: '["ubuntu-latest", "windows-latest", "macos-latest"]'`; the default is still
+  `'["ubuntu-latest"]'`. Each new leg is a new check, `ci / verify (<node>, <os>)`. Every shared step of
+  `verify` is now proven on all three systems by `self-check.yml`'s new `systems` job, which runs
+  `ci.yml` itself against `test/fixtures/ci-caller/` (README.md, "Every system and runtime"). One
+  limit it found: the dash checker in `@cosyte/script-utils` cannot run on macOS, where grep has no
+  `-P`; it refuses rather than passing, so a caller whose own `lint` runs it reds on macOS.
+- `ci.yml` takes a `working-directory` input, `"."` by default, naming where `verify`, `bun` and
+  `deno` find `package.json`. It exists so this repository can run the workflow against its fixture;
+  at `"."` every step reads what it read before. `prepublish` and `actionlint` ignore it.
+- Job ids `verify`, `prepublish` and `actionlint`, every existing input and default, secrets and
+  permissions are unchanged.
 - `ci.yml`'s and `release.yml`'s `expect-unpublished-deps` default to empty instead of
   `@cosyte/fhir=blocked`. That entry dates from before `@cosyte/fhir` was on npm; it is published
   now, so the entry was stale and every caller's install gates printed a notice saying the

@@ -8,7 +8,10 @@
 //   format-check  a carriage return in any file: a Windows checkout that turned LF into CRLF, which
 //                 every caller's formatter reports as a whole tree of unformatted files
 //   lint          the dash checker callers run (`cosyte-no-emdash` from `@cosyte/script-utils`)
-//                 failing to pass the fixture's own text, or failing to find a planted em dash
+//                 failing to pass the fixture's own text, or failing to find a planted em dash. On
+//                 macOS it cannot run: it needs GNU grep's `-P`, the runner's BSD grep has none, and
+//                 the checker refuses every input rather than reporting a clean one. So on macOS
+//                 the verb requires that refusal, and turns red the day the checker passes there
 //   phi-scan      the PHI scanner callers run (`cosyte-phi-scan`) failing to pass the fixture, or
 //                 failing to find a planted, synthetic SSN shape
 //   test          a run on a system other than the one the runner says it is, and a source module
@@ -81,16 +84,27 @@ export function runChecker(binDir, root, name, args, input) {
   return result.status;
 }
 
+/** What a checker that runs answers: 0 on the clean input, 1 on the planted one. */
+export const RUNS = { clean: 0, planted: 1 };
+
+/** What a checker that cannot run answers when it fails closed: 1 on every input. */
+export const REFUSES = { clean: 1, planted: 1 };
+
+/** What the dash checker must answer on `platform`: it refuses on macOS, which has no GNU grep. */
+export function dashExpectation(platform) {
+  return platform === "darwin" ? REFUSES : RUNS;
+}
+
 /**
- * Judge a checker by two runs: the clean input must pass (0) and the planted one must be found (1).
+ * Judge a checker by two runs against what it must answer: `expected`, by default `RUNS`.
  *
  * @returns The problems, empty when both runs answered as they must.
  */
-export function judge(name, cleanStatus, plantedStatus) {
+export function judge(name, cleanStatus, plantedStatus, expected = RUNS) {
   const problems = [];
-  if (cleanStatus !== 0) problems.push(`${name} exited ${cleanStatus} on the clean input, not 0`);
-  if (plantedStatus !== 1) {
-    problems.push(`${name} exited ${plantedStatus} on the planted input, not 1, so its clean verdict proves nothing`);
+  if (cleanStatus !== expected.clean) problems.push(`${name} exited ${cleanStatus} on the clean input, not ${expected.clean}`);
+  if (plantedStatus !== expected.planted) {
+    problems.push(`${name} exited ${plantedStatus} on the planted input, not ${expected.planted}, so its clean verdict proves nothing`);
   }
   return problems;
 }
@@ -126,7 +140,13 @@ export async function run(verb, context) {
     log("lint: the next run is fed a planted em dash, and must find it");
     const dash = String.fromCodePoint(0x2014);
     const planted = runChecker(binDir, root, "cosyte-no-emdash", ["--stdin", "a planted dash"], `a ${dash} b\n`);
-    return report(verb, judge("cosyte-no-emdash", clean, planted), "the dash checker passed clean text and found a planted dash", log);
+    const expected = dashExpectation(platform);
+    if (expected === REFUSES) {
+      log("lint: on macOS the dash checker needs GNU grep (-P), which the runner lacks, so it must refuse every input");
+      log("lint: if it passes the clean input here, it now runs on macOS and this expectation is out of date");
+    }
+    const passed = expected === REFUSES ? "the dash checker refused on macOS rather than passing" : "the dash checker passed clean text and found a planted dash";
+    return report(verb, judge("cosyte-no-emdash", clean, planted, expected), passed, log);
   }
   if (verb === "phi-scan") {
     const clean = runChecker(binDir, root, "cosyte-phi-scan", []);

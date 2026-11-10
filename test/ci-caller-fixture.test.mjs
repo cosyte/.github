@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   PLANTED,
+  REFUSES,
+  RUNS,
   carriageReturns,
+  dashExpectation,
   filesUnder,
   judge,
   missingTargets,
@@ -54,14 +57,15 @@ async function verb(name, root, overrides = {}) {
 
 /**
  * A directory of stub checkers. The dash stub fails on an em dash in its stdin; the PHI stub fails on a
- * dashed SSN shape in any file it is named. `brokenDash` and `brokenPhi` make each one pass everything.
+ * dashed SSN shape in any file it is named. `brokenDash` and `brokenPhi` make each one pass everything,
+ * and `refusingDash` makes the dash stub fail everything, as the real one does on macOS.
  */
-function stubs({ brokenDash = false, brokenPhi = false } = {}) {
+function stubs({ brokenDash = false, refusingDash = false, brokenPhi = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ci-caller-bin-'));
   writeFileSync(
     join(dir, 'cosyte-no-emdash.js'),
-    brokenDash
-      ? 'process.exit(0);\n'
+    brokenDash || refusingDash
+      ? `process.exit(${refusingDash ? 1 : 0});\n`
       : 'let t = "";\nprocess.stdin.on("data", (c) => (t += c)).on("end", () => process.exit(t.includes(String.fromCodePoint(0x2014)) ? 1 : 0));\n',
   );
   writeFileSync(
@@ -158,7 +162,7 @@ test('attw fails on each export target with no file, and passes when every one i
   assert.deepEqual(await verb('attw', root), { code: 0, lines: ['attw: every export target is on disk'] });
 });
 
-test('judge wants 0 on the clean input and 1 on the planted one, and nothing else', () => {
+test('judge wants 0 on the clean input and 1 on the planted one by default, and nothing else', () => {
   assert.deepEqual(judge('x', 0, 1), []);
   assert.deepEqual(judge('x', 1, 1), ['x exited 1 on the clean input, not 0']);
   assert.deepEqual(judge('x', 0, 0), ['x exited 0 on the planted input, not 1, so its clean verdict proves nothing']);
@@ -166,6 +170,18 @@ test('judge wants 0 on the clean input and 1 on the planted one, and nothing els
     'x exited 2 on the clean input, not 0',
     'x exited null on the planted input, not 1, so its clean verdict proves nothing',
   ]);
+});
+
+test('judge holds a checker that cannot run to refusing every input', () => {
+  assert.deepEqual(judge('x', 1, 1, REFUSES), []);
+  assert.deepEqual(judge('x', 0, 1, REFUSES), ['x exited 0 on the clean input, not 1']);
+  assert.deepEqual(judge('x', 1, 0, REFUSES), ['x exited 0 on the planted input, not 1, so its clean verdict proves nothing']);
+});
+
+test('the dash checker must refuse on macOS and run everywhere else', () => {
+  assert.equal(dashExpectation('darwin'), REFUSES);
+  assert.equal(dashExpectation('linux'), RUNS);
+  assert.equal(dashExpectation('win32'), RUNS);
 });
 
 test('lint passes clean text and finds the planted dash, and fails if either answer is wrong', async () => {
@@ -183,6 +199,24 @@ test('lint passes clean text and finds the planted dash, and fails if either ans
   const red = await verb('lint', dashed, { binDir: stubs() });
   assert.equal(red.code, 1);
   assert.equal(red.lines.at(-1), 'lint: cosyte-no-emdash exited 1 on the clean input, not 0');
+
+  // On macOS a checker that refuses everything is the expected answer, and one that runs is not.
+  const refusing = stubs({ refusingDash: true });
+  assert.deepEqual(await verb('lint', clean, { binDir: refusing, platform: 'darwin' }), {
+    code: 0,
+    lines: [
+      'lint: the next run is fed a planted em dash, and must find it',
+      'lint: on macOS the dash checker needs GNU grep (-P), which the runner lacks, so it must refuse every input',
+      'lint: if it passes the clean input here, it now runs on macOS and this expectation is out of date',
+      'lint: the dash checker refused on macOS rather than passing',
+    ],
+  });
+  const runsOnMac = await verb('lint', clean, { binDir: stubs(), platform: 'darwin' });
+  assert.equal(runsOnMac.code, 1);
+  assert.equal(runsOnMac.lines.at(-1), 'lint: cosyte-no-emdash exited 0 on the clean input, not 1');
+  const refusesOnLinux = await verb('lint', clean, { binDir: refusing });
+  assert.equal(refusesOnLinux.code, 1);
+  assert.equal(refusesOnLinux.lines.at(-1), 'lint: cosyte-no-emdash exited 1 on the clean input, not 0');
 
   const blind = await verb('lint', clean, { binDir: stubs({ brokenDash: true }) });
   assert.equal(blind.code, 1);
