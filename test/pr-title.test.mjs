@@ -77,22 +77,22 @@ function check(title, event = 'pull_request', script = SCRIPT) {
 // ---------------------------------------------------------------------------
 
 const ACCEPTED = [
-  'feat: add a pull request title check',
+  'feat(title-check): add a pull request title check',
   'fix(parser): keep the escape sequence in OBX-5',
   'docs(security): cover every library and Pathways',
-  'feat!: require Node 22 or later',
+  'feat(runtime)!: require Node 22 or later',
   'refactor(reader)!: one fail-closed reader',
   'chore(deps): bump actions/checkout from 7.0.1 to 7.1.0',
   'chore(deps-dev): bump vite from 7.3.6 to 7.3.7',
   // Dependabot's capitalised spelling: the description is free text.
   'chore(deps): Bump actions/setup-node from 7.0.0 to 7.1.0',
   'chore(release): version packages',
-  'ci: run Self-check nightly',
-  'build: pin pnpm 10.34.5',
-  'test: cover the dependency-skip route',
-  'perf: read each segment once',
-  'revert: feat: add a pull request title check',
-  'style: wrap the README at 100 columns',
+  'ci(self-check): run Self-check nightly',
+  'build(pnpm): pin pnpm 10.34.5',
+  'test(release): cover the dependency-skip route',
+  'perf(parser): read each segment once',
+  'revert(title-check): feat: add a pull request title check',
+  'style(readme): wrap the README at 100 columns',
   'fix(release-notes): cut a phase phrase whole',
   'fix(ci.yml): fetch the checker at job.workflow_sha',
   'fix(hl7/v2): keep the repetition separator',
@@ -100,21 +100,25 @@ const ACCEPTED = [
 ];
 
 const REFUSED = [
+  ['no scope', 'fix: keep the escape sequence in OBX-5'],
+  ['no scope, with the breaking mark', 'feat!: require Node 22 or later'],
+  ['no scope, a Dependabot-shaped title with the scope dropped', 'chore: bump actions/checkout from 7.0.1 to 7.1.0'],
   ['no type at all', 'Add a pull request title check'],
   ["the changesets default, which `release.yml` no longer sends", 'Version Packages'],
-  ["GitHub's revert button", 'Revert "feat: add a pull request title check"'],
+  ["GitHub's revert button", 'Revert "feat(title-check): add a pull request title check"'],
   ['a capitalised type', 'Feat: add a pull request title check'],
   ['an upper-case type', 'FIX: keep the escape sequence'],
   ['a type that is not on the list', 'feature: add a pull request title check'],
   ['another type that is not on the list', 'wip: still going'],
-  ['no space after the colon', 'feat:add a pull request title check'],
-  ['a description that starts with a space', 'feat:  two spaces'],
-  ['an empty description', 'feat: '],
-  ['nothing after the colon', 'feat:'],
+  ['no space after the colon', 'feat(title-check):add a pull request title check'],
+  ['a description that starts with a space', 'feat(title-check):  two spaces'],
+  ['an empty description', 'feat(title-check): '],
+  ['nothing after the colon', 'feat(title-check):'],
   ['an empty scope', 'feat(): add a check'],
   ['an upper-case scope', 'feat(Parser): add a check'],
   ['a scope outside ASCII', 'fix(pärser): keep the escape'],
   ['a scope that starts with a hyphen', 'fix(-parser): keep the escape'],
+  ['a leading scope-like word is not a scope', 'fix parser: keep the escape'],
   ['a space before the colon', 'feat(parser) : add a check'],
   ['a space before the scope', 'feat (parser): add a check'],
   ['the breaking mark before the scope', 'feat!(parser): add a check'],
@@ -142,8 +146,8 @@ for (const [why, title] of REFUSED) {
 test('every type the rule names is accepted, and the list is exactly the one it prints', () => {
   const types = ['feat', 'fix', 'docs', 'chore', 'ci', 'build', 'refactor', 'test', 'perf', 'revert', 'style'];
   for (const type of types) {
-    assert.equal(check(`${type}: a description`).code, 0, type);
     assert.equal(check(`${type}(scope): a description`).code, 0, `${type} with a scope`);
+    assert.equal(check(`${type}: a description`).code, 1, `${type} without a scope`);
   }
   const pattern = /pattern='\^\(([^)]*)\)/.exec(SCRIPT);
   assert.notEqual(pattern, null, 'the pattern is not where this test expects it');
@@ -152,12 +156,12 @@ test('every type the rule names is accepted, and the list is exactly the one it 
 
 test('an event with no pull request fails and says why, rather than passing over nothing', () => {
   for (const event of ['push', 'merge_group', 'workflow_dispatch', 'schedule']) {
-    const run = check('feat: a title that would pass', event);
+    const run = check('feat(title-check): a title that would pass', event);
     assert.equal(run.code, 1, `${event}: ${run.output}`);
     assert.match(run.output, /^::error title=No pull request title::/m);
     assert.match(run.output, new RegExp(`a ${event} event has none`));
   }
-  assert.equal(check('feat: a title that would pass', 'pull_request_target').code, 0);
+  assert.equal(check('feat(title-check): a title that would pass', 'pull_request_target').code, 0);
 });
 
 test('a title is printed after a fixed prefix, so it can never start a workflow command', () => {
@@ -172,8 +176,8 @@ test('a title is printed after a fixed prefix, so it can never start a workflow 
 test('a mutated rule is caught: without its anchor, a revert button title would pass', () => {
   const loosened = SCRIPT.replace("pattern='^(", () => "pattern='(");
   assert.notEqual(loosened, SCRIPT, 'the mutation changed nothing, so it proves nothing');
-  assert.equal(check('Revert "feat: add a pull request title check"', 'pull_request', loosened).code, 0);
-  assert.equal(check('Revert "feat: add a pull request title check"').code, 1);
+  assert.equal(check('Revert "feat(title-check): add a pull request title check"', 'pull_request', loosened).code, 0);
+  assert.equal(check('Revert "feat(title-check): add a pull request title check"').code, 1);
 });
 
 // ---------------------------------------------------------------------------

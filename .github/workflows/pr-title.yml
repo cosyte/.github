@@ -6,8 +6,8 @@ name: Pull request title (reusable)
 #   <type>(<scope>)!: <description>
 #
 # The type is one of feat, fix, docs, chore, ci, build, refactor, test, perf, revert, or style, in
-# lower case. The scope and the `!` are optional; a scope is lower-case letters, digits, `.`, `_`,
-# `/` and `-`. One space follows the colon, and the description starts with something other than a
+# lower case. The scope is required, in parentheses: lower-case letters, digits, `.`, `_`, `/` and
+# `-`, starting with a letter or a digit. The `!` is optional. One space follows the colon, and the description starts with something other than a
 # space. For example: `fix(parser): keep the escape sequence in OBX-5`.
 #
 # Caller (each repo's .github/workflows/pr-title.yml):
@@ -80,12 +80,12 @@ jobs:
               exit 1
               ;;
           esac
-          pattern='^(feat|fix|docs|chore|ci|build|refactor|test|perf|revert|style)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]]'
+          pattern='^(feat|fix|docs|chore|ci|build|refactor|test|perf|revert|style)\([a-z0-9][a-z0-9._/-]*\)!?: [^[:space:]]'
           if [[ "${PR_TITLE}" =~ ${pattern} ]]; then
             echo "The pull request title follows Conventional Commits."
             exit 0
           fi
-          echo "::error title=Pull request title::The title does not follow Conventional Commits. Write it as type(scope): description, where the scope is optional and the type is one of feat, fix, docs, chore, ci, build, refactor, test, perf, revert, or style."
+          echo "::error title=Pull request title::The title does not follow Conventional Commits. Write it as type(scope): description, where the scope is required and the type is one of feat, fix, docs, chore, ci, build, refactor, test, perf, revert, or style."
           printf 'The title is: %s\n' "${PR_TITLE}"
-          echo "For example: fix(parser): keep the escape sequence in OBX-5"
+          echo "The scope is required. For example: fix(parser): keep the escape sequence in OBX-5"
           exit 1
