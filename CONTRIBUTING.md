@@ -87,7 +87,7 @@ forms will walk you through it.
 4. Keep PRs focused: one logical change each. Large refactors start as an issue.
 5. Title the pull request in Conventional Commits form: a type (`feat`, `fix`,
    `docs`, `chore`, `ci`, `build`, `refactor`, `test`, `perf`, `revert`, or
-   `style`), an optional scope in parentheses, a colon, and a short description,
+   `style`), a scope in parentheses, a colon, and a short description,
    such as `fix(parser): keep the escape sequence in OBX-5`. A squash merge makes
    the title the commit message.
 

@@ -20,7 +20,7 @@ thin caller, so the pipeline is defined once here. All actions are pinned to com
 | [`gate-no-internal-refs.yml`](.github/workflows/gate-no-internal-refs.yml) | **one job**, `public-surface`, running the caller's public-surface scan over the tree. Same boundary: no pattern, no allow-list, no verdict, exit status decides. It deliberately does **not** scan the text a contributor writes around a change, because an internal identifier belongs in a description of the work | any repo whose public-surface gate is a thin caller |
 | [`gate-no-emdash-install.yml`](.github/workflows/gate-no-emdash-install.yml) | `gate-no-emdash.yml` with one step added to each job: the caller's dependencies, installed from the caller's committed lockfile, before the scan runs. Same `tracked-files` and `messages` job ids, same two inputs, same defaults, so the check-run contexts and the ruleset entries naming them do not move | a repo whose em-dash scanner resolves an installed package. **No caller is measured needing it yet**, and nothing here moves one onto it |
 | [`gate-no-internal-refs-install.yml`](.github/workflows/gate-no-internal-refs-install.yml) | `gate-no-internal-refs.yml` with the same one step added: install from the committed lockfile, then scan. Same `public-surface` job id, same input, same default | `hl7`, whose public-surface scan resolves `@cosyte/script-utils` and fails closed without an install |
-| [`pr-title.yml`](.github/workflows/pr-title.yml) | **one job**, `conventional-commits`: the pull request title must follow Conventional Commits, `<type>(<scope>)!: <description>` with the scope and `!` optional. Unlike the gates above, **the rule lives here**, because a title rule is the same in every repository; it takes no input, checks nothing out and runs no action. See [The pull request title check](#the-pull-request-title-check) | this repository, through `self-pr-title.yml`; callers adopt it from a published reference |
+| [`pr-title.yml`](.github/workflows/pr-title.yml) | **one job**, `conventional-commits`: the pull request title must follow Conventional Commits, `<type>(<scope>)!: <description>` with the scope required and `!` optional. Unlike the gates above, **the rule lives here**, because a title rule is the same in every repository; it takes no input, checks nothing out and runs no action. See [The pull request title check](#the-pull-request-title-check) | this repository, through `self-pr-title.yml`; callers adopt it from a published reference |
 
 ## Calling them
 
@@ -3196,13 +3196,13 @@ Commits, because a squash merge makes the title the commit that lands:
 
 - **Type:** `feat`, `fix`, `docs`, `chore`, `ci`, `build`, `refactor`, `test`, `perf`, `revert`, or
   `style`, in lower case.
-- **Scope:** optional. Lower-case letters, digits, `.`, `_`, `/` and `-`, starting with a letter or a
+- **Scope:** required, in parentheses. Lower-case letters, digits, `.`, `_`, `/` and `-`, starting with a letter or a
   digit.
 - **`!`:** optional, after the scope, for a breaking change.
 - **Description:** one space after the colon, then anything that does not start with a space.
 
 So `fix(parser): keep the escape sequence in OBX-5` passes, and `Version Packages`,
-`Revert "feat: x"` and `Feat: x` do not. [`test/pr-title.test.mjs`](test/pr-title.test.mjs) runs the
+`Revert "feat: x"`, `Feat: x` and `fix: keep the escape sequence` (no scope) do not. [`test/pr-title.test.mjs`](test/pr-title.test.mjs) runs the
 workflow's own step against those titles and more.
 
 **The rule lives in the workflow, not in the caller.** The em-dash and public-surface gates run a

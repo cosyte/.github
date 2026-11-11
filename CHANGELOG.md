@@ -17,6 +17,13 @@ so the next change to this file moves those lines under a heading with that name
 
 ## Unreleased
 
+- `pr-title.yml` now requires the scope: `type(scope): description`, with the optional `!` after the
+  scope. A title with no scope, such as `fix: keep the escape sequence`, is refused, and the error
+  message says the scope is required. Each repository takes the rule when its pin of this workflow
+  moves to a reference that carries this change. Act on: before moving the pin, check that the
+  repository's Dependabot config sets `prefix: chore` with `include: scope`, so its titles read
+  `chore(deps): bump ...`, and that its pull requests are titled with a scope.
+
 - `weekly-mutation.yml`'s check that `cosyte-mutate` can shard no longer runs `<mutate-cmd> --help`.
   It runs `mutate-cmd` as written, once, with `COSYTE_MUTATE_SHARD` naming a shard no file can be in,
   and fails, saying that sharding needs `@cosyte/vitest-config` 0.1.5 or later, when the command
