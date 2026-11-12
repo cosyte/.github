@@ -98,7 +98,7 @@ The em dash gate also reads the pull request title, body, and commit messages: p
   such as `self-check.yml`.
 - [`scripts/`](scripts): the Node.js scripts those workflows run.
 - [`test/`](test): the `node:test` suites for the scripts and the workflows, with
-  `test/workflow-reader.mjs`, which every test that reads a workflow goes through, and
+  `test/workflow-reader.mjs`, the reader the `release.yml` tests share, and
   `test/package-lists.mjs`.
 - [`profile/README.md`](profile/README.md): the organization's public profile.
 - The community health files: [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md),
@@ -3447,10 +3447,12 @@ this repository's.
 ## Contributing
 
 The organization's [contributing guide](CONTRIBUTING.md) and [code of conduct](CODE_OF_CONDUCT.md)
-apply here, and [GOVERNANCE.md](GOVERNANCE.md) says who decides. Questions and bug reports start on
-the [issue tracker](https://github.com/cosyte/.github/issues). Read [Run the checks](#run-the-checks)
-before you open a pull request, and title it in Conventional Commits form with a scope, as
-[The pull request title check](#the-pull-request-title-check) describes.
+apply here, and [GOVERNANCE.md](GOVERNANCE.md) says who decides. Bug reports go to the
+[issue tracker](https://github.com/cosyte/.github/issues), and questions and ideas to
+[Discussions](https://github.com/cosyte/.github/discussions), as [SUPPORT.md](SUPPORT.md) says.
+Read [Run the checks](#run-the-checks) before you open a pull request, and title it in Conventional
+Commits form with a scope, as [The pull request title check](#the-pull-request-title-check)
+describes.
 
 ## License
 
