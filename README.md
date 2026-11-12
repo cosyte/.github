@@ -1,10 +1,118 @@
+<a href="https://cosyte.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://cosyte.com/tile/cosyte-lockup-tile-on-dark-1200x300.png">
+    <img alt="The Cosyte logo on its own white ground: the icon beside the word Cosyte." src="https://cosyte.com/tile/cosyte-lockup-tile-on-light-1200x300.png">
+  </picture>
+</a>
+
 # cosyte/.github
+
+> The reusable GitHub Actions workflows our `@cosyte/*` libraries call, and the organization's shared community files.
+
+[![CI](https://img.shields.io/github/actions/workflow/status/cosyte/.github/self-check.yml?branch=main&label=CI)](https://github.com/cosyte/.github/actions/workflows/self-check.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cosyte/.github/blob/main/LICENSE)
 
 Org-wide reusable GitHub Actions workflows for the `@cosyte/*` suite. Each repo's own workflow is a
 thin caller, so the pipeline is defined once here. All actions are pinned to commit SHAs.
 
 > This repository is **public**, and must stay that way: a public repository cannot call a reusable
 > workflow from a private one.
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [Status](#status)
+- [Run the checks](#run-the-checks)
+- [Layout](#layout)
+- [Documentation](#documentation)
+- [Reusable workflows](#reusable-workflows)
+- [Calling them](#calling-them)
+- [The published reference, and what `@main` costs a caller](#the-published-reference-and-what-main-costs-a-caller)
+- [Every system and runtime](#every-system-and-runtime)
+- [The testing standard's jobs](#the-testing-standards-jobs)
+- [The performance standard's jobs](#the-performance-standards-jobs)
+- [The docs-content gate](#the-docs-content-gate)
+- [The release environment gate](#the-release-environment-gate)
+- [What a skipped required context does to a merge](#what-a-skipped-required-context-does-to-a-merge)
+- [Who authors the "Version Packages" PR](#who-authors-the-version-packages-pr)
+- [The two pre-publish layers](#the-two-pre-publish-layers)
+- [The release gates](#the-release-gates)
+- [Direct publishing, and staging on request](#direct-publishing-and-staging-on-request)
+- [Why the tag comes before the publish](#why-the-tag-comes-before-the-publish)
+- [The post-publish install gate](#the-post-publish-install-gate)
+- [Release notes](#release-notes)
+- [The org defaults coverage check](#the-org-defaults-coverage-check)
+- [What the account inherits, and the two things it cannot](#what-the-account-inherits-and-the-two-things-it-cannot)
+- [The pull request title check](#the-pull-request-title-check)
+- [The em-dash gate](#the-em-dash-gate)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Why this exists
+
+Every `@cosyte/*` library runs the same CI and the same release path. Defined once here as reusable
+workflows, they leave each library one thin caller per workflow, with every gate from the same
+source. The `scripts/` those workflows
+run live here too, proved by the tests in `test/`.
+
+This is also our organization's `.github` repository, so GitHub serves its community health files
+(`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, the issue and pull request
+templates) in every repository without its own, and `profile/README.md` is the organization's public
+profile.
+
+## Status
+
+This repository ships no package: there is no `package.json`, no lockfile, and no changeset. What a
+caller adopts is a published reference, `workflows-YYYY-MM-DD-<first 12 of the commit>`, which a
+push to `main` mints when a reusable workflow or anything under `scripts/` has moved. Its release
+notes say what a caller adopting it has to act on, and [CHANGELOG.md](CHANGELOG.md) records what each
+reference changed. A caller on `@main` instead gets every merge on its next run. See
+[Calling them](#calling-them) and
+[The published reference](#the-published-reference-and-what-main-costs-a-caller).
+
+## Run the checks
+
+There is nothing to build or install. Use Node.js 22 or later; the tests use only `node:test` and
+`node:assert`. Run these from the repository root, in this order, before you push. CI runs the same
+checks.
+
+1. `actionlint` 1.7.12, with `shellcheck` on `PATH`.
+2. `node --test "test/*.test.mjs"`
+3. `node scripts/check-no-emdash.mjs`
+4. `node test/package-lists.mjs`, which needs the network: it checks the package lists in
+   `SECURITY.md`, `CONTRIBUTING.md`, and `profile/README.md` against the catalog in the latest
+   `@cosyte/script-utils` on npm.
+
+The em dash gate also reads the pull request title, body, and commit messages: pipe each through
+`node scripts/check-no-emdash.mjs --stdin <label>` before you open one.
+
+## Layout
+
+- [`.github/workflows/`](.github/workflows): the reusable workflows a caller names (the table under
+  [Reusable workflows](#reusable-workflows)), and the workflows that run on this repository itself,
+  such as `self-check.yml`.
+- [`scripts/`](scripts): the Node.js scripts those workflows run.
+- [`test/`](test): the `node:test` suites for the scripts and the workflows, with
+  `test/workflow-reader.mjs`, the reader the `release.yml` tests share, and
+  `test/package-lists.mjs`.
+- [`profile/README.md`](profile/README.md): the organization's public profile.
+- The community health files: [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md),
+  [`SUPPORT.md`](SUPPORT.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and the templates in
+  [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE) and
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
+- [`GOVERNANCE.md`](GOVERNANCE.md): who decides in the `@cosyte/*` repositories, and how.
+- [`CHANGELOG.md`](CHANGELOG.md): what each `workflows-*` reference changed for a caller.
+
+## Documentation
+
+The sections below are the reference for a caller: what each reusable workflow does, how to call
+it, and what each gate refuses. The API reference and guides for every `@cosyte/*` library live at
+[docs.cosyte.com](https://docs.cosyte.com).
 
 ## Reusable workflows
 
@@ -3323,3 +3431,33 @@ review. That is the stopping point, and the reason not to add a fourth rung chas
 
 The rule these enforce is our writing standard: no em dash and no en dash anywhere, and a sentence
 that seems to need one is rewritten.
+
+## Security
+
+Report a vulnerability privately, as the [security policy](SECURITY.md) describes, never in a public
+issue.
+
+### PHI and safety
+
+This repository is public, and a merge is live at once. Synthetic data only: real patient data never
+enters a file, a fixture, a log, or an issue. `ci.yml` runs a caller's own PHI scanner
+(`pnpm phi-scan`) only when the caller sets `run-phi-scan: true`; the scanner is the caller's, not
+this repository's.
+
+## Contributing
+
+The organization's [contributing guide](CONTRIBUTING.md) and [code of conduct](CODE_OF_CONDUCT.md)
+apply here, and [GOVERNANCE.md](GOVERNANCE.md) says who decides. Bug reports go to the
+[issue tracker](https://github.com/cosyte/.github/issues), and questions and ideas to
+[Discussions](https://github.com/cosyte/.github/discussions), as [SUPPORT.md](SUPPORT.md) says.
+Read [Run the checks](#run-the-checks) before you open a pull request, and title it in Conventional
+Commits form with a scope, as [The pull request title check](#the-pull-request-title-check)
+describes.
+
+## License
+
+MIT, Copyright (c) 2026 Cosyte LLC. See [LICENSE](LICENSE).
+
+---
+
+_Built by [Cosyte](https://cosyte.com)._
