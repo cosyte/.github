@@ -759,7 +759,7 @@ jobs:
       # PR, so the tooling checkout has to be invisible to the caller's git or it lands in that PR.
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       # NO `registry-url` IN THIS JOB, AND THE OMISSION IS THE POINT. `registry-url` is the input that
       # makes setup-node write an `.npmrc` holding `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
       # and point `NPM_CONFIG_USERCONFIG` at it. This job publishes nothing and holds no npm
@@ -1378,7 +1378,7 @@ jobs:
       # checkout has to be invisible to the caller's git or it lands in a commit.
       - name: Hide the tooling checkout from the caller's git
         run: printf '\n/.cosyte-release-tooling/\n' >> .git/info/exclude
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       # NO `registry-url`, IN THIS JOB AS IN EVERY OTHER, BECAUSE NOTHING HERE AUTHENTICATES WITH A
       # FILE. `registry-url` makes setup-node write an .npmrc holding
       # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and point NPM_CONFIG_USERCONFIG at it,
@@ -2060,7 +2060,7 @@ jobs:
       # tree. NO `registry-url`: nothing in this job authenticates to a registry, so no registry
       # credential file is written for anything to read. A caller's `node-version` replaces Node 24,
       # so the tree is built on the line the `release` job published it from.
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version || '24' }}
